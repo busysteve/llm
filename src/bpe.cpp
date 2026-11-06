@@ -58,27 +58,14 @@ void append_u32(std::vector<uint8_t>& out, uint32_t value) {
   out.push_back(static_cast<uint8_t>(value >> 24));
 }
 
-class ByteReader {
- public:
-  explicit ByteReader(std::vector<uint8_t> bytes) : bytes_(std::move(bytes)) {}
-
-  uint32_t u32() {
-    if (pos_ + 4 > bytes_.size()) throw std::runtime_error("bad tokenizer");
-    const uint32_t value = static_cast<uint32_t>(bytes_[pos_]) |
-                           (static_cast<uint32_t>(bytes_[pos_ + 1]) << 8) |
-                           (static_cast<uint32_t>(bytes_[pos_ + 2]) << 16) |
-                           (static_cast<uint32_t>(bytes_[pos_ + 3]) << 24);
-    pos_ += 4;
-    return value;
-  }
-
-  bool done() const { return pos_ == bytes_.size(); }
-  size_t size() const { return bytes_.size(); }
-  const uint8_t* data() const { return bytes_.data(); }
-
- private:
-  std::vector<uint8_t> bytes_;
-  size_t pos_ = 0;
+uint32_t read_u32(const std::vector<uint8_t>& bytes, size_t& offset) {
+  if (offset + 4 > bytes.size()) throw std::runtime_error("bad tokenizer");
+  const uint32_t value = static_cast<uint32_t>(bytes[offset]) |
+                         (static_cast<uint32_t>(bytes[offset + 1]) << 8) |
+                         (static_cast<uint32_t>(bytes[offset + 2]) << 16) |
+                         (static_cast<uint32_t>(bytes[offset + 3]) << 24);
+  offset += 4;
+  return value;
 };
 
 std::vector<uint8_t> read_file(const std::filesystem::path& path) {
@@ -249,16 +236,18 @@ void BpeTokenizer::save(const std::filesystem::path& path) const {
 }
 
 std::unique_ptr<Tokenizer> Tokenizer::load(const std::filesystem::path& path) {
-  ByteReader reader(read_file(path));
-  if (reader.size() < 4) throw std::runtime_error("bad tokenizer");
-  if (std::memcmp(reader.data(), kMagic, 4) != 0) throw std::runtime_error("bad tokenizer magic");
-  reader.u32();  // magic bytes, consumed as a little-endian word only to advance
+  const std::vector<uint8_t> bytes = read_file(path);
+  if (bytes.size() < 4) throw std::runtime_error("bad tokenizer");
+  if (std::memcmp(bytes.data(), kMagic, 4) != 0) throw std::runtime_error("bad tokenizer magic");
 
-  const uint32_t vocab_u32 = reader.u32();
-  const uint32_t n_merges = reader.u32();
-  const uint32_t pad = reader.u32();
-  const uint32_t bos = reader.u32();
-  const uint32_t eos = reader.u32();
+  size_t offset = 0;
+  read_u32(bytes, offset);  // magic bytes; advance past the four-byte header
+
+  const uint32_t vocab_u32 = read_u32(bytes, offset);
+  const uint32_t n_merges = read_u32(bytes, offset);
+  const uint32_t pad = read_u32(bytes, offset);
+  const uint32_t bos = read_u32(bytes, offset);
+  const uint32_t eos = read_u32(bytes, offset);
 
   if (vocab_u32 < 259 || vocab_u32 > static_cast<uint32_t>(std::numeric_limits<int32_t>::max())) {
     throw std::runtime_error("bad tokenizer");
@@ -268,18 +257,18 @@ std::unique_ptr<Tokenizer> Tokenizer::load(const std::filesystem::path& path) {
     throw std::runtime_error("bad tokenizer");
   }
   const uint64_t expected = 24ull + static_cast<uint64_t>(n_merges) * 8ull;
-  if (reader.size() != expected) throw std::runtime_error("bad tokenizer");
+  if (bytes.size() != expected) throw std::runtime_error("bad tokenizer");
 
   std::vector<BpeTokenizer::Merge> merges;
   merges.reserve(n_merges);
   for (uint32_t i = 0; i < n_merges; ++i) {
-    const uint32_t left = reader.u32();
-    const uint32_t right = reader.u32();
+    const uint32_t left = read_u32(bytes, offset);
+    const uint32_t right = read_u32(bytes, offset);
     const uint32_t new_id = 256u + i;
     if (left >= new_id || right >= new_id) throw std::runtime_error("bad tokenizer");
     merges.push_back(BpeTokenizer::Merge{static_cast<int32_t>(left), static_cast<int32_t>(right)});
   }
-  if (!reader.done()) throw std::runtime_error("bad tokenizer");
+  if (offset != bytes.size()) throw std::runtime_error("bad tokenizer");
 
   return std::unique_ptr<Tokenizer>(new BpeTokenizer(static_cast<int>(vocab_u32), std::move(merges)));
 }
