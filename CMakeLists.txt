@@ -1,0 +1,26 @@
+cmake_minimum_required(VERSION 3.24)
+
+if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+  set(CMAKE_CUDA_ARCHITECTURES 86)
+endif()
+
+project(llm LANGUAGES CXX CUDA)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_CUDA_STANDARD 17)
+set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+
+# nn's own tests stay out of `all`; llm still links the nn library target.
+add_subdirectory(../nn nn_build EXCLUDE_FROM_ALL)
+
+add_library(llm STATIC src/bpe.cpp)
+target_link_libraries(llm PUBLIC nn)
+target_include_directories(llm PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
+add_executable(llm_tests tests/test_bpe.cpp)
+target_link_libraries(llm_tests PRIVATE llm)
+
+enable_testing()
+add_test(NAME bpe COMMAND llm_tests)
