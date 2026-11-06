@@ -10,6 +10,8 @@
 #include <string>
 #include <vector>
 
+void run_data_tests();
+
 namespace {
 
 #define CHECK(cond)                                                                  \
@@ -216,6 +218,7 @@ int main() {
   check_runtime([&] { llm::Tokenizer::load(dir / "missing.bpe"); }, "tokenizer read");
 
   std::filesystem::remove_all(dir);
+  run_data_tests();
   std::printf("ok\n");
   return 0;
 }

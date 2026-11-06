@@ -1,6 +1,6 @@
 # llm
 
-A C++17 library for small decoder-only language models, built beside [`nn`](../nn). This tree is the tokenizer and the CMake scaffold. It does not include a dataset, trainer, generator, or transformer presets.
+A C++17 library for small decoder-only language models, built beside [`nn`](../nn). This tree is the tokenizer, the token dataset, and the CMake scaffold. It does not include a trainer, generator, or transformer presets.
 
 Public headers live under `include/llm/` and do not include CUDA headers. The `llm` target still links `nn`, and `nn` uses CUDA.
 
@@ -8,7 +8,7 @@ Public headers live under `include/llm/` and do not include CUDA headers. The `l
 
 - C++17 and CMake 3.24 or newer
 - The CUDA Toolkit and cuDNN setup that `nn` needs
-- A checkout of `nn` at `../nn`
+- A checkout of `nn` at `../nn`, or pass `-DNN_SOURCE=` to that checkout
 
 `CMAKE_CUDA_ARCHITECTURES` defaults to `86`. `add_subdirectory(... EXCLUDE_FROM_ALL)` builds `nn` only as a dependency of `llm`, so `nn`'s tests are not part of `all`.
 
@@ -23,8 +23,11 @@ cmake --build build -j --target llm_tests
 ```
 include/llm/tokenizer.hpp   Tokenizer
 include/llm/bpe.hpp         BpeTokenizer
+include/llm/data.hpp        TextDataset and token files
 src/bpe.cpp                 byte-level BPE, train, and the LPB1 file
+src/data.cpp                token file and next-token batches
 tests/test_bpe.cpp          tokenizer tests
+tests/test_data.cpp         dataset tests
 ```
 
 ## Tokenizer

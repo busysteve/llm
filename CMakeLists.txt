@@ -12,14 +12,16 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_CUDA_STANDARD 17)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
+# Default is a sibling checkout. -DNN_SOURCE=... points at another tree.
 # nn's own tests stay out of `all`; llm still links the nn library target.
-add_subdirectory(../nn nn_build EXCLUDE_FROM_ALL)
+set(NN_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/../nn" CACHE PATH "path to nn")
+add_subdirectory(${NN_SOURCE} nn_build EXCLUDE_FROM_ALL)
 
-add_library(llm STATIC src/bpe.cpp)
+add_library(llm STATIC src/bpe.cpp src/data.cpp)
 target_link_libraries(llm PUBLIC nn)
 target_include_directories(llm PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
-add_executable(llm_tests tests/test_bpe.cpp)
+add_executable(llm_tests tests/test_bpe.cpp tests/test_data.cpp)
 target_link_libraries(llm_tests PRIVATE llm)
 
 enable_testing()
