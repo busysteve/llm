@@ -138,6 +138,27 @@ The run writes `run/tokenizer.bpe`, `run/tokens.bin`, `run/tokens.meta`, and `ru
 
 `--preset` is `tiny`, `small`, or `base`. `--seq-len` must be at most 1024. `--vocab` must be at least 259. Tokenizer training scans every byte once per merge, so a vocab of 4096 on several long books is much slower than the GPU steps. `--vocab 1024` is a faster first run. Defaults are `--preset tiny`, `--seq-len 256`, `--batch 4`, which fits a 12 GB GPU. `small` prefers 24 GB. `base` is a 24 GB model; keep the sequence at 512 or below on a smaller card. `--temperature 0` is greedy. `--help` prints the flags.
 
+## Talk to a trained model
+
+`examples/chat.cpp` loads `tokenizer.bpe` and `model.bin` from a `train_books` directory. It is not part of `llm_tests`. Training stays in `train_books`. Put one exchange in each file. `train_books` appends eos after each file, so that token ends the assistant turn:
+
+```
+User: What is the harbor bell for?
+Assistant: It marks the hour.
+```
+
+```bash
+cmake --build build -j --target chat
+./build/train_books --files dialogues.txt --out chat-run --vocab 1024
+./build/chat --model chat-run
+```
+
+`chat` prints `you>`, reads a line, and builds a prompt from the transcript plus `User: `, the line, a newline, and `Assistant:`. The space after the colon is part of the reply the model generates. `model>` prints that reply with one leading space removed. The transcript keeps the space. A decoded `\nUser:` ends the turn for both the screen and the transcript. `/reset` clears the transcript. `/quit` or end of input exits. `--once TEXT` prints one reply and exits.
+
+Presets use `max_seq_len` 1024. The encoded prompt plus `--max-new-tokens` has to fit. `chat` drops the oldest `User:` / `Assistant:` turn until it does. A line that still does not fit prints `max_seq_len` and leaves the transcript as it was. Each reply prefills the whole prompt. There is no cache carried from one turn to the next.
+
+Defaults are `--max-new-tokens 128`, `--temperature 0.8`, `--top-k 40`, `--top-p 0.9`, and `--seed 1`. `--temperature 0` is greedy. `--help` prints the flags.
+
 `adamw_groups` throws `std::invalid_argument("weight_decay")` when `weight_decay` is NaN, infinite, or negative. Decay applies only to rank-2 parameters whose names do not contain `ln` and do not end in `.bias`. Every other parameter, including LayerNorm weight and bias, is decay 0. A new group starts only when that choice changes, so the groups stay in `parameters()` order. `Transformer::save` rejects any other order.
 
 ## Trainer

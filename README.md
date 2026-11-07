@@ -19,9 +19,10 @@ cmake --build build -j --target llm_tests
 cmake --build build -j --target train_tiny
 ./build/train_tiny
 cmake --build build -j --target train_books
+cmake --build build -j --target chat
 ```
 
-`train_tiny` is the acceptance example. It is not part of `llm_tests`. `train_books` trains from a list of text files, writes `tokenizer.bpe` and `model.bin`, then loads those files and generates. See [USAGE.md](USAGE.md).
+`train_tiny` is the acceptance example. It is not part of `llm_tests`. `train_books` trains from a list of text files, writes `tokenizer.bpe` and `model.bin`, then loads those files and generates. `chat` loads that directory and continues a `User:` / `Assistant:` transcript. See [USAGE.md](USAGE.md).
 
 ## Layout
 
@@ -39,6 +40,7 @@ src/train.cpp               warmup/cosine schedule and the fit loop
 src/generate.cpp            prefill, sample, and decode_step
 examples/train_tiny.cpp     acceptance train and generate
 examples/train_books.cpp    train from a list of book files, save, and generate
+examples/chat.cpp           continue a User/Assistant transcript
 tests/test_bpe.cpp          tokenizer tests
 tests/test_data.cpp         dataset tests
 tests/test_train.cpp        presets, trainer, and generator tests

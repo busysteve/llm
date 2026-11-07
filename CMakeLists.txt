@@ -30,5 +30,8 @@ target_link_libraries(train_tiny PRIVATE llm)
 add_executable(train_books examples/train_books.cpp)
 target_link_libraries(train_books PRIVATE llm)
 
+add_executable(chat examples/chat.cpp)
+target_link_libraries(chat PRIVATE llm)
+
 enable_testing()
 add_test(NAME bpe COMMAND llm_tests)
