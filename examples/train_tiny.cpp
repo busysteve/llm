@@ -7,7 +7,6 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
-#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -32,22 +31,6 @@ constexpr char kParagraph[] =
     "A tiny model can learn a short paragraph. "
     "The same words come back, so the next token is easier. "
     "Loss should fall after a few dozen steps. ";
-
-// train throws vocab_size when the paragraph runs out of pairs. A longer copy still has pairs.
-std::unique_ptr<llm::BpeTokenizer> train_tokenizer(std::string& corpus, std::vector<int32_t>& ids) {
-  corpus.clear();
-  for (int copies = 0; copies < 64; ++copies) {
-    corpus += kParagraph;
-    try {
-      std::unique_ptr<llm::BpeTokenizer> tok = llm::BpeTokenizer::train({corpus}, kVocabSize);
-      ids = tok->encode(corpus);
-      if (ids.size() >= static_cast<size_t>(kSeqLen) + 1) return tok;
-    } catch (const std::invalid_argument& error) {
-      if (std::strcmp(error.what(), "vocab_size") != 0) throw;
-    }
-  }
-  throw std::runtime_error("vocab_size");
-}
 
 // fit prints the step loss and does not return it. Compare step 1 with the last step from that log.
 class StdoutCapture {
@@ -107,9 +90,8 @@ bool loss_at(const std::string& log, int step, float& loss) {
 
 int main() {
   try {
-    std::string corpus;
-    std::vector<int32_t> ids;
-    const std::unique_ptr<llm::BpeTokenizer> tok = train_tokenizer(corpus, ids);
+    const std::unique_ptr<llm::BpeTokenizer> tok = llm::BpeTokenizer::train({kParagraph}, kVocabSize);
+    const std::vector<int32_t> ids = tok->encode(kParagraph);
 
     const std::filesystem::path dir = std::filesystem::temp_directory_path() / "llm-train-tiny";
     std::filesystem::remove_all(dir);
