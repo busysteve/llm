@@ -88,9 +88,10 @@ int sample_id(const std::vector<double>& probs, std::mt19937& rng) {
   double cumulative = 0.0;
   int last = static_cast<int>(probs.size()) - 1;
   for (size_t i = 0; i < probs.size(); ++i) {
-    if (probs[i] > 0.0) last = static_cast<int>(i);
+    if (!(probs[i] > 0.0)) continue;
+    last = static_cast<int>(i);
     cumulative += probs[i];
-    if (draw <= cumulative) return static_cast<int>(i);
+    if (draw <= cumulative) return last;
   }
   return last;
 }

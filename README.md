@@ -65,4 +65,4 @@ The on-disk form is little-endian with magic `LPB1`. The byte layout is in [USAG
 
 ## Generator
 
-`Generator::generate` encodes the prompt with no extra bos or eos, prefills the cache, and samples new tokens with `decode_step`. Temperature 0 is greedy. Otherwise logits are divided by temperature, masked to `top_k` (0 is off) and nucleus `top_p` (1 is off), then softmax-sampled. An eos id stops the string without being appended. The return value is `decode` of the new ids only.
+`Generator::generate` encodes the prompt with no extra bos or eos, prefills the cache, and samples new tokens with `decode_step`. Temperature 0 is greedy. Otherwise logits are divided by temperature, masked to `top_k` (`0` skips top-k), softmaxed, then nucleus-filtered on probabilities (`top_p == 1` skips nucleus), and drawn. An eos id stops the string without being appended. The return value is `decode` of the new ids only.
