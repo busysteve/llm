@@ -91,3 +91,68 @@ llm::Batch batch = data.next(ctx, /*batch_size=*/4, /*seq_len=*/16, rng);
 One example needs `seq_len + 1` tokens. A start `s` is in `[0, numel - seq_len)`. The input row is `tokens[s, s + seq_len)` and the label row is `tokens[s + 1, s + seq_len + 1)`. Every label is a real next token. Nothing is written as an ignore index, and there is no padding mask.
 
 Draw order, so a test can recover `s`: each `next` call builds one `std::uniform_int_distribution<int64_t>(0, numel - seq_len - 1)` and draws once per row, row 0 first. Rows are independent. Copy the `std::mt19937` before the call and replay that same distribution to get each start. Each id is widened with `int64_t{id}` and uploaded with `IndexTensor::copy_from_host`. `next` synchronizes the context before it returns, so the device values are ready.
+
+## Presets and AdamW groups
+
+Header: `llm/presets.hpp`
+
+```cpp
+nn::TransformerConfig config = llm::presets::tiny(vocab_size);
+nn::Transformer model(ctx, config, /*seed=*/1);
+std::vector<nn::AdamWGroup> groups = llm::adamw_groups(model, /*weight_decay=*/0.1f);
+nn::AdamW opt(std::move(groups), 3e-4f, 0.9f, 0.95f, 1e-8f);
+```
+
+`tiny`, `small`, and `base` throw `std::invalid_argument("vocab_size")` when `vocab_size < 1`. The other fields are fixed: dropout `0`, `bias` false, `tie_embeddings` false, SwiGLU, learned-absolute positions, `max_seq_len` 1024.
+
+| Preset | `num_layers` | `d_model` | `num_heads` | `d_ff` |
+|---|---:|---:|---:|---:|
+| tiny | 4 | 256 | 4 | 768 |
+| small | 6 | 512 | 8 | 1536 |
+| base | 12 | 768 | 12 | 2048 |
+
+`adamw_groups` throws `std::invalid_argument("weight_decay")` when `weight_decay` is NaN, infinite, or negative. Decay applies only to rank-2 parameters whose names do not contain `ln` and do not end in `.bias`. Every other parameter, including LayerNorm weight and bias, is decay 0. A new group starts only when that choice changes, so the groups stay in `parameters()` order. `Transformer::save` rejects any other order.
+
+## Trainer
+
+Header: `llm/train.hpp`
+
+```cpp
+llm::TrainConfig cfg;
+cfg.batch_size = 8;
+cfg.seq_len = 512;
+cfg.max_steps = 10000;
+cfg.checkpoint_path = "model.bin";
+llm::Trainer trainer(ctx, model, opt, cfg);
+trainer.fit(train, &valid, rng);
+```
+
+`TrainConfig` defaults are `learning_rate` `3e-4`, `weight_decay` `0.1`, `beta1` `0.9`, `beta2` `0.95`, `batch_size` 8, `seq_len` 512, `max_steps` 10000, `grad_accum_steps` 1, `warmup_steps` 100, `min_lr` `3e-5`, `log_every` 50, `eval_every` 500, `eval_batches` 20, `ckpt_every` 1000, `grad_clip_norm` 1, `abort_on_non_finite` true, and an empty `checkpoint_path`. The constructor throws `std::invalid_argument` with the field name when `batch_size`, `seq_len`, `max_steps`, or `grad_accum_steps` is not positive; when `warmup_steps`, `log_every`, `eval_every`, `eval_batches`, or `ckpt_every` is negative; when `learning_rate` or `min_lr` is NaN, infinite, or negative; or when `grad_clip_norm` is NaN, infinite, or negative.
+
+`weight_decay`, `beta1`, and `beta2` are the values to use when building `AdamW`. `fit` does not rebuild the optimizer. It calls `set_learning_rate` from `learning_rate_at`.
+
+`learning_rate_at(cfg, step)` uses a 1-based step. While `step <= warmup_steps` and warmup is positive, the rate is `learning_rate * step / warmup_steps`. After that, if `max_steps > warmup_steps`, progress is `(step - warmup_steps) / (max_steps - warmup_steps)` and the rate is `min_lr + 0.5 * (learning_rate - min_lr) * (1 + cos(pi * progress))`. Otherwise the rate stays `learning_rate`. Step `warmup_steps` is exactly `learning_rate`. Step `max_steps` is exactly `min_lr` on the cosine branch.
+
+Each optimizer step calls `train` and `zero_grad` once, then `grad_accum_steps` micro-batches. A micro-batch is `next`, `forward`, and `sequence_cross_entropy` with ignore index `-100`. The logit gradient is scaled in place by `1 / grad_accum_steps` and passed to `backward`. `opt.step` runs after the micro-batches. A non-finite micro-batch loss throws `std::runtime_error("non-finite loss")` before that backward when `abort_on_non_finite` is set. `grad_clip_norm > 0` clips with `clip_grad_norm`. A non-finite norm throws `std::runtime_error("non-finite grad")`. `grad_clip_norm == 0` does not clip.
+
+`log_every > 0` prints step, loss, learning rate, and grad norm when `step % log_every == 0`. The printed loss is the mean of the micro-batch losses. When `valid` is non-null, `eval_every > 0`, and `eval_batches > 0`, the same cadence runs `eval_batches` forwards under `eval`, prints the mean cross-entropy and `exp` of that mean, then returns to `train`. When `ckpt_every > 0` and `checkpoint_path` is non-empty, the same cadence calls `model.save(checkpoint_path, &opt)`. That file is checkpoint version 2 with AdamW moments and the façade embeddings.
+
+## Generator
+
+Header: `llm/generate.hpp`
+
+```cpp
+llm::Generator generator(ctx, model, *tokenizer);
+llm::GenerateConfig cfg;
+cfg.max_new_tokens = 32;
+cfg.temperature = 0.f;
+cfg.top_k = 1;
+cfg.eos_id = tokenizer->eos_id();
+std::string text = generator.generate(prompt, cfg, rng);
+```
+
+`generate` throws `std::invalid_argument("max_new_tokens")` when `max_new_tokens < 1`, `("temperature")` when temperature is NaN, infinite, or negative, `("top_k")` when `top_k < 0`, and `("top_p")` when `top_p` is outside `(0, 1]`. It calls `model.eval()`, encodes the prompt with bos and eos off, and throws `("prompt")` when that id list is empty. `prompt_len + max_new_tokens` above `max_seq_len` throws `("max_seq_len")`.
+
+The prompt is uploaded as an `IndexTensor` of shape `(1, prompt_len)`. The context is synchronized before that host buffer is destroyed. Generation then uses `prefill` and `decode_step` only. It does not call `forward` or `network().forward`.
+
+Temperature `0` picks the argmax. Any other temperature divides the logits, keeps the top `top_k` when `top_k > 0`, applies nucleus filtering when `top_p < 1`, softmaxes, and draws with `rng`. A sampled id equal to `eos_id` stops the loop when `eos_id >= 0`, and that id is not appended. Other ids are appended and fed back as shape `(1, 1)` until `max_new_tokens`. `decode` is called on the new ids only.

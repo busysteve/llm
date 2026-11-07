@@ -17,11 +17,11 @@ set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 set(NN_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/../nn" CACHE PATH "path to nn")
 add_subdirectory(${NN_SOURCE} nn_build EXCLUDE_FROM_ALL)
 
-add_library(llm STATIC src/bpe.cpp src/data.cpp)
+add_library(llm STATIC src/bpe.cpp src/data.cpp src/presets.cpp src/train.cpp src/generate.cpp)
 target_link_libraries(llm PUBLIC nn)
 target_include_directories(llm PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
-add_executable(llm_tests tests/test_bpe.cpp tests/test_data.cpp)
+add_executable(llm_tests tests/test_bpe.cpp tests/test_data.cpp tests/test_train.cpp)
 target_link_libraries(llm_tests PRIVATE llm)
 
 enable_testing()

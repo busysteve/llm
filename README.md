@@ -1,6 +1,6 @@
 # llm
 
-A C++17 library for small decoder-only language models, built beside [`nn`](../nn). This tree is the tokenizer, the token dataset, and the CMake scaffold. It does not include a trainer, generator, or transformer presets.
+A C++17 library for small decoder-only language models, built beside [`nn`](../nn). This tree is the tokenizer, the token dataset, transformer presets, the trainer, and the generator.
 
 Public headers live under `include/llm/` and do not include CUDA headers. The `llm` target still links `nn`, and `nn` uses CUDA.
 
@@ -24,10 +24,17 @@ cmake --build build -j --target llm_tests
 include/llm/tokenizer.hpp   Tokenizer
 include/llm/bpe.hpp         BpeTokenizer
 include/llm/data.hpp        TextDataset and token files
+include/llm/presets.hpp     tiny / small / base configs and AdamW groups
+include/llm/train.hpp       learning-rate schedule and Trainer
+include/llm/generate.hpp    Generator
 src/bpe.cpp                 byte-level BPE, train, and the LPB1 file
 src/data.cpp                token file and next-token batches
+src/presets.cpp             preset configs and adamw_groups
+src/train.cpp               warmup/cosine schedule and the fit loop
+src/generate.cpp            prefill, sample, and decode_step
 tests/test_bpe.cpp          tokenizer tests
 tests/test_data.cpp         dataset tests
+tests/test_train.cpp        presets, trainer, and generator tests
 ```
 
 ## Tokenizer
@@ -39,3 +46,23 @@ tests/test_data.cpp         dataset tests
 Training counts adjacent pairs inside each string, merges the most frequent pair, and repeats until the vocab is full. Equal counts take the smaller `(left, right)` pair, so the same corpus and vocab size train the same merges.
 
 The on-disk form is little-endian with magic `LPB1`. The byte layout is in [USAGE.md](USAGE.md).
+
+## Presets
+
+`llm::presets::tiny`, `small`, and `base` return an `nn::TransformerConfig`. `vocab_size` must be positive. Dropout is 0, bias is off, embeddings are not tied, the activation is SwiGLU, positions are learned absolute, and `max_seq_len` is 1024.
+
+| Preset | Layers | `d_model` | Heads | `d_ff` |
+|---|---:|---:|---:|---:|
+| tiny | 4 | 256 | 4 | 768 |
+| small | 6 | 512 | 8 | 1536 |
+| base | 12 | 768 | 12 | 2048 |
+
+`llm::adamw_groups` walks `parameters()` in order. Rank-2 tensors whose names do not refer to LayerNorm take the given weight decay. Biases, names containing `ln`, and every other rank-1 tensor take 0. Groups are contiguous runs of that choice, so concatenating them is still `parameters()` order. A NaN or negative `weight_decay` throws `weight_decay`.
+
+## Trainer
+
+`Trainer::fit` runs `max_steps` AdamW updates. Each step is 1-based. The learning rate warms up linearly, then follows a cosine down to `min_lr`. `learning_rate_at` is that schedule. Micro-batches accumulate gradients on device (`Tensor::scale` by `1 / grad_accum_steps`) before one clip and one `opt.step`. A non-finite loss or grad norm throws when `abort_on_non_finite` is set. Eval, when a validation set is passed, prints mean cross-entropy and perplexity. Checkpoints use `Transformer::save(path, &adamw)`, so the file is version 2 and includes embeddings and AdamW moments.
+
+## Generator
+
+`Generator::generate` encodes the prompt with no extra bos or eos, prefills the cache, and samples new tokens with `decode_step`. Temperature 0 is greedy. Otherwise logits are divided by temperature, masked to `top_k` (0 is off) and nucleus `top_p` (1 is off), then softmax-sampled. An eos id stops the string without being appended. The return value is `decode` of the new ids only.

@@ -11,6 +11,7 @@
 #include <vector>
 
 void run_data_tests();
+void run_train_tests();
 
 namespace {
 
@@ -219,6 +220,7 @@ int main() {
 
   std::filesystem::remove_all(dir);
   run_data_tests();
+  run_train_tests();
   std::printf("ok\n");
   return 0;
 }

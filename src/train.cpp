@@ -1,0 +1,133 @@
+#include "llm/train.hpp"
+
+#include "nn/loss.hpp"
+
+#include <cmath>
+#include <cstdio>
+#include <limits>
+#include <stdexcept>
+#include <utility>
+
+namespace llm {
+namespace {
+
+constexpr float kPi = 3.14159265358979323846f;
+
+void require_positive(int value, const char* name) {
+  if (value <= 0) throw std::invalid_argument(name);
+}
+
+void require_non_negative(int value, const char* name) {
+  if (value < 0) throw std::invalid_argument(name);
+}
+
+void validate(const TrainConfig& cfg) {
+  if (!std::isfinite(cfg.learning_rate) || cfg.learning_rate < 0.f) {
+    throw std::invalid_argument("learning_rate");
+  }
+  if (!std::isfinite(cfg.min_lr) || cfg.min_lr < 0.f) throw std::invalid_argument("min_lr");
+  require_positive(cfg.batch_size, "batch_size");
+  require_positive(cfg.seq_len, "seq_len");
+  require_positive(cfg.max_steps, "max_steps");
+  require_positive(cfg.grad_accum_steps, "grad_accum_steps");
+  require_non_negative(cfg.warmup_steps, "warmup_steps");
+  require_non_negative(cfg.log_every, "log_every");
+  require_non_negative(cfg.eval_every, "eval_every");
+  require_non_negative(cfg.eval_batches, "eval_batches");
+  require_non_negative(cfg.ckpt_every, "ckpt_every");
+  if (!std::isfinite(cfg.grad_clip_norm) || cfg.grad_clip_norm < 0.f) {
+    throw std::invalid_argument("grad_clip_norm");
+  }
+}
+
+float mean_loss(TextDataset& data, nn::Context& ctx, nn::Transformer& model, int batches, int batch_size,
+                int seq_len, std::mt19937& rng) {
+  double sum = 0.0;
+  for (int i = 0; i < batches; ++i) {
+    Batch batch = data.next(ctx, batch_size, seq_len, rng);
+    const nn::Tensor& logits = model.forward(batch.input_ids);
+    const nn::LossResult loss = nn::sequence_cross_entropy(ctx, logits, batch.labels, -100);
+    sum += static_cast<double>(loss.loss);
+  }
+  return static_cast<float>(sum / static_cast<double>(batches));
+}
+
+}  // namespace
+
+float learning_rate_at(const TrainConfig& cfg, int step) {
+  if (cfg.warmup_steps > 0 && step <= cfg.warmup_steps) {
+    // Endpoints are exact. lr * n / n and cos(pi) do not round-trip in float.
+    if (step == cfg.warmup_steps) return cfg.learning_rate;
+    return cfg.learning_rate * static_cast<float>(step) / static_cast<float>(cfg.warmup_steps);
+  }
+  if (cfg.max_steps > cfg.warmup_steps) {
+    if (step == cfg.max_steps) return cfg.min_lr;
+    const float progress = static_cast<float>(step - cfg.warmup_steps) /
+                           static_cast<float>(cfg.max_steps - cfg.warmup_steps);
+    const float cosine = std::cos(kPi * progress);
+    return cfg.min_lr + 0.5f * (cfg.learning_rate - cfg.min_lr) * (1.f + cosine);
+  }
+  return cfg.learning_rate;
+}
+
+Trainer::Trainer(nn::Context& ctx, nn::Transformer& model, nn::AdamW& opt, TrainConfig cfg)
+    : ctx_(&ctx), model_(&model), opt_(&opt), cfg_(std::move(cfg)) {
+  validate(cfg_);
+}
+
+void Trainer::fit(TextDataset& train, TextDataset* valid, std::mt19937& rng) {
+  for (int step = 1; step <= cfg_.max_steps; ++step) {
+    const float lr = learning_rate_at(cfg_, step);
+    opt_->set_learning_rate(lr);
+    model_->train();
+    model_->zero_grad();
+
+    float loss_sum = 0.f;
+    for (int micro = 0; micro < cfg_.grad_accum_steps; ++micro) {
+      Batch batch = train.next(*ctx_, cfg_.batch_size, cfg_.seq_len, rng);
+      const nn::Tensor& logits = model_->forward(batch.input_ids);
+      nn::LossResult loss = nn::sequence_cross_entropy(*ctx_, logits, batch.labels, -100);
+      if (cfg_.abort_on_non_finite && !std::isfinite(loss.loss)) {
+        throw std::runtime_error("non-finite loss");
+      }
+      loss.grad_logits.scale(1.f / static_cast<float>(cfg_.grad_accum_steps));
+      model_->backward(loss.grad_logits);
+      loss_sum += loss.loss;
+    }
+    const float loss_value = loss_sum / static_cast<float>(cfg_.grad_accum_steps);
+
+    float grad_norm = 0.f;
+    if (cfg_.grad_clip_norm > 0.f) {
+      grad_norm = nn::clip_grad_norm(model_->parameters(), cfg_.grad_clip_norm);
+    } else if (cfg_.abort_on_non_finite) {
+      // clip_grad_norm is the only grad reduction. A huge limit leaves a finite norm unscaled.
+      grad_norm = nn::clip_grad_norm(model_->parameters(), std::numeric_limits<float>::max());
+    }
+    if (cfg_.abort_on_non_finite && !std::isfinite(grad_norm)) {
+      throw std::runtime_error("non-finite grad");
+    }
+
+    opt_->step();
+
+    if (cfg_.log_every > 0 && step % cfg_.log_every == 0) {
+      std::printf("step %d loss %.6f lr %.8g grad_norm %.6f\n", step, loss_value, lr, grad_norm);
+      std::fflush(stdout);
+    }
+
+    if (valid != nullptr && cfg_.eval_every > 0 && cfg_.eval_batches > 0 && step % cfg_.eval_every == 0) {
+      model_->eval();
+      const float mean_ce = mean_loss(*valid, *ctx_, *model_, cfg_.eval_batches, cfg_.batch_size,
+                                      cfg_.seq_len, rng);
+      const float perplexity = std::exp(mean_ce);
+      std::printf("step %d eval_ce %.6f perplexity %.6f\n", step, mean_ce, perplexity);
+      std::fflush(stdout);
+      model_->train();
+    }
+
+    if (cfg_.ckpt_every > 0 && step % cfg_.ckpt_every == 0 && !cfg_.checkpoint_path.empty()) {
+      model_->save(cfg_.checkpoint_path, opt_);
+    }
+  }
+}
+
+}  // namespace llm
