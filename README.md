@@ -22,7 +22,7 @@ cmake --build build -j --target train_books
 cmake --build build -j --target chat
 ```
 
-`train_tiny` is the acceptance example. It is not part of `llm_tests`. `train_books` trains from a list of text files, writes `tokenizer.bpe` and `model.bin`, then loads those files and generates. `chat` loads that directory and continues a `User:` / `Assistant:` transcript. See [USAGE.md](USAGE.md).
+`train_tiny` is the acceptance example. It is not part of `llm_tests`. `train_books` trains from a list of text files, writes `tokenizer.bpe` and `model.bin`, then loads those files and generates. `chat` loads that directory and continues a `User:` / `Assistant:` transcript. Walkthroughs: [train_tiny](examples/train_tiny.md), [train_books](examples/train_books.md), [chat](examples/chat.md). Library details are in [USAGE.md](USAGE.md).
 
 ## Layout
 
@@ -39,8 +39,11 @@ src/presets.cpp             preset configs and adamw_groups
 src/train.cpp               warmup/cosine schedule and the fit loop
 src/generate.cpp            prefill, sample, and decode_step
 examples/train_tiny.cpp     acceptance train and generate
+examples/train_tiny.md      how to run train_tiny
 examples/train_books.cpp    train from a list of book files, save, and generate
+examples/train_books.md     how to train from a file list
 examples/chat.cpp           continue a User/Assistant transcript
+examples/chat.md            how to converse with a trained model
 tests/test_bpe.cpp          tokenizer tests
 tests/test_data.cpp         dataset tests
 tests/test_train.cpp        presets, trainer, and generator tests

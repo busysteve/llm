@@ -115,11 +115,11 @@ Untied parameter counts at vocab 16000 are tiny 11866624 (11.87M), small 3736883
 
 tiny fits in 12 GB. Suggested batches are `(8, 512)` and `(16, 256)`. small is tight in 12 GB at `(4, 512)`; 24 GB is comfortable. base is a 24 GB target, not a 12 GB target at `T=512`. Keep `T <= 1024` for base, and prefer `T <= 512` on a 12 GB GPU.
 
-`examples/train_tiny.cpp` trains `presets::tiny` at the byte-level BPE vocab, a few million parameters, so that acceptance run fits easily. Positions stay learned absolute, not RoPE.
+`examples/train_tiny.cpp` trains `presets::tiny` at the byte-level BPE vocab, a few million parameters, so that acceptance run fits easily. Positions stay learned absolute, not RoPE. The walkthrough is [examples/train_tiny.md](examples/train_tiny.md).
 
 ## Train from a list of books
 
-`examples/train_books.cpp` is the file-list example. It is not part of `llm_tests`.
+`examples/train_books.cpp` is the file-list example. It is not part of `llm_tests`. The walkthrough is [examples/train_books.md](examples/train_books.md).
 
 ```bash
 cmake --build build -j --target train_books
@@ -140,7 +140,7 @@ The run writes `run/tokenizer.bpe`, `run/tokens.bin`, `run/tokens.meta`, and `ru
 
 ## Talk to a trained model
 
-`examples/chat.cpp` loads `tokenizer.bpe` and `model.bin` from a `train_books` directory. It is not part of `llm_tests`. Training stays in `train_books`. Put one exchange in each file. `train_books` appends eos after each file, so that token ends the assistant turn:
+`examples/chat.cpp` loads `tokenizer.bpe` and `model.bin` from a `train_books` directory. It is not part of `llm_tests`. Training stays in `train_books`. The walkthrough is [examples/chat.md](examples/chat.md). Put one exchange in each file. `train_books` appends eos after each file, so that token ends the assistant turn:
 
 ```
 User: What is the harbor bell for?
