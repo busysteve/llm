@@ -16,7 +16,11 @@ Public headers live under `include/llm/` and do not include CUDA headers. The `l
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=86
 cmake --build build -j --target llm_tests
 ./build/llm_tests
+cmake --build build -j --target train_tiny
+./build/train_tiny
 ```
+
+`train_tiny` is the acceptance example. It is not part of `llm_tests`.
 
 ## Layout
 
@@ -32,6 +36,7 @@ src/data.cpp                token file and next-token batches
 src/presets.cpp             preset configs and adamw_groups
 src/train.cpp               warmup/cosine schedule and the fit loop
 src/generate.cpp            prefill, sample, and decode_step
+examples/train_tiny.cpp     acceptance train and generate
 tests/test_bpe.cpp          tokenizer tests
 tests/test_data.cpp         dataset tests
 tests/test_train.cpp        presets, trainer, and generator tests
@@ -58,6 +63,12 @@ The on-disk form is little-endian with magic `LPB1`. The byte layout is in [USAG
 | base | 12 | 768 | 12 | 2048 |
 
 `llm::adamw_groups` walks `parameters()` in order. Rank-2 tensors whose names do not refer to LayerNorm take the given weight decay. Biases, names containing `ln`, and every other rank-1 tensor take 0. Groups are contiguous runs of that choice, so concatenating them is still `parameters()` order. A NaN or negative `weight_decay` throws `weight_decay`.
+
+Untied parameter counts at vocab 16000 are tiny 11866624 (11.87M), small 37368832 (37.37M), and base 110335488 (110.34M). The GPU notes below are float32, one GPU, full attention, and no activation checkpointing.
+
+tiny fits in 12 GB. Suggested batches are `(8, 512)` and `(16, 256)`. small is tight in 12 GB at `(4, 512)`; 24 GB is comfortable. base is a 24 GB target, not a 12 GB target at `T=512`. Keep `T <= 1024` for base, and prefer `T <= 512` on a 12 GB GPU.
+
+`examples/train_tiny.cpp` trains `presets::tiny` at the byte-level BPE vocab, a few million parameters, so that acceptance run fits easily. Positions stay learned absolute, not RoPE.
 
 ## Trainer
 

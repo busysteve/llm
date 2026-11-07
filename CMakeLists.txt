@@ -24,5 +24,8 @@ target_include_directories(llm PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 add_executable(llm_tests tests/test_bpe.cpp tests/test_data.cpp tests/test_train.cpp)
 target_link_libraries(llm_tests PRIVATE llm)
 
+add_executable(train_tiny examples/train_tiny.cpp)
+target_link_libraries(train_tiny PRIVATE llm)
+
 enable_testing()
 add_test(NAME bpe COMMAND llm_tests)
