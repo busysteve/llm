@@ -18,9 +18,10 @@ cmake --build build -j --target llm_tests
 ./build/llm_tests
 cmake --build build -j --target train_tiny
 ./build/train_tiny
+cmake --build build -j --target train_books
 ```
 
-`train_tiny` is the acceptance example. It is not part of `llm_tests`.
+`train_tiny` is the acceptance example. It is not part of `llm_tests`. `train_books` trains from a list of text files, writes `tokenizer.bpe` and `model.bin`, then loads those files and generates. See [USAGE.md](USAGE.md).
 
 ## Layout
 
@@ -37,6 +38,7 @@ src/presets.cpp             preset configs and adamw_groups
 src/train.cpp               warmup/cosine schedule and the fit loop
 src/generate.cpp            prefill, sample, and decode_step
 examples/train_tiny.cpp     acceptance train and generate
+examples/train_books.cpp    train from a list of book files, save, and generate
 tests/test_bpe.cpp          tokenizer tests
 tests/test_data.cpp         dataset tests
 tests/test_train.cpp        presets, trainer, and generator tests

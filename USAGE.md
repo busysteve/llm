@@ -117,6 +117,27 @@ tiny fits in 12 GB. Suggested batches are `(8, 512)` and `(16, 256)`. small is t
 
 `examples/train_tiny.cpp` trains `presets::tiny` at the byte-level BPE vocab, a few million parameters, so that acceptance run fits easily. Positions stay learned absolute, not RoPE.
 
+## Train from a list of books
+
+`examples/train_books.cpp` is the file-list example. It is not part of `llm_tests`.
+
+```bash
+cmake --build build -j --target train_books
+./build/train_books --files books.txt --out run
+```
+
+`books.txt` is one path per line. Blank lines and lines whose first character is `#` are ignored. A relative path is resolved from the directory that contains the list. Each file is read in full, trained as its own BPE string, and encoded with eos appended so a book boundary is a token. Pairs do not cross from one file into the next. The raw text is released before the network is built.
+
+The run writes `run/tokenizer.bpe`, `run/tokens.bin`, `run/tokens.meta`, and `run/model.bin`. `model.bin` is a version-2 façade checkpoint. After training, the process drops the training context, loads the tokenizer and `model.bin` with `LoadMode::Inference`, and prints a continuation. The default prompt is the opening of the first book. Generation stops on eos.
+
+```bash
+./build/train_books --files books.txt --out run \
+  --preset tiny --vocab 4096 --seq-len 256 --batch 4 --steps 1000 \
+  --prompt "The morning after"
+```
+
+`--preset` is `tiny`, `small`, or `base`. `--seq-len` must be at most 1024. `--vocab` must be at least 259. Tokenizer training scans every byte once per merge, so a vocab of 4096 on several long books is much slower than the GPU steps. `--vocab 1024` is a faster first run. Defaults are `--preset tiny`, `--seq-len 256`, `--batch 4`, which fits a 12 GB GPU. `small` prefers 24 GB. `base` is a 24 GB model; keep the sequence at 512 or below on a smaller card. `--temperature 0` is greedy. `--help` prints the flags.
+
 `adamw_groups` throws `std::invalid_argument("weight_decay")` when `weight_decay` is NaN, infinite, or negative. Decay applies only to rank-2 parameters whose names do not contain `ln` and do not end in `.bias`. Every other parameter, including LayerNorm weight and bias, is decay 0. A new group starts only when that choice changes, so the groups stay in `parameters()` order. `Transformer::save` rejects any other order.
 
 ## Trainer

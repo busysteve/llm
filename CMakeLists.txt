@@ -27,5 +27,8 @@ target_link_libraries(llm_tests PRIVATE llm)
 add_executable(train_tiny examples/train_tiny.cpp)
 target_link_libraries(train_tiny PRIVATE llm)
 
+add_executable(train_books examples/train_books.cpp)
+target_link_libraries(train_books PRIVATE llm)
+
 enable_testing()
 add_test(NAME bpe COMMAND llm_tests)
