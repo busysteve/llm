@@ -170,6 +170,18 @@ cmake --build build -j --target finetune
 
 The tokenizer is not trained again. The checkpoint vocab and model shape stay as they are. `--out` must be a different directory from `--from`. The new directory gets its own `tokenizer.bpe`, token file, and `model.bin`. By default the run builds a fresh AdamW. `--resume` keeps the checkpoint moments and optimizer step. In both cases the learning-rate schedule starts at step 1 of this run. The default peak is `1e-4`, warmup is `0`, and the cosine floor is one tenth of `--lr`. After the last step the process loads `--out` with `LoadMode::Inference` and prints a continuation.
 
+## Convert a checkpoint to GGUF
+
+`examples/gguf.cpp` converts `model.bin` to a GGUF version 3 file and back. It does not link `llm` or CUDA. It is not part of `llm_tests`. The walkthrough is [examples/gguf.md](examples/gguf.md).
+
+```bash
+cmake --build build -j --target gguf
+./build/gguf export run/model.bin run/model.gguf
+./build/gguf import run/model.gguf run/model.bin
+```
+
+`export` writes architecture `nnllm` and float32 weights. `import` reads `nnllm` files whose tensors are float32 or float16 and writes a version-1 checkpoint with no optimizer. `tokenizer.bpe` stays a separate file. A GGUF with another architecture, or with quantized tensors, is rejected.
+
 `adamw_groups` throws `std::invalid_argument("weight_decay")` when `weight_decay` is NaN, infinite, or negative. Decay applies only to rank-2 parameters whose names do not contain `ln` and do not end in `.bias`. Every other parameter, including LayerNorm weight and bias, is decay 0. A new group starts only when that choice changes, so the groups stay in `parameters()` order. `Transformer::save` rejects any other order.
 
 ## Trainer

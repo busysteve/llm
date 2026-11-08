@@ -36,5 +36,7 @@ target_link_libraries(chat PRIVATE llm)
 add_executable(finetune examples/finetune.cpp)
 target_link_libraries(finetune PRIVATE llm)
 
+add_executable(gguf examples/gguf.cpp)
+
 enable_testing()
 add_test(NAME bpe COMMAND llm_tests)
