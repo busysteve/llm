@@ -180,7 +180,7 @@ cmake --build build -j --target gguf
 ./build/gguf import run/model.gguf run/model.bin
 ```
 
-`export` writes architecture `nnllm` and float32 weights. `import` reads `nnllm` files whose tensors are float32 or float16 and writes a version-1 checkpoint with no optimizer. `tokenizer.bpe` stays a separate file. A GGUF with another architecture, or with quantized tensors, is rejected.
+`export` writes architecture `nnllm` and float32 weights. `import` reads `nnllm` files whose tensors are float32 or float16 and writes a version-1 checkpoint with no optimizer. `tokenizer.bpe` stays a separate file. A GGUF with another architecture, or with quantized tensors, is rejected. The metadata keys, tensor names, and dimension order are in [examples/gguf.md](examples/gguf.md).
 
 `adamw_groups` throws `std::invalid_argument("weight_decay")` when `weight_decay` is NaN, infinite, or negative. Decay applies only to rank-2 parameters whose names do not contain `ln` and do not end in `.bias`. Every other parameter, including LayerNorm weight and bias, is decay 0. A new group starts only when that choice changes, so the groups stay in `parameters()` order. `Transformer::save` rejects any other order.
 

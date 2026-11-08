@@ -13,13 +13,49 @@ cmake --build build -j --target gguf
 
 `tokenizer.bpe` is not inside either file. Keep it next to the checkpoint you train or chat with.
 
-## What is in the GGUF
+## The nnllm architecture
 
-The file is little-endian GGUF version 3. `general.architecture` is `nnllm`. `general.alignment` is 32. `general.file_type` is 0, which means float32. The hyperparameters use the `nnllm.` prefix: vocab size, embedding length, block count, feed-forward length, context length, head count, dropout, bias, `tie_embeddings` (always false), activation (`swiglu` or `gelu`), and position encoding (`learned_absolute`).
+`nnllm` is the architecture name inside a standard GGUF version 3 file. It is not a second container. `general.architecture` is the string `nnllm`, and the hyperparameters use the `nnllm.` prefix.
 
-Tensor names match the checkpoint: `tok_emb.weight`, `pos_emb.weight`, `blocks.N.ln1.weight`, `blocks.N.attn.q.weight`, `blocks.N.fc1.weight`, `final_ln.weight`, `lm_head.weight`, and the bias tensors this model actually has. The bytes stay in this library's row-major order. The GGUF dimension list stores the contiguous dimension first, so a weight stored here as `(out, in)` is recorded as dimensions `(in, out)`.
+A checkpoint from this library is a pre-norm transformer. The norm is LayerNorm. Positions are a learned absolute embedding. Q, K, and V are separate matrices. That is a different block from the `llama` and `gpt2` architectures, so those names would describe the wrong math. GGUF carries the bytes. `nnllm` tells a reader which model they belong to. `llama.cpp` does not implement `nnllm`, so it will not run these files. `gguf import` is the reader that turns one back into `model.bin`.
 
-`import` also accepts `nnllm` tensors stored as float16 and expands them to float32.
+The file is little-endian. `general.alignment` is 32. `export` writes float32, so `general.file_type` is 0. `import` also accepts `nnllm` tensors stored as float16 (`general.file_type` 1) and expands them to float32.
+
+| Key | Meaning |
+|---|---|
+| `nnllm.vocab_size` | vocabulary size |
+| `nnllm.embedding_length` | `d_model` |
+| `nnllm.block_count` | layer count |
+| `nnllm.feed_forward_length` | `d_ff`, the width after the SwiGLU gate |
+| `nnllm.context_length` | `max_seq_len` |
+| `nnllm.attention.head_count` | head count |
+| `nnllm.dropout` | dropout stored in the checkpoint |
+| `nnllm.bias` | whether the linear layers have a bias |
+| `nnllm.tie_embeddings` | always false |
+| `nnllm.activation` | `swiglu` or `gelu` |
+| `nnllm.positional` | `learned_absolute` |
+
+Integer counts are `uint32`. `nnllm.dropout` is `float32`. The two flags are GGUF bools. Activation and position encoding are strings.
+
+## Tensors
+
+Names match the checkpoint, in parameter order:
+
+| Tensor | Shape |
+|---|---|
+| `tok_emb.weight` | `(vocab, d_model)` |
+| `pos_emb.weight` | `(max_seq_len, d_model)` |
+| `blocks.N.ln1.weight`, `blocks.N.ln1.bias` | `(d_model)` |
+| `blocks.N.attn.q.weight`, and the same for `k`, `v`, and `out` | `(d_model, d_model)` |
+| `blocks.N.ln2.weight`, `blocks.N.ln2.bias` | `(d_model)` |
+| `blocks.N.fc1.weight` | `(2 * d_ff, d_model)` for SwiGLU, `(d_ff, d_model)` for GELU |
+| `blocks.N.fc2.weight` | `(d_model, d_ff)` |
+| `final_ln.weight`, `final_ln.bias` | `(d_model)` |
+| `lm_head.weight` | `(vocab, d_model)` |
+
+`N` is the block index starting at 0. LayerNorm always has a weight and a bias. When `nnllm.bias` is true, each linear name also has a `.bias` whose length is the output size. With SwiGLU, `fc1.weight` holds the gate and the up projection in that one matrix. The float values stay in this library's row-major order. The GGUF dimension list stores the contiguous dimension first, so a weight stored here as `(out, in)` is recorded as dimensions `(in, out)`.
+
+The GGUF does not contain `tokenizer.bpe` or the AdamW moments. `import` writes a version-1 checkpoint. `LoadMode::Inference` loads it, and a later `finetune` starts a fresh AdamW. `finetune --resume` needs the original `model.bin`.
 
 ## What this tool rejects
 
