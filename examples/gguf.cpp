@@ -1,8 +1,10 @@
+#include <array>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -64,7 +66,7 @@ void usage() {
   std::fputs(
       "usage: gguf export MODEL.BIN MODEL.GGUF\n"
       "       gguf import MODEL.GGUF MODEL.BIN\n"
-      "       gguf llama MODEL MODEL.GGUF\n"
+      "       gguf llama MODEL MODEL.GGUF [TOKENIZER.BPE]\n"
       "       gguf self-test\n"
       "\n"
       "export writes a GGUF version 3 file, architecture nnllm, float32.\n"
@@ -78,8 +80,9 @@ void usage() {
       "A learned-position checkpoint omits the position table and LayerNorm\n"
       "biases. llama.cpp then applies RoPE and RMSNorm, so those tokens differ.\n"
       "A RoPE checkpoint already uses that block, and the file keeps every\n"
-      "tensor. tokenizer.bpe stays a separate file. GELU and linear-bias models\n"
-      "are rejected.\n"
+      "tensor. A tokenizer.bpe next to the checkpoint, or a path passed after\n"
+      "the output, is written into the file so llama-cli can encode a prompt.\n"
+      "GELU and linear-bias models are rejected.\n"
       "\n"
       "import rejects a GGUF whose architecture is not nnllm, and rejects\n"
       "quantized tensors.\n",
@@ -431,6 +434,22 @@ struct Kv {
     gguf_kv_bool(body, key, value);
     ++count;
   }
+  void strs(const char* key, const std::vector<std::string>& values) {
+    gguf_string(body, key);
+    body.u32(kArray);
+    body.u32(kString);
+    body.u64(values.size());
+    for (const std::string& value : values) gguf_string(body, value);
+    ++count;
+  }
+  void i32s(const char* key, const std::vector<int32_t>& values) {
+    gguf_string(body, key);
+    body.u32(kArray);
+    body.u32(kI32);
+    body.u64(values.size());
+    for (int32_t value : values) body.i32(value);
+    ++count;
+  }
 };
 
 void append_gguf_tensors(Bytes& header, const std::vector<Tensor>& tensors, bool half) {
@@ -570,10 +589,124 @@ std::vector<Tensor> llama_tensors(const Model& model) {
   return tensors;
 }
 
-void write_llama_gguf(const std::filesystem::path& path, const Model& model) {
+std::string utf8_cpt(uint32_t cpt) {
+  std::string out;
+  if (cpt <= 0x7fu) {
+    out.push_back(static_cast<char>(cpt));
+  } else if (cpt <= 0x7ffu) {
+    out.push_back(static_cast<char>(0xc0u | (cpt >> 6)));
+    out.push_back(static_cast<char>(0x80u | (cpt & 0x3fu)));
+  } else {
+    throw std::runtime_error("tokenizer");
+  }
+  return out;
+}
+
+// llama.cpp GPT-2 bytes_to_unicode. Printable bytes stay themselves. The rest
+// become code points at 256 and up, so every byte is a valid Unicode scalar.
+std::array<std::string, 256> gpt2_byte_tokens() {
+  std::array<std::string, 256> map;
+  std::array<bool, 256> used{};
+  auto put = [&](int byte) {
+    map[static_cast<size_t>(byte)] = utf8_cpt(static_cast<uint32_t>(byte));
+    used[static_cast<size_t>(byte)] = true;
+  };
+  for (int byte = 0x21; byte <= 0x7e; ++byte) put(byte);
+  for (int byte = 0xa1; byte <= 0xac; ++byte) put(byte);
+  for (int byte = 0xae; byte <= 0xff; ++byte) put(byte);
+  uint32_t next = 0;
+  for (int byte = 0; byte < 256; ++byte) {
+    if (!used[static_cast<size_t>(byte)]) {
+      map[static_cast<size_t>(byte)] = utf8_cpt(256u + next);
+      ++next;
+    }
+  }
+  return map;
+}
+
+struct Tokenizer {
+  int vocab = 0;
+  int pad = 0;
+  int bos = 0;
+  int eos = 0;
+  std::vector<std::string> tokens;
+  std::vector<std::string> merges;
+  std::vector<int32_t> types;
+};
+
+Tokenizer load_bpe(const std::filesystem::path& path) {
+  Reader reader(read_file(path));
+  if (reader.size() < 24 || reader.u32() != 0x3142504cu) throw std::runtime_error("tokenizer");
+  const uint32_t vocab = reader.u32();
+  const uint32_t n_merges = reader.u32();
+  const uint32_t pad = reader.u32();
+  const uint32_t bos = reader.u32();
+  const uint32_t eos = reader.u32();
+  if (vocab < 259u || n_merges != vocab - 259u) throw std::runtime_error("tokenizer");
+  if (pad != vocab - 3u || bos != vocab - 2u || eos != vocab - 1u) throw std::runtime_error("tokenizer");
+  if (reader.left() != static_cast<size_t>(n_merges) * 8u) throw std::runtime_error("tokenizer");
+
+  std::vector<std::pair<uint32_t, uint32_t>> pairs;
+  pairs.reserve(n_merges);
+  for (uint32_t i = 0; i < n_merges; ++i) {
+    const uint32_t left = reader.u32();
+    const uint32_t right = reader.u32();
+    const uint32_t id = 256u + i;
+    if (left >= id || right >= id) throw std::runtime_error("tokenizer");
+    pairs.emplace_back(left, right);
+  }
+
+  const std::array<std::string, 256> byte_tok = gpt2_byte_tokens();
+  std::vector<std::string> raw(256);
+  for (int i = 0; i < 256; ++i) raw[static_cast<size_t>(i)] = std::string(1, static_cast<char>(i));
+  for (const auto& pair : pairs) {
+    raw.push_back(raw[pair.first] + raw[pair.second]);
+  }
+
+  Tokenizer tok;
+  tok.vocab = static_cast<int>(vocab);
+  tok.pad = static_cast<int>(pad);
+  tok.bos = static_cast<int>(bos);
+  tok.eos = static_cast<int>(eos);
+  tok.tokens.reserve(vocab);
+  std::set<std::string> seen;
+  for (const std::string& piece : raw) {
+    std::string encoded;
+    encoded.reserve(piece.size() * 2);
+    for (unsigned char byte : piece) encoded += byte_tok[byte];
+    if (encoded.find(' ') != std::string::npos || !seen.insert(encoded).second) {
+      throw std::runtime_error("tokenizer");
+    }
+    tok.tokens.push_back(std::move(encoded));
+  }
+  auto special = [&](std::initializer_list<const char*> names) {
+    for (const char* name : names) {
+      if (seen.insert(name).second) return std::string(name);
+    }
+    throw std::runtime_error("tokenizer");
+  };
+  // <|endoftext|> is on llama.cpp's end-of-generation list, so a prompt can stop.
+  tok.tokens.push_back(special({"<pad>"}));
+  tok.tokens.push_back(special({"<bos>"}));
+  tok.tokens.push_back(special({"<|endoftext|>", "<eos>", "</s>"}));
+  if (tok.tokens.size() != vocab) throw std::runtime_error("tokenizer");
+
+  tok.merges.reserve(pairs.size());
+  for (const auto& pair : pairs) {
+    tok.merges.push_back(tok.tokens[pair.first] + " " + tok.tokens[pair.second]);
+  }
+  tok.types.assign(vocab, 1);
+  tok.types[pad] = 3;
+  tok.types[bos] = 3;
+  tok.types[eos] = 3;
+  return tok;
+}
+
+void write_llama_gguf(const std::filesystem::path& path, const Model& model, const Tokenizer* tokenizer = nullptr) {
   require_config(model.config);
   if (!model.config.swiglu) throw std::runtime_error("activation");
   if (model.config.bias) throw std::runtime_error("bias");
+  if (tokenizer != nullptr && tokenizer->vocab != model.config.vocab) throw std::runtime_error("vocab");
   const std::vector<Tensor> tensors = llama_tensors(model);
   const Config& config = model.config;
   Kv kv;
@@ -587,7 +720,21 @@ void write_llama_gguf(const std::filesystem::path& path, const Model& model) {
                      : "Converted from an nnllm checkpoint trained with learned absolute positions and LayerNorm. "
                        "llama.cpp applies RoPE and RMSNorm, so the tokens differ. "
                        "LayerNorm biases and the position table are omitted.");
-  kv.str("tokenizer.ggml.model", "none");
+  if (tokenizer == nullptr) {
+    kv.str("tokenizer.ggml.model", "none");
+  } else {
+    kv.str("tokenizer.ggml.model", "gpt2");
+    kv.str("tokenizer.ggml.pre", "superbpe");
+    kv.boolean("tokenizer.ggml.add_bos_token", false);
+    kv.boolean("tokenizer.ggml.add_eos_token", false);
+    kv.boolean("tokenizer.ggml.add_space_prefix", false);
+    kv.u32("tokenizer.ggml.bos_token_id", static_cast<uint32_t>(tokenizer->bos));
+    kv.u32("tokenizer.ggml.eos_token_id", static_cast<uint32_t>(tokenizer->eos));
+    kv.u32("tokenizer.ggml.padding_token_id", static_cast<uint32_t>(tokenizer->pad));
+    kv.strs("tokenizer.ggml.tokens", tokenizer->tokens);
+    kv.strs("tokenizer.ggml.merges", tokenizer->merges);
+    kv.i32s("tokenizer.ggml.token_type", tokenizer->types);
+  }
   kv.u32("llama.vocab_size", static_cast<uint32_t>(config.vocab));
   kv.u32("llama.context_length", static_cast<uint32_t>(config.max_seq));
   kv.u32("llama.embedding_length", static_cast<uint32_t>(config.d_model));
@@ -911,6 +1058,9 @@ struct GgufView {
   std::map<std::string, std::string> strings;
   std::map<std::string, uint32_t> u32s;
   std::map<std::string, float> f32s;
+  std::map<std::string, bool> bools;
+  std::map<std::string, std::vector<std::string>> strs;
+  std::map<std::string, std::vector<int32_t>> i32s;
   std::map<std::string, ViewTensor> tensors;
 };
 
@@ -927,7 +1077,25 @@ GgufView read_gguf_view(const std::filesystem::path& path) {
     if (type == kString) view.strings[key] = reader.str_u64();
     else if (type == kU32) view.u32s[key] = reader.u32();
     else if (type == kF32) view.f32s[key] = reader.f32();
-    else skip_meta(reader, type, 0);
+    else if (type == kBool) view.bools[key] = reader.u8() != 0;
+    else if (type == kArray) {
+      const uint32_t elem = reader.u32();
+      const uint64_t n = reader.u64();
+      if (n > 1000000u) throw std::runtime_error("metadata");
+      if (elem == kString) {
+        std::vector<std::string> values;
+        values.reserve(static_cast<size_t>(n));
+        for (uint64_t j = 0; j < n; ++j) values.push_back(reader.str_u64());
+        view.strs.emplace(key, std::move(values));
+      } else if (elem == kI32) {
+        std::vector<int32_t> values;
+        values.reserve(static_cast<size_t>(n));
+        for (uint64_t j = 0; j < n; ++j) values.push_back(reader.i32());
+        view.i32s.emplace(key, std::move(values));
+      } else {
+        for (uint64_t j = 0; j < n; ++j) skip_meta(reader, elem, 1);
+      }
+    } else skip_meta(reader, type, 0);
   }
   struct Info {
     std::string name;
@@ -1256,6 +1424,104 @@ int self_test() {
     rejected = std::string(error.what()) == "architecture";
   }
   if (!rejected) throw std::runtime_error("architecture");
+
+  Config tok_config;
+  tok_config.vocab = 260;
+  tok_config.d_model = 8;
+  tok_config.heads = 2;
+  tok_config.layers = 1;
+  tok_config.d_ff = 8;
+  tok_config.max_seq = 16;
+  tok_config.dropout = 0.f;
+  tok_config.bias = false;
+  tok_config.swiglu = true;
+  tok_config.rope = true;
+  Model tok_model;
+  tok_model.config = tok_config;
+  tok_model.tensors = expected_tensors(tok_config);
+  uint32_t tok_n = 1;
+  for (Tensor& tensor : tok_model.tensors) {
+    const int64_t numel = product(tensor.shape);
+    tensor.data.assign(static_cast<size_t>(numel), 0.f);
+    if (!tensor.data.empty()) {
+      const uint32_t bits = 0x3f800000u + tok_n;
+      std::memcpy(&tensor.data[0], &bits, sizeof(bits));
+    }
+    ++tok_n;
+  }
+  Bytes bpe;
+  bpe.u32(0x3142504cu);
+  bpe.u32(260);
+  bpe.u32(1);
+  bpe.u32(257);
+  bpe.u32(258);
+  bpe.u32(259);
+  bpe.u32(97);
+  bpe.u32(98);
+  const auto bpe_path = dir / "tokenizer.bpe";
+  write_file(bpe_path, bpe.bytes());
+  const Tokenizer tok = load_bpe(bpe_path);
+  const auto tok_gguf = dir / "tok-llama.gguf";
+  write_llama_gguf(tok_gguf, tok_model, &tok);
+  const GgufView tok_view = read_gguf_view(tok_gguf);
+  auto need_str = [&](const char* key, const std::string& want) {
+    const auto found = tok_view.strings.find(key);
+    if (found == tok_view.strings.end() || found->second != want) {
+      throw std::runtime_error(std::string("self-test tokenizer ") + key);
+    }
+  };
+  auto need_bool = [&](const char* key, bool want) {
+    const auto found = tok_view.bools.find(key);
+    if (found == tok_view.bools.end() || found->second != want) {
+      throw std::runtime_error(std::string("self-test tokenizer ") + key);
+    }
+  };
+  auto need_id = [&](const char* key, uint32_t want) {
+    const auto found = tok_view.u32s.find(key);
+    if (found == tok_view.u32s.end() || found->second != want) {
+      throw std::runtime_error(std::string("self-test tokenizer ") + key);
+    }
+  };
+  need_str("tokenizer.ggml.model", "gpt2");
+  need_str("tokenizer.ggml.pre", "superbpe");
+  need_bool("tokenizer.ggml.add_bos_token", false);
+  need_bool("tokenizer.ggml.add_eos_token", false);
+  need_bool("tokenizer.ggml.add_space_prefix", false);
+  need_id("tokenizer.ggml.padding_token_id", 257);
+  need_id("tokenizer.ggml.bos_token_id", 258);
+  need_id("tokenizer.ggml.eos_token_id", 259);
+  const auto tokens = tok_view.strs.find("tokenizer.ggml.tokens");
+  const auto merges = tok_view.strs.find("tokenizer.ggml.merges");
+  const auto types = tok_view.i32s.find("tokenizer.ggml.token_type");
+  if (tokens == tok_view.strs.end() || tokens->second.size() != 260 || tokens->second[97] != "a" ||
+      tokens->second[256] != "ab" || tokens->second[257] != "<pad>" || tokens->second[258] != "<bos>" ||
+      tokens->second[259] != "<|endoftext|>") {
+    throw std::runtime_error("self-test tokenizer tokens");
+  }
+  if (merges == tok_view.strs.end() || merges->second.size() != 1 || merges->second[0] != "a b") {
+    throw std::runtime_error("self-test tokenizer merges");
+  }
+  if (types == tok_view.i32s.end() || types->second.size() != 260 || types->second[0] != 1 ||
+      types->second[256] != 1 || types->second[257] != 3 || types->second[258] != 3 || types->second[259] != 3) {
+    throw std::runtime_error("self-test tokenizer types");
+  }
+  Model mismatch = tok_model;
+  mismatch.config.vocab = 261;
+  bool vocab_rejected = false;
+  try {
+    write_llama_gguf(dir / "vocab.gguf", mismatch, &tok);
+  } catch (const std::runtime_error& error) {
+    vocab_rejected = std::string(error.what()) == "vocab";
+  }
+  if (!vocab_rejected) throw std::runtime_error("self-test tokenizer vocab");
+  bool bad_bpe = false;
+  try {
+    load_bpe(dir / "missing.bpe");
+  } catch (const std::runtime_error& error) {
+    bad_bpe = std::string(error.what()) == "read";
+  }
+  if (!bad_bpe) throw std::runtime_error("self-test tokenizer read");
+
   std::filesystem::remove_all(dir);
   std::printf("self-test ok\n");
   return 0;
@@ -1270,11 +1536,15 @@ int main(int argc, char** argv) {
       return 0;
     }
     if (argc == 2 && std::string(argv[1]) == "self-test") return self_test();
-    if (argc != 4) {
+    if (argc < 2) {
       usage();
       throw std::runtime_error("usage");
     }
     const std::string command = argv[1];
+    if (command == "llama" ? (argc != 4 && argc != 5) : argc != 4) {
+      usage();
+      throw std::runtime_error("usage");
+    }
     if (command == "export") {
       write_gguf(argv[3], read_checkpoint(argv[2]));
       return 0;
@@ -1285,7 +1555,21 @@ int main(int argc, char** argv) {
     }
     if (command == "llama") {
       const Model model = read_model(argv[2]);
-      write_llama_gguf(argv[3], model);
+      std::filesystem::path tokenizer_path;
+      if (argc == 5) {
+        tokenizer_path = argv[4];
+      } else {
+        const auto sibling = std::filesystem::path(argv[2]).parent_path() / "tokenizer.bpe";
+        if (std::filesystem::is_regular_file(sibling)) tokenizer_path = sibling;
+      }
+      if (tokenizer_path.empty()) {
+        write_llama_gguf(argv[3], model);
+        std::fputs("gguf: no tokenizer.bpe beside the checkpoint. llama-cli stops on a text prompt.\n", stderr);
+      } else {
+        const Tokenizer tok = load_bpe(tokenizer_path);
+        write_llama_gguf(argv[3], model, &tok);
+        std::fputs("gguf: embedded tokenizer.bpe.\n", stderr);
+      }
       if (!model.config.rope) {
         std::fputs(
             "gguf: llama.cpp applies RoPE and RMSNorm. This checkpoint was trained with learned positions and "

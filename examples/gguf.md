@@ -8,11 +8,12 @@ cmake --build build -j --target gguf
 ./build/gguf export run/model.bin run/model.gguf
 ./build/gguf import run/model.gguf run-again/model.bin
 ./build/gguf llama run/model.bin run/model-llama.gguf
+./build/gguf llama run/model.bin run/model-llama.gguf run/tokenizer.bpe
 ```
 
 `export` reads a family-6 checkpoint written by `train_books`, `finetune`, or `Transformer::save`. It keeps the float32 weights and writes architecture `nnllm`. `import` reads that file and writes a version-1 checkpoint with the weights and no optimizer block. `LoadMode::Inference` accepts that file. A later `finetune` run builds a fresh AdamW from it. `finetune --resume` needs the original checkpoint, because AdamW moments are not in the GGUF.
 
-`tokenizer.bpe` is not inside either file. Keep it next to the checkpoint you train or chat with.
+An `export` or `import` file does not contain `tokenizer.bpe`. Keep that file next to the checkpoint you train or chat with. `gguf llama` copies it into the llama.cpp file when it sits beside the checkpoint, or when you pass its path.
 
 ## The nnllm architecture
 
@@ -60,7 +61,7 @@ The GGUF does not contain `tokenizer.bpe` or the AdamW moments. `import` writes 
 
 ## A llama.cpp file
 
-`gguf llama MODEL MODEL.GGUF` reads a family-6 checkpoint or an `nnllm` GGUF and writes architecture `llama`, float32. `MODEL` is `model.bin` or the file from `gguf export`.
+`gguf llama MODEL MODEL.GGUF [TOKENIZER.BPE]` reads a family-6 checkpoint or an `nnllm` GGUF and writes architecture `llama`, float32. `MODEL` is `model.bin` or the file from `gguf export`. With no third path, a `tokenizer.bpe` in the same directory as `MODEL` is used.
 
 | nnllm tensor | llama.cpp tensor |
 |---|---|
@@ -84,7 +85,16 @@ A learned-absolute checkpoint leaves out `pos_emb.weight` and every LayerNorm bi
 | `general.alignment` | 32 |
 | `general.file_type` | 0, float32 |
 | `general.description` | learned positions say the tokens differ; a RoPE checkpoint says llama.cpp runs the same block |
-| `tokenizer.ggml.model` | `none` |
+| `tokenizer.ggml.model` | `gpt2` when `tokenizer.bpe` is embedded, otherwise `none` |
+| `tokenizer.ggml.pre` | `superbpe` when a tokenizer is embedded |
+| `tokenizer.ggml.add_bos_token` | false |
+| `tokenizer.ggml.add_eos_token` | false |
+| `tokenizer.ggml.tokens` | each piece in GPT-2 byte form, then `<pad>`, `<bos>`, and `<|endoftext|>` |
+| `tokenizer.ggml.merges` | `"left right"` in learn order |
+| `tokenizer.ggml.token_type` | 1 for pieces, 3 for the three specials |
+| `tokenizer.ggml.bos_token_id` | vocab size minus 2 |
+| `tokenizer.ggml.eos_token_id` | vocab size minus 1 |
+| `tokenizer.ggml.padding_token_id` | vocab size minus 3 |
 | `llama.vocab_size` | vocabulary size |
 | `llama.context_length` | `max_seq_len` |
 | `llama.embedding_length` | `d_model` |
@@ -98,7 +108,11 @@ A learned-absolute checkpoint leaves out `pos_emb.weight` and every LayerNorm bi
 
 Counts are `uint32`. The epsilon and the RoPE base are `float32`. The epsilon is the LayerNorm epsilon from this library. llama.cpp still uses it inside RMSNorm. Weight bytes stay in this library's row-major order. The GGUF dimension list stores the contiguous dimension first, so `token_embd.weight` is recorded as `(d_model, vocab)`, `ffn_gate.weight` and `ffn_up.weight` as `(d_model, d_ff)`, and `ffn_down.weight` as `(d_ff, d_model)`.
 
-llama.cpp loads this file and runs it as a LLaMA block: adjacent-pair RoPE on Q and K, base 10000, and RMSNorm with epsilon `1e-5`. A checkpoint trained with `llama-tiny`, `llama-small`, or `llama-base` uses that same block, so the graph matches. A checkpoint trained with learned positions and LayerNorm does not. The tokens from that file differ. `tokenizer.bpe` is still the tokenizer for those token ids. The GGUF does not contain it, because llama.cpp's GPT-2 and SentencePiece tokenizers are a different byte mapping. A text prompt in `llama-cli` needs a tokenizer. With `tokenizer.ggml.model` set to `none`, current llama.cpp stops when it tries to encode that prompt. The weights still load, and a caller that already has token ids can run the graph.
+llama.cpp loads this file and runs it as a LLaMA block: adjacent-pair RoPE on Q and K, base 10000, and RMSNorm with epsilon `1e-5`. A checkpoint trained with `llama-tiny`, `llama-small`, or `llama-base` uses that same block, so the graph matches. A checkpoint trained with learned positions and LayerNorm does not. The tokens from that file differ.
+
+When a `tokenizer.bpe` is embedded, llama.cpp can encode a text prompt. The vocab is this library's byte-level BPE: ids 0 through 255 are raw bytes, later ids are merges, and the last three ids are pad, bos, and eos. Pieces are stored with llama.cpp's GPT-2 byte map so the BPE ranks line up. `add_bos_token` and `add_eos_token` stay false, matching `train_books`, which appends eos only while it is building the training spans. The pre-tokenizer is `superbpe`. It keeps ordinary text, including newlines, as one piece, and it isolates each run of digits. A merge that crosses a digit boundary therefore gets a different id than `BpeTokenizer::encode`, and the ids match again after that boundary. The eos piece is `<|endoftext|>`, which llama.cpp treats as an end-of-generation token.
+
+With no `tokenizer.bpe` beside the checkpoint and no path on the command line, `tokenizer.ggml.model` stays `none`. `llama-cli` then stops when it tries to encode a prompt. The weights still load, and a caller that already has token ids can run the graph. On that path the program prints `gguf: no tokenizer.bpe beside the checkpoint. llama-cli stops on a text prompt.` A file that embeds the tokenizer prints `gguf: embedded tokenizer.bpe.`
 
 `gguf import` still accepts only architecture `nnllm`. A GELU checkpoint stops with `gguf: activation`. A checkpoint whose linear layers have a bias stops with `gguf: bias`, so those trained biases are kept out of a file that has no place for them.
 
@@ -114,7 +128,7 @@ gguf: llama.cpp applies RoPE and RMSNorm. This checkpoint was trained with learn
 
 ## Check the converter
 
-`gguf self-test` builds a small checkpoint, writes GGUF, reads it back, and checks a float16 round trip. It also writes the llama.cpp file from both the checkpoint and the `nnllm` GGUF, checks the `fc1` split, and checks that GELU and linear bias are rejected. It does not need a GPU.
+`gguf self-test` builds a small checkpoint, writes GGUF, reads it back, and checks a float16 round trip. It also writes the llama.cpp file from both the checkpoint and the `nnllm` GGUF, checks the `fc1` split, and checks that GELU and linear bias are rejected. It embeds a 260-id `tokenizer.bpe` with one merge and checks the GPT-2 token list. It does not need a GPU.
 
 ```bash
 ./build/gguf self-test
@@ -136,5 +150,7 @@ Errors print `gguf: <reason>` on stderr and the process exits 1.
 | `tensor <name>` | a weight is missing, duplicated, or the wrong shape |
 | `tie_embeddings` | the config asks for a tied embedding, which this runtime rejects |
 | `positional` | positions are not `learned_absolute` or `rope` |
+| `tokenizer` | `tokenizer.bpe` is not an LPB1 file, a piece is duplicated, or a special name is already a piece |
+| `vocab` | the `tokenizer.bpe` vocab size does not match the checkpoint |
 | `use_rope` | a RoPE file has an odd head dimension |
 | `read` or `write` | the path could not be opened |
