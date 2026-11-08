@@ -159,6 +159,17 @@ Presets use `max_seq_len` 1024. The encoded prompt plus `--max-new-tokens` has t
 
 Defaults are `--max-new-tokens 128`, `--temperature 0.8`, `--top-k 40`, `--top-p 0.9`, and `--seed 1`. `--temperature 0` is greedy. `--help` prints the flags.
 
+## Fine-tune an existing checkpoint
+
+`examples/finetune.cpp` loads `tokenizer.bpe` and `model.bin` from a `train_books` or `finetune` directory, encodes a new file list with that tokenizer, and keeps training. It is not part of `llm_tests`. The walkthrough is [examples/finetune.md](examples/finetune.md).
+
+```bash
+cmake --build build -j --target finetune
+./build/finetune --from run --files more.txt --out run-ft --steps 200 --lr 1e-4
+```
+
+The tokenizer is not trained again. The checkpoint vocab and model shape stay as they are. `--out` must be a different directory from `--from`. The new directory gets its own `tokenizer.bpe`, token file, and `model.bin`. By default the run builds a fresh AdamW. `--resume` keeps the checkpoint moments and optimizer step. In both cases the learning-rate schedule starts at step 1 of this run. The default peak is `1e-4`, warmup is `0`, and the cosine floor is one tenth of `--lr`. After the last step the process loads `--out` with `LoadMode::Inference` and prints a continuation.
+
 `adamw_groups` throws `std::invalid_argument("weight_decay")` when `weight_decay` is NaN, infinite, or negative. Decay applies only to rank-2 parameters whose names do not contain `ln` and do not end in `.bias`. Every other parameter, including LayerNorm weight and bias, is decay 0. A new group starts only when that choice changes, so the groups stay in `parameters()` order. `Transformer::save` rejects any other order.
 
 ## Trainer

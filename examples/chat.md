@@ -114,4 +114,4 @@ Errors print `chat: <reason>` on stderr. In an interactive session the process s
 | `max_seq_len` | the line plus `--max-new-tokens` is longer than the model allows |
 | `max_new_tokens`, `temperature`, `top_k`, `top_p` | that flag is out of range |
 
-Training flags stay on `train_books`. See [train_books](train_books.md) and [USAGE.md](../USAGE.md).
+Training flags stay on `train_books`. See [train_books](train_books.md) and [USAGE.md](../USAGE.md). To keep training a dialogue checkpoint on more exchanges, see [finetune](finetune.md).

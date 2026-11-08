@@ -102,4 +102,4 @@ Errors print `train_books: <reason>` on stderr and the process exits 1. Common r
 | `preset` | the name is not `tiny`, `small`, or `base` |
 | a flag name | the flag is unknown, or its value is missing or not a number |
 
-Library details are in [USAGE.md](../USAGE.md). The one-paragraph acceptance run is [train_tiny](train_tiny.md).
+Library details are in [USAGE.md](../USAGE.md). The one-paragraph acceptance run is [train_tiny](train_tiny.md). To keep training that checkpoint on more text, see [finetune](finetune.md).

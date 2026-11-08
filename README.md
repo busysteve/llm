@@ -20,9 +20,10 @@ cmake --build build -j --target train_tiny
 ./build/train_tiny
 cmake --build build -j --target train_books
 cmake --build build -j --target chat
+cmake --build build -j --target finetune
 ```
 
-`train_tiny` is the acceptance example. It is not part of `llm_tests`. `train_books` trains from a list of text files, writes `tokenizer.bpe` and `model.bin`, then loads those files and generates. `chat` loads that directory and continues a `User:` / `Assistant:` transcript. Walkthroughs: [train_tiny](examples/train_tiny.md), [train_books](examples/train_books.md), [chat](examples/chat.md). Library details are in [USAGE.md](USAGE.md).
+`train_tiny` is the acceptance example. It is not part of `llm_tests`. `train_books` trains from a list of text files, writes `tokenizer.bpe` and `model.bin`, then loads those files and generates. `chat` loads that directory and continues a `User:` / `Assistant:` transcript. `finetune` keeps training one of those checkpoints on a new file list. Walkthroughs: [train_tiny](examples/train_tiny.md), [train_books](examples/train_books.md), [chat](examples/chat.md), [finetune](examples/finetune.md). Library details are in [USAGE.md](USAGE.md).
 
 ## Layout
 
@@ -44,6 +45,8 @@ examples/train_books.cpp    train from a list of book files, save, and generate
 examples/train_books.md     how to train from a file list
 examples/chat.cpp           continue a User/Assistant transcript
 examples/chat.md            how to converse with a trained model
+examples/finetune.cpp       fine-tune an existing checkpoint on new text
+examples/finetune.md        how to fine-tune an existing model
 tests/test_bpe.cpp          tokenizer tests
 tests/test_data.cpp         dataset tests
 tests/test_train.cpp        presets, trainer, and generator tests
