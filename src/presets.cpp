@@ -43,6 +43,24 @@ nn::TransformerConfig small(int vocab_size) { return make_config(vocab_size, 6, 
 
 nn::TransformerConfig base(int vocab_size) { return make_config(vocab_size, 12, 768, 12, 2048); }
 
+nn::TransformerConfig llama_tiny(int vocab_size) {
+  nn::TransformerConfig config = tiny(vocab_size);
+  config.positional = nn::PositionalEncoding::Rope;
+  return config;
+}
+
+nn::TransformerConfig llama_small(int vocab_size) {
+  nn::TransformerConfig config = small(vocab_size);
+  config.positional = nn::PositionalEncoding::Rope;
+  return config;
+}
+
+nn::TransformerConfig llama_base(int vocab_size) {
+  nn::TransformerConfig config = base(vocab_size);
+  config.positional = nn::PositionalEncoding::Rope;
+  return config;
+}
+
 }  // namespace presets
 
 std::vector<nn::AdamWGroup> adamw_groups(const nn::Transformer& model, float weight_decay) {

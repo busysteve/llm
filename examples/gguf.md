@@ -18,7 +18,7 @@ cmake --build build -j --target gguf
 
 `nnllm` is the architecture name inside a standard GGUF version 3 file. It is not a second container. `general.architecture` is the string `nnllm`, and the hyperparameters use the `nnllm.` prefix.
 
-A checkpoint from this library is a pre-norm transformer. The norm is LayerNorm. Positions are a learned absolute embedding. Q, K, and V are separate matrices. That is a different block from the `llama` and `gpt2` architectures, so those names would describe the wrong math. GGUF carries the bytes. `nnllm` tells a reader which model they belong to. `llama.cpp` does not implement `nnllm`, so it will not run an `export` file. `gguf import` is the reader that turns one back into `model.bin`. The [`llama` command](#a-llamacpp-file) writes a second file that llama.cpp can load.
+A checkpoint from this library is a pre-norm transformer. Q, K, and V are separate matrices. Learned absolute positions use LayerNorm and a position table. RoPE uses RMSNorm and rotates Q and K, with no position table and no norm bias. GGUF carries the bytes. `nnllm` tells a reader which of those two blocks they belong to. `llama.cpp` does not implement `nnllm`, so it will not run an `export` file. `gguf import` is the reader that turns one back into `model.bin`. The [`llama` command](#a-llamacpp-file) writes a second file that llama.cpp can load.
 
 The file is little-endian. `general.alignment` is 32. `export` writes float32, so `general.file_type` is 0. `import` also accepts `nnllm` tensors stored as float16 (`general.file_type` 1) and expands them to float32.
 
@@ -34,7 +34,7 @@ The file is little-endian. `general.alignment` is 32. `export` writes float32, s
 | `nnllm.bias` | whether the linear layers have a bias |
 | `nnllm.tie_embeddings` | always false |
 | `nnllm.activation` | `swiglu` or `gelu` |
-| `nnllm.positional` | `learned_absolute` |
+| `nnllm.positional` | `learned_absolute` or `rope` |
 
 Integer counts are `uint32`. `nnllm.dropout` is `float32`. The two flags are GGUF bools. Activation and position encoding are strings.
 
@@ -54,7 +54,7 @@ Names match the checkpoint, in parameter order:
 | `final_ln.weight`, `final_ln.bias` | `(d_model)` |
 | `lm_head.weight` | `(vocab, d_model)` |
 
-`N` is the block index starting at 0. LayerNorm always has a weight and a bias. When `nnllm.bias` is true, each linear name also has a `.bias` whose length is the output size. With SwiGLU, `fc1.weight` holds the gate and the up projection in that one matrix. The float values stay in this library's row-major order. The GGUF dimension list stores the contiguous dimension first, so a weight stored here as `(out, in)` is recorded as dimensions `(in, out)`.
+`N` is the block index starting at 0. A learned-absolute file has a position table and a bias on every norm. A RoPE file omits `pos_emb.weight` and every norm bias. When `nnllm.bias` is true, each linear name also has a `.bias` whose length is the output size. With SwiGLU, `fc1.weight` holds the gate and the up projection in that one matrix. The float values stay in this library's row-major order. The GGUF dimension list stores the contiguous dimension first, so a weight stored here as `(out, in)` is recorded as dimensions `(in, out)`.
 
 The GGUF does not contain `tokenizer.bpe` or the AdamW moments. `import` writes a version-1 checkpoint. `LoadMode::Inference` loads it, and a later `finetune` starts a fresh AdamW. `finetune --resume` needs the original `model.bin`.
 
@@ -75,7 +75,7 @@ The GGUF does not contain `tokenizer.bpe` or the AdamW moments. `import` writes 
 | `final_ln.weight` | `output_norm.weight` |
 | `lm_head.weight` | `output.weight` |
 
-`pos_emb.weight` and every LayerNorm bias are left out. The file does not contain rope frequency tensors or expert tensors.
+A learned-absolute checkpoint leaves out `pos_emb.weight` and every LayerNorm bias. A RoPE checkpoint has neither tensor, so nothing is dropped. The file does not contain rope frequency tensors or expert tensors. llama.cpp builds the adjacent-pair rotation from the metadata below.
 
 | Key | Value |
 |---|---|
@@ -83,7 +83,7 @@ The GGUF does not contain `tokenizer.bpe` or the AdamW moments. `import` writes 
 | `general.name` | `nnllm` |
 | `general.alignment` | 32 |
 | `general.file_type` | 0, float32 |
-| `general.description` | learned positions and LayerNorm were trained; llama.cpp applies RoPE and RMSNorm |
+| `general.description` | learned positions say the tokens differ; a RoPE checkpoint says llama.cpp runs the same block |
 | `tokenizer.ggml.model` | `none` |
 | `llama.vocab_size` | vocabulary size |
 | `llama.context_length` | `max_seq_len` |
@@ -98,11 +98,11 @@ The GGUF does not contain `tokenizer.bpe` or the AdamW moments. `import` writes 
 
 Counts are `uint32`. The epsilon and the RoPE base are `float32`. The epsilon is the LayerNorm epsilon from this library. llama.cpp still uses it inside RMSNorm. Weight bytes stay in this library's row-major order. The GGUF dimension list stores the contiguous dimension first, so `token_embd.weight` is recorded as `(d_model, vocab)`, `ffn_gate.weight` and `ffn_up.weight` as `(d_model, d_ff)`, and `ffn_down.weight` as `(d_ff, d_model)`.
 
-llama.cpp loads this file and runs it as a LLaMA block: RoPE on Q and K, and RMSNorm. This checkpoint was trained with a learned position table added to the token embedding, and with LayerNorm. The tokens differ. `tokenizer.bpe` is still the tokenizer for those token ids. The GGUF does not contain it, because llama.cpp's GPT-2 and SentencePiece tokenizers are a different byte mapping. A text prompt in `llama-cli` needs a tokenizer. With `tokenizer.ggml.model` set to `none`, current llama.cpp stops when it tries to encode that prompt. The weights still load, and a caller that already has token ids can run the graph.
+llama.cpp loads this file and runs it as a LLaMA block: adjacent-pair RoPE on Q and K, base 10000, and RMSNorm with epsilon `1e-5`. A checkpoint trained with `llama-tiny`, `llama-small`, or `llama-base` uses that same block, so the graph matches. A checkpoint trained with learned positions and LayerNorm does not. The tokens from that file differ. `tokenizer.bpe` is still the tokenizer for those token ids. The GGUF does not contain it, because llama.cpp's GPT-2 and SentencePiece tokenizers are a different byte mapping. A text prompt in `llama-cli` needs a tokenizer. With `tokenizer.ggml.model` set to `none`, current llama.cpp stops when it tries to encode that prompt. The weights still load, and a caller that already has token ids can run the graph.
 
 `gguf import` still accepts only architecture `nnllm`. A GELU checkpoint stops with `gguf: activation`. A checkpoint whose linear layers have a bias stops with `gguf: bias`, so those trained biases are kept out of a file that has no place for them.
 
-On success the program prints a warning on stderr and exits 0:
+On success with a learned-position checkpoint the program prints a warning on stderr and exits 0. A RoPE checkpoint exits 0 without that warning:
 
 ```text
 gguf: llama.cpp applies RoPE and RMSNorm. This checkpoint was trained with learned positions and LayerNorm. The file loads and the tokens differ. LayerNorm biases and the position table are omitted.
@@ -110,7 +110,7 @@ gguf: llama.cpp applies RoPE and RMSNorm. This checkpoint was trained with learn
 
 ## What this tool rejects
 
-This runtime is a float32 pre-norm transformer with LayerNorm and learned absolute positions. `import` rejects a GGUF whose `general.architecture` is `llama`, `gpt2`, or anything other than `nnllm` with `gguf: architecture`. Quantized tensor types are rejected with `gguf: quantized`. `llama.cpp` does not implement the `nnllm` architecture, so it will not run an `export` file.
+`import` accepts an `nnllm` file whose positions are `learned_absolute` or `rope`. It rejects a GGUF whose `general.architecture` is `llama`, `gpt2`, or anything other than `nnllm` with `gguf: architecture`. Quantized tensor types are rejected with `gguf: quantized`. `llama.cpp` does not implement the `nnllm` architecture, so it will not run an `export` file.
 
 ## Check the converter
 
@@ -135,5 +135,6 @@ Errors print `gguf: <reason>` on stderr and the process exits 1.
 | `bias` | `gguf llama` was given linear biases |
 | `tensor <name>` | a weight is missing, duplicated, or the wrong shape |
 | `tie_embeddings` | the config asks for a tied embedding, which this runtime rejects |
-| `positional` | positions are not learned absolute |
+| `positional` | positions are not `learned_absolute` or `rope` |
+| `use_rope` | a RoPE file has an odd head dimension |
 | `read` or `write` | the path could not be opened |

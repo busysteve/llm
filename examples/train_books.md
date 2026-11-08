@@ -71,7 +71,7 @@ Load `tokenizer.bpe` and `model.bin` together. `chat` does that for a dialogue c
 
 | Flag | Default | Role |
 |---|---|---|
-| `--preset tiny\|small\|base` | `tiny` | model shape |
+| `--preset tiny\|small\|base\|llama-tiny\|llama-small\|llama-base` | `tiny` | model shape |
 | `--vocab N` | 4096 | BPE size, minimum 259 |
 | `--seq-len N` | 256 | tokens per example, at most 1024 |
 | `--batch N` | 4 | examples per step |
@@ -89,6 +89,8 @@ Load `tokenizer.bpe` and `model.bin` together. `chat` does that for a dialogue c
 
 Weight decay stays 0.1. The cosine floor is one tenth of `--lr`. Eval is off. Defaults `--preset tiny`, `--seq-len 256`, and `--batch 4` fit a 12 GB GPU. `small` prefers 24 GB. `base` is a 24 GB model. On a smaller card keep `--seq-len` at 512 or below.
 
+`tiny`, `small`, and `base` use learned absolute positions and LayerNorm. `llama-tiny`, `llama-small`, and `llama-base` are the same widths with RoPE and RMSNorm, which is the block llama.cpp runs. Train one of those from scratch. A checkpoint that was trained with learned positions does not become that block.
+
 ## When it fails
 
 Errors print `train_books: <reason>` on stderr and the process exits 1. Common reasons:
@@ -99,7 +101,7 @@ Errors print `train_books: <reason>` on stderr and the process exits 1. Common r
 | `vocab_size` | `--vocab` is below 259, or the corpus runs out of pairs before the vocab is full |
 | `short corpus` | the encoded files have fewer than `--seq-len + 1` tokens |
 | `seq_len` | `--seq-len` is above 1024 |
-| `preset` | the name is not `tiny`, `small`, or `base` |
+| `preset` | the name is not `tiny`, `small`, `base`, `llama-tiny`, `llama-small`, or `llama-base` |
 | a flag name | the flag is unknown, or its value is missing or not a number |
 
 Library details are in [USAGE.md](../USAGE.md). The one-paragraph acceptance run is [train_tiny](train_tiny.md). To keep training that checkpoint on more text, see [finetune](finetune.md).

@@ -44,6 +44,7 @@ struct Config {
   float dropout = 0.f;
   bool bias = false;
   bool swiglu = true;
+  bool rope = false;
 };
 
 struct Tensor {
@@ -74,9 +75,11 @@ void usage() {
       "\n"
       "llama reads a transformer checkpoint or an nnllm GGUF and writes a GGUF\n"
       "with architecture llama. SwiGLU fc1 is split into ffn_gate and ffn_up.\n"
-      "Learned positions and LayerNorm biases are omitted. llama.cpp loads the\n"
-      "file and applies RoPE and RMSNorm, so the tokens differ. tokenizer.bpe\n"
-      "stays a separate file. GELU and linear-bias models are rejected.\n"
+      "A learned-position checkpoint omits the position table and LayerNorm\n"
+      "biases. llama.cpp then applies RoPE and RMSNorm, so those tokens differ.\n"
+      "A RoPE checkpoint already uses that block, and the file keeps every\n"
+      "tensor. tokenizer.bpe stays a separate file. GELU and linear-bias models\n"
+      "are rejected.\n"
       "\n"
       "import rejects a GGUF whose architecture is not nnllm, and rejects\n"
       "quantized tensors.\n",
@@ -230,10 +233,10 @@ std::vector<Tensor> expected_tensors(const Config& config) {
   };
   auto norm = [&](const std::string& name) {
     add(name + ".weight", {d});
-    add(name + ".bias", {d});
+    if (!config.rope) add(name + ".bias", {d});
   };
   add("tok_emb.weight", {config.vocab, d});
-  add("pos_emb.weight", {config.max_seq, d});
+  if (!config.rope) add("pos_emb.weight", {config.max_seq, d});
   for (int layer = 0; layer < config.layers; ++layer) {
     const std::string prefix = "blocks." + std::to_string(layer) + ".";
     norm(prefix + "ln1");
@@ -256,6 +259,7 @@ void require_config(const Config& config) {
     throw std::runtime_error("config");
   }
   if (config.d_model % config.heads != 0) throw std::runtime_error("num_heads");
+  if (config.rope && ((config.d_model / config.heads) % 2 != 0)) throw std::runtime_error("use_rope");
   if (!(config.dropout >= 0.f) || !(config.dropout < 1.f)) throw std::runtime_error("dropout");
   if (config.swiglu && config.d_ff > 0x7fffffff / 2) throw std::runtime_error("d_ff");
 }
@@ -287,7 +291,8 @@ Model read_checkpoint(const std::filesystem::path& path) {
   if (activation == 1) config.swiglu = false;
   else if (activation == 2) config.swiglu = true;
   else throw std::runtime_error("activation");
-  if (positional != 1) throw std::runtime_error("positional");
+  if (positional == 2) config.rope = true;
+  else if (positional != 1) throw std::runtime_error("positional");
   require_config(config);
 
   const uint32_t count = reader.u32();
@@ -347,7 +352,7 @@ void write_checkpoint(const std::filesystem::path& path, const Model& model) {
   out.u32(0);
   out.u32(config.bias ? 1u : 0u);
   out.u32(config.swiglu ? 2u : 1u);
-  out.u32(1);
+  out.u32(config.rope ? 2u : 1u);
   out.pad8();
   out.u32(static_cast<uint32_t>(model.tensors.size()));
   out.u32(0);
@@ -486,7 +491,8 @@ void write_gguf(const std::filesystem::path& path, const Model& model, bool half
   kv.str("general.name", kArchitecture);
   kv.u32("general.alignment", kDefaultAlign);
   kv.u32("general.file_type", half ? 1u : 0u);
-  kv.str("general.description", "nn llm checkpoint weights. learned absolute positions, layer norm.");
+  kv.str("general.description", config.rope ? "nn llm checkpoint weights. rope positions, rms norm."
+                                         : "nn llm checkpoint weights. learned absolute positions, layer norm.");
   kv.u32("nnllm.vocab_size", static_cast<uint32_t>(config.vocab));
   kv.u32("nnllm.embedding_length", static_cast<uint32_t>(config.d_model));
   kv.u32("nnllm.block_count", static_cast<uint32_t>(config.layers));
@@ -497,7 +503,7 @@ void write_gguf(const std::filesystem::path& path, const Model& model, bool half
   kv.boolean("nnllm.bias", config.bias);
   kv.boolean("nnllm.tie_embeddings", false);
   kv.str("nnllm.activation", config.swiglu ? "swiglu" : "gelu");
-  kv.str("nnllm.positional", "learned_absolute");
+  kv.str("nnllm.positional", config.rope ? "rope" : "learned_absolute");
   write_gguf_container(path, model.tensors, kv, half);
 }
 
@@ -576,9 +582,11 @@ void write_llama_gguf(const std::filesystem::path& path, const Model& model) {
   kv.u32("general.alignment", kDefaultAlign);
   kv.u32("general.file_type", 0);
   kv.str("general.description",
-         "Converted from an nnllm checkpoint trained with learned absolute positions and LayerNorm. "
-         "llama.cpp applies RoPE and RMSNorm, so the tokens differ. "
-         "LayerNorm biases and the position table are omitted.");
+         config.rope ? "Converted from an nnllm checkpoint trained with RoPE and RMSNorm. "
+                       "llama.cpp runs the same block."
+                     : "Converted from an nnllm checkpoint trained with learned absolute positions and LayerNorm. "
+                       "llama.cpp applies RoPE and RMSNorm, so the tokens differ. "
+                       "LayerNorm biases and the position table are omitted.");
   kv.str("tokenizer.ggml.model", "none");
   kv.u32("llama.vocab_size", static_cast<uint32_t>(config.vocab));
   kv.u32("llama.context_length", static_cast<uint32_t>(config.max_seq));
@@ -776,7 +784,9 @@ Model read_gguf(const std::filesystem::path& path) {
   if (activation == "swiglu") config.swiglu = true;
   else if (activation == "gelu") config.swiglu = false;
   else throw std::runtime_error("activation");
-  if (string_at("nnllm.positional") != "learned_absolute") throw std::runtime_error("positional");
+  const std::string positional = string_at("nnllm.positional");
+  if (positional == "rope") config.rope = true;
+  else if (positional != "learned_absolute") throw std::runtime_error("positional");
   require_config(config);
 
   struct Stored {
@@ -965,7 +975,7 @@ GgufView read_gguf_view(const std::filesystem::path& path) {
   return view;
 }
 
-void check_llama_file(const Model& model, const std::filesystem::path& path) {
+void check_llama_file(const Model& model, const std::filesystem::path& path, bool rope_src = false) {
   const GgufView view = read_gguf_view(path);
   const auto architecture = view.strings.find("general.architecture");
   const auto tokenizer = view.strings.find("tokenizer.ggml.model");
@@ -977,9 +987,15 @@ void check_llama_file(const Model& model, const std::filesystem::path& path) {
     throw std::runtime_error("self-test llama vocab");
   }
   if (description == view.strings.end() || description->second.find("RoPE") == std::string::npos ||
-      description->second.find("RMSNorm") == std::string::npos ||
-      description->second.find("LayerNorm") == std::string::npos ||
-      description->second.find("position") == std::string::npos) {
+      description->second.find("RMSNorm") == std::string::npos) {
+    throw std::runtime_error("self-test llama description");
+  }
+  if (rope_src) {
+    if (description->second.find("LayerNorm") != std::string::npos) {
+      throw std::runtime_error("self-test llama description");
+    }
+  } else if (description->second.find("LayerNorm") == std::string::npos ||
+             description->second.find("position") == std::string::npos) {
     throw std::runtime_error("self-test llama description");
   }
   const Config& config = model.config;
@@ -1167,6 +1183,58 @@ int self_test() {
   }
   if (!bias_rejected) throw std::runtime_error("self-test llama bias");
 
+  Config rope_config = config;
+  rope_config.rope = true;
+  Model rope_model;
+  rope_model.config = rope_config;
+  rope_model.tensors = expected_tensors(rope_config);
+  uint32_t rope_n = 1;
+  for (Tensor& tensor : rope_model.tensors) {
+    if (tensor.name.find("pos_emb") != std::string::npos || tensor.name.find(".bias") != std::string::npos) {
+      throw std::runtime_error("self-test rope tensors");
+    }
+    const int64_t numel = product(tensor.shape);
+    tensor.data.resize(static_cast<size_t>(numel));
+    for (int64_t i = 0; i < numel; ++i) {
+      const uint32_t bits = 0x3f800000u + rope_n + static_cast<uint32_t>(i);
+      std::memcpy(&tensor.data[static_cast<size_t>(i)], &bits, sizeof(bits));
+    }
+    ++rope_n;
+  }
+  const auto rope_bin = dir / "rope.bin";
+  const auto rope_gguf = dir / "rope.gguf";
+  const auto rope_back = dir / "rope-back.bin";
+  write_checkpoint(rope_bin, rope_model);
+  const Model rope_loaded = read_checkpoint(rope_bin);
+  if (!rope_loaded.config.rope || rope_loaded.tensors.size() != rope_model.tensors.size()) {
+    throw std::runtime_error("self-test rope load");
+  }
+  write_gguf(rope_gguf, rope_loaded);
+  const Model rope_from_gguf = read_gguf(rope_gguf);
+  if (!rope_from_gguf.config.rope) throw std::runtime_error("self-test rope positional");
+  write_checkpoint(rope_back, rope_from_gguf);
+  const Model rope_round = read_checkpoint(rope_back);
+  if (rope_round.tensors.size() != rope_model.tensors.size()) throw std::runtime_error("self-test rope round");
+  for (size_t i = 0; i < rope_model.tensors.size(); ++i) {
+    if (rope_round.tensors[i].name != rope_model.tensors[i].name ||
+        rope_round.tensors[i].shape != rope_model.tensors[i].shape ||
+        rope_round.tensors[i].data != rope_model.tensors[i].data) {
+      throw std::runtime_error("self-test rope round");
+    }
+  }
+  const auto rope_llama = dir / "rope-llama.gguf";
+  write_llama_gguf(rope_llama, read_model(rope_bin));
+  check_llama_file(rope_model, rope_llama, true);
+  rope_config.d_model = 6;
+  rope_config.heads = 2;
+  bool odd_rejected = false;
+  try {
+    require_config(rope_config);
+  } catch (const std::runtime_error& error) {
+    odd_rejected = std::string(error.what()) == "use_rope";
+  }
+  if (!odd_rejected) throw std::runtime_error("self-test rope odd");
+
   const std::vector<float> half_values = {0.f, 1.f, -2.f, 0.5f};
   for (Tensor& tensor : model.tensors) {
     for (size_t i = 0; i < tensor.data.size(); ++i) tensor.data[i] = half_values[i % half_values.size()];
@@ -1216,11 +1284,14 @@ int main(int argc, char** argv) {
       return 0;
     }
     if (command == "llama") {
-      write_llama_gguf(argv[3], read_model(argv[2]));
-      std::fputs(
-          "gguf: llama.cpp applies RoPE and RMSNorm. This checkpoint was trained with learned positions and "
-          "LayerNorm. The file loads and the tokens differ. LayerNorm biases and the position table are omitted.\n",
-          stderr);
+      const Model model = read_model(argv[2]);
+      write_llama_gguf(argv[3], model);
+      if (!model.config.rope) {
+        std::fputs(
+            "gguf: llama.cpp applies RoPE and RMSNorm. This checkpoint was trained with learned positions and "
+            "LayerNorm. The file loads and the tokens differ. LayerNorm biases and the position table are omitted.\n",
+            stderr);
+      }
       return 0;
     }
     usage();

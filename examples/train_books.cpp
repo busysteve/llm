@@ -53,7 +53,8 @@ void usage() {
       "transformer, writes tokenizer.bpe and model.bin, then loads both and\n"
       "generates a continuation.\n"
       "\n"
-      "  --preset tiny|small|base   default tiny\n"
+      "  --preset tiny|small|base|llama-tiny|llama-small|llama-base\n"
+      "                             default tiny\n"
       "  --vocab N                  default 4096 (minimum 259)\n"
       "  --seq-len N                default 256, at most 1024\n"
       "  --batch N                  default 4\n"
@@ -196,6 +197,9 @@ nn::TransformerConfig preset_config(const std::string& name, int vocab) {
   if (name == "tiny") return llm::presets::tiny(vocab);
   if (name == "small") return llm::presets::small(vocab);
   if (name == "base") return llm::presets::base(vocab);
+  if (name == "llama-tiny") return llm::presets::llama_tiny(vocab);
+  if (name == "llama-small") return llm::presets::llama_small(vocab);
+  if (name == "llama-base") return llm::presets::llama_base(vocab);
   throw std::runtime_error("preset");
 }
 

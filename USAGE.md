@@ -103,19 +103,22 @@ std::vector<nn::AdamWGroup> groups = llm::adamw_groups(model, /*weight_decay=*/0
 nn::AdamW opt(std::move(groups), 3e-4f, 0.9f, 0.95f, 1e-8f);
 ```
 
-`tiny`, `small`, and `base` throw `std::invalid_argument("vocab_size")` when `vocab_size < 1`. The other fields are fixed: dropout `0`, `bias` false, `tie_embeddings` false, SwiGLU, learned-absolute positions, `max_seq_len` 1024.
+`tiny`, `small`, `base`, `llama_tiny`, `llama_small`, and `llama_base` throw `std::invalid_argument("vocab_size")` when `vocab_size < 1`. The other fields are fixed: dropout `0`, `bias` false, `tie_embeddings` false, SwiGLU, `max_seq_len` 1024. The first three use learned-absolute positions and LayerNorm. The `llama_*` presets set `positional` to RoPE, which selects RMSNorm and adjacent-pair RoPE on Q and K. A checkpoint trained with learned positions does not become that block.
 
-| Preset | `num_layers` | `d_model` | `num_heads` | `d_ff` |
-|---|---:|---:|---:|---:|
-| tiny | 4 | 256 | 4 | 768 |
-| small | 6 | 512 | 8 | 1536 |
-| base | 12 | 768 | 12 | 2048 |
+| Preset | `num_layers` | `d_model` | `num_heads` | `d_ff` | Positions |
+|---|---:|---:|---:|---:|---|
+| tiny | 4 | 256 | 4 | 768 | learned absolute |
+| small | 6 | 512 | 8 | 1536 | learned absolute |
+| base | 12 | 768 | 12 | 2048 | learned absolute |
+| llama_tiny | 4 | 256 | 4 | 768 | RoPE, RMSNorm |
+| llama_small | 6 | 512 | 8 | 1536 | RoPE, RMSNorm |
+| llama_base | 12 | 768 | 12 | 2048 | RoPE, RMSNorm |
 
-Untied parameter counts at vocab 16000 are tiny 11866624 (11.87M), small 37368832 (37.37M), and base 110335488 (110.34M). The GPU notes below are float32, one GPU, full attention, and no activation checkpointing.
+Untied parameter counts at vocab 16000 are tiny 11866624 (11.87M), small 37368832 (37.37M), and base 110335488 (110.34M). The llama presets are llama_tiny 11602176 (11.60M), llama_small 36837888 (36.84M), and llama_base 109529856 (109.53M). The GPU notes below are float32, one GPU, full attention, and no activation checkpointing.
 
 tiny fits in 12 GB. Suggested batches are `(8, 512)` and `(16, 256)`. small is tight in 12 GB at `(4, 512)`; 24 GB is comfortable. base is a 24 GB target, not a 12 GB target at `T=512`. Keep `T <= 1024` for base, and prefer `T <= 512` on a 12 GB GPU.
 
-`examples/train_tiny.cpp` trains `presets::tiny` at the byte-level BPE vocab, a few million parameters, so that acceptance run fits easily. Positions stay learned absolute, not RoPE. The walkthrough is [examples/train_tiny.md](examples/train_tiny.md).
+`examples/train_tiny.cpp` trains `presets::tiny` at the byte-level BPE vocab, a few million parameters, so that acceptance run fits easily. That preset stays learned absolute. The walkthrough is [examples/train_tiny.md](examples/train_tiny.md).
 
 ## Train from a list of books
 
@@ -136,7 +139,7 @@ The run writes `run/tokenizer.bpe`, `run/tokens.bin`, `run/tokens.meta`, and `ru
   --prompt "The morning after"
 ```
 
-`--preset` is `tiny`, `small`, or `base`. `--seq-len` must be at most 1024. `--vocab` must be at least 259. Tokenizer training scans every byte once per merge, so a vocab of 4096 on several long books is much slower than the GPU steps. `--vocab 1024` is a faster first run. Defaults are `--preset tiny`, `--seq-len 256`, `--batch 4`, which fits a 12 GB GPU. `small` prefers 24 GB. `base` is a 24 GB model; keep the sequence at 512 or below on a smaller card. `--temperature 0` is greedy. `--help` prints the flags.
+`--preset` is `tiny`, `small`, `base`, `llama-tiny`, `llama-small`, or `llama-base`. The `llama-*` names train the RoPE and RMSNorm block from scratch. `--seq-len` must be at most 1024. `--vocab` must be at least 259. Tokenizer training scans every byte once per merge, so a vocab of 4096 on several long books is much slower than the GPU steps. `--vocab 1024` is a faster first run. Defaults are `--preset tiny`, `--seq-len 256`, `--batch 4`, which fits a 12 GB GPU. `small` prefers 24 GB. `base` is a 24 GB model; keep the sequence at 512 or below on a smaller card. `--temperature 0` is greedy. `--help` prints the flags.
 
 ## Talk to a trained model
 
@@ -181,7 +184,7 @@ cmake --build build -j --target gguf
 ./build/gguf llama run/model.bin run/model-llama.gguf
 ```
 
-`export` writes architecture `nnllm` and float32 weights. `import` reads `nnllm` files whose tensors are float32 or float16 and writes a version-1 checkpoint with no optimizer. `llama` reads a checkpoint or an `nnllm` GGUF and writes architecture `llama` for llama.cpp. That file uses llama.cpp tensor names, splits SwiGLU `fc1` into `ffn_gate` and `ffn_up`, and omits the learned position table and the LayerNorm biases. llama.cpp then applies RoPE and RMSNorm, so the tokens differ from this library. `tokenizer.bpe` stays a separate file. `import` rejects a GGUF with another architecture, or with quantized tensors. `llama` rejects GELU and linear bias. The metadata keys, tensor names, and dimension order are in [examples/gguf.md](examples/gguf.md).
+`export` writes architecture `nnllm` and float32 weights. `import` reads `nnllm` files whose tensors are float32 or float16 and writes a version-1 checkpoint with no optimizer. `nnllm.positional` is `learned_absolute` or `rope`. `llama` reads a checkpoint or an `nnllm` GGUF and writes architecture `llama` for llama.cpp. That file uses llama.cpp tensor names and splits SwiGLU `fc1` into `ffn_gate` and `ffn_up`. A learned-position checkpoint omits the position table and the LayerNorm biases, and llama.cpp then applies RoPE and RMSNorm, so those tokens differ. A RoPE checkpoint already uses that block, so the export keeps every tensor and does not print the mismatch warning. `tokenizer.bpe` stays a separate file. `import` rejects a GGUF with another architecture, or with quantized tensors. `llama` rejects GELU and linear bias. The metadata keys, tensor names, and dimension order are in [examples/gguf.md](examples/gguf.md).
 
 `adamw_groups` throws `std::invalid_argument("weight_decay")` when `weight_decay` is NaN, infinite, or negative. Decay applies only to rank-2 parameters whose names do not contain `ln` and do not end in `.bias`. Every other parameter, including LayerNorm weight and bias, is decay 0. A new group starts only when that choice changes, so the groups stay in `parameters()` order. `Transformer::save` rejects any other order.
 

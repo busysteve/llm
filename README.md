@@ -32,7 +32,7 @@ cmake --build build -j --target gguf
 include/llm/tokenizer.hpp   Tokenizer
 include/llm/bpe.hpp         BpeTokenizer
 include/llm/data.hpp        TextDataset and token files
-include/llm/presets.hpp     tiny / small / base configs and AdamW groups
+include/llm/presets.hpp     tiny / small / base and llama configs, AdamW groups
 include/llm/train.hpp       learning-rate schedule and Trainer
 include/llm/generate.hpp    Generator
 src/bpe.cpp                 byte-level BPE, train, and the LPB1 file
@@ -67,21 +67,24 @@ The on-disk form is little-endian with magic `LPB1`. The byte layout is in [USAG
 
 ## Presets
 
-`llm::presets::tiny`, `small`, and `base` return an `nn::TransformerConfig`. `vocab_size` must be positive. Dropout is 0, bias is off, embeddings are not tied, the activation is SwiGLU, positions are learned absolute, and `max_seq_len` is 1024.
+`llm::presets::tiny`, `small`, and `base` return an `nn::TransformerConfig`. `vocab_size` must be positive. Dropout is 0, bias is off, embeddings are not tied, the activation is SwiGLU, positions are learned absolute, and `max_seq_len` is 1024. `llama_tiny`, `llama_small`, and `llama_base` are the same widths with `positional` set to RoPE, which selects RMSNorm and adjacent-pair RoPE. A learned-position checkpoint cannot be turned into that block. Train a llama preset from scratch.
 
-| Preset | Layers | `d_model` | Heads | `d_ff` |
-|---|---:|---:|---:|---:|
-| tiny | 4 | 256 | 4 | 768 |
-| small | 6 | 512 | 8 | 1536 |
-| base | 12 | 768 | 12 | 2048 |
+| Preset | Layers | `d_model` | Heads | `d_ff` | Positions |
+|---|---:|---:|---:|---:|---|
+| tiny | 4 | 256 | 4 | 768 | learned absolute |
+| small | 6 | 512 | 8 | 1536 | learned absolute |
+| base | 12 | 768 | 12 | 2048 | learned absolute |
+| llama_tiny | 4 | 256 | 4 | 768 | RoPE, RMSNorm |
+| llama_small | 6 | 512 | 8 | 1536 | RoPE, RMSNorm |
+| llama_base | 12 | 768 | 12 | 2048 | RoPE, RMSNorm |
 
 `llm::adamw_groups` walks `parameters()` in order. Rank-2 tensors whose names do not refer to LayerNorm take the given weight decay. Biases, names containing `ln`, and every other rank-1 tensor take 0. Groups are contiguous runs of that choice, so concatenating them is still `parameters()` order. A NaN or negative `weight_decay` throws `weight_decay`.
 
-Untied parameter counts at vocab 16000 are tiny 11866624 (11.87M), small 37368832 (37.37M), and base 110335488 (110.34M). The GPU notes below are float32, one GPU, full attention, and no activation checkpointing.
+Untied parameter counts at vocab 16000 are tiny 11866624 (11.87M), small 37368832 (37.37M), and base 110335488 (110.34M). The llama presets drop the position table and the norm biases: llama_tiny 11602176 (11.60M), llama_small 36837888 (36.84M), and llama_base 109529856 (109.53M). The GPU notes below are float32, one GPU, full attention, and no activation checkpointing.
 
 tiny fits in 12 GB. Suggested batches are `(8, 512)` and `(16, 256)`. small is tight in 12 GB at `(4, 512)`; 24 GB is comfortable. base is a 24 GB target, not a 12 GB target at `T=512`. Keep `T <= 1024` for base, and prefer `T <= 512` on a 12 GB GPU.
 
-`examples/train_tiny.cpp` trains `presets::tiny` at the byte-level BPE vocab, a few million parameters, so that acceptance run fits easily. Positions stay learned absolute, not RoPE.
+`examples/train_tiny.cpp` trains `presets::tiny` at the byte-level BPE vocab, a few million parameters, so that acceptance run fits easily. That preset stays learned absolute. `train_books --preset llama-tiny` is the RoPE and RMSNorm shape.
 
 ## Trainer
 

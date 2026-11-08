@@ -245,6 +245,27 @@ void check_presets() {
     nn::Transformer model(ctx, llm::presets::base(16000), 1);
     CHECK(param_numel(model) == 110335488);
   }
+  check_invalid([] { llm::presets::llama_tiny(0); }, "vocab_size");
+  const nn::TransformerConfig llama = llm::presets::llama_tiny(16000);
+  CHECK(llama.positional == nn::PositionalEncoding::Rope);
+  CHECK(llama.d_model == 256);
+  CHECK(llama.num_layers == 4);
+  CHECK(llama.num_heads == 4);
+  CHECK(llama.d_ff == 768);
+  CHECK(llama.bias == false);
+  CHECK(llm::presets::llama_small(8).positional == nn::PositionalEncoding::Rope);
+  CHECK(llm::presets::llama_small(8).num_layers == 6);
+  CHECK(llm::presets::llama_base(8).d_model == 768);
+  CHECK(llm::presets::llama_base(8).d_ff == 2048);
+  {
+    nn::Context ctx;
+    nn::Transformer model(ctx, llama, 1);
+    CHECK(param_numel(model) == 11602176);
+    for (const nn::NamedParam& param : model.parameters()) {
+      CHECK(param.name.find("pos_emb") == std::string::npos);
+      CHECK(param.name.size() < 5 || param.name.compare(param.name.size() - 5, 5, ".bias") != 0);
+    }
+  }
 }
 
 }  // namespace

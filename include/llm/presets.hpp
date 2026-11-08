@@ -12,6 +12,9 @@ namespace presets {
 nn::TransformerConfig tiny(int vocab_size);
 nn::TransformerConfig small(int vocab_size);
 nn::TransformerConfig base(int vocab_size);
+nn::TransformerConfig llama_tiny(int vocab_size);
+nn::TransformerConfig llama_small(int vocab_size);
+nn::TransformerConfig llama_base(int vocab_size);
 
 }  // namespace presets
 
