@@ -24,7 +24,7 @@ cmake --build build -j --target finetune
 cmake --build build -j --target gguf
 ```
 
-`train_tiny` is the acceptance example. It is not part of `llm_tests`. `train_books` trains from a list of text files, writes `tokenizer.bpe` and `model.bin`, then loads those files and generates. `chat` loads that directory and continues a `User:` / `Assistant:` transcript. `finetune` keeps training one of those checkpoints on a new file list. `gguf` converts `model.bin` to a GGUF file and back. Walkthroughs: [train_tiny](examples/train_tiny.md), [train_books](examples/train_books.md), [chat](examples/chat.md), [finetune](examples/finetune.md), [gguf](examples/gguf.md). Library details are in [USAGE.md](USAGE.md).
+`train_tiny` is the acceptance example. It is not part of `llm_tests`. `train_books` trains from a list of text files, writes `tokenizer.bpe` and `model.bin`, then loads those files and generates. `chat` loads that directory and continues a `User:` / `Assistant:` transcript. `finetune` keeps training one of those checkpoints on a new file list. `gguf` converts `model.bin` to an `nnllm` GGUF and back, and can write a llama.cpp GGUF from the same checkpoint. Walkthroughs: [train_tiny](examples/train_tiny.md), [train_books](examples/train_books.md), [chat](examples/chat.md), [finetune](examples/finetune.md), [gguf](examples/gguf.md). Library details are in [USAGE.md](USAGE.md).
 
 ## Layout
 
@@ -48,7 +48,7 @@ examples/chat.cpp           continue a User/Assistant transcript
 examples/chat.md            how to converse with a trained model
 examples/finetune.cpp       fine-tune an existing checkpoint on new text
 examples/finetune.md        how to fine-tune an existing model
-examples/gguf.cpp           convert model.bin to GGUF and back
+examples/gguf.cpp           convert model.bin to GGUF, and to a llama.cpp GGUF
 examples/gguf.md            how to convert a checkpoint to GGUF
 tests/test_bpe.cpp          tokenizer tests
 tests/test_data.cpp         dataset tests

@@ -63,6 +63,7 @@ void usage() {
   std::fputs(
       "usage: gguf export MODEL.BIN MODEL.GGUF\n"
       "       gguf import MODEL.GGUF MODEL.BIN\n"
+      "       gguf llama MODEL MODEL.GGUF\n"
       "       gguf self-test\n"
       "\n"
       "export writes a GGUF version 3 file, architecture nnllm, float32.\n"
@@ -71,8 +72,14 @@ void usage() {
       "including float16 tensors, and writes a version-1 checkpoint with no\n"
       "optimizer. AdamW moments are not stored.\n"
       "\n"
-      "tokenizer.bpe is not part of either file. A GGUF whose architecture is\n"
-      "not nnllm, or whose tensors are quantized, is rejected.\n",
+      "llama reads a transformer checkpoint or an nnllm GGUF and writes a GGUF\n"
+      "with architecture llama. SwiGLU fc1 is split into ffn_gate and ffn_up.\n"
+      "Learned positions and LayerNorm biases are omitted. llama.cpp loads the\n"
+      "file and applies RoPE and RMSNorm, so the tokens differ. tokenizer.bpe\n"
+      "stays a separate file. GELU and linear-bias models are rejected.\n"
+      "\n"
+      "import rejects a GGUF whose architecture is not nnllm, and rejects\n"
+      "quantized tensors.\n",
       stderr);
 }
 
@@ -400,39 +407,39 @@ uint64_t align_up(uint64_t value, uint64_t alignment) {
   return (value + mask) & ~mask;
 }
 
-void write_gguf(const std::filesystem::path& path, const Model& model, bool half = false) {
-  require_config(model.config);
-  for (const Tensor& tensor : model.tensors) {
-    if (tensor.name.size() > 64) throw std::runtime_error("name");
+struct Kv {
+  Bytes body;
+  uint64_t count = 0;
+  void str(const char* key, const std::string& value) {
+    gguf_kv_string(body, key, value);
+    ++count;
   }
-  const Config& config = model.config;
+  void u32(const char* key, uint32_t value) {
+    gguf_kv_u32(body, key, value);
+    ++count;
+  }
+  void f32(const char* key, float value) {
+    gguf_kv_f32(body, key, value);
+    ++count;
+  }
+  void boolean(const char* key, bool value) {
+    gguf_kv_bool(body, key, value);
+    ++count;
+  }
+};
+
+void append_gguf_tensors(Bytes& header, const std::vector<Tensor>& tensors, bool half) {
   const uint32_t dtype = half ? kGgmlF16 : kGgmlF32;
   const uint64_t width = half ? 2u : 4u;
-  Bytes header;
-  header.u32(kGgufMagic);
-  header.u32(kGgufVersion);
-  header.u64(model.tensors.size());
-  header.u64(16);
-  gguf_kv_string(header, "general.architecture", kArchitecture);
-  gguf_kv_string(header, "general.name", kArchitecture);
-  gguf_kv_u32(header, "general.alignment", kDefaultAlign);
-  gguf_kv_u32(header, "general.file_type", half ? 1u : 0u);
-  gguf_kv_string(header, "general.description",
-                 "nn llm checkpoint weights. learned absolute positions, layer norm.");
-  gguf_kv_u32(header, "nnllm.vocab_size", static_cast<uint32_t>(config.vocab));
-  gguf_kv_u32(header, "nnllm.embedding_length", static_cast<uint32_t>(config.d_model));
-  gguf_kv_u32(header, "nnllm.block_count", static_cast<uint32_t>(config.layers));
-  gguf_kv_u32(header, "nnllm.feed_forward_length", static_cast<uint32_t>(config.d_ff));
-  gguf_kv_u32(header, "nnllm.context_length", static_cast<uint32_t>(config.max_seq));
-  gguf_kv_u32(header, "nnllm.attention.head_count", static_cast<uint32_t>(config.heads));
-  gguf_kv_f32(header, "nnllm.dropout", config.dropout);
-  gguf_kv_bool(header, "nnllm.bias", config.bias);
-  gguf_kv_bool(header, "nnllm.tie_embeddings", false);
-  gguf_kv_string(header, "nnllm.activation", config.swiglu ? "swiglu" : "gelu");
-  gguf_kv_string(header, "nnllm.positional", "learned_absolute");
-
+  for (const Tensor& tensor : tensors) {
+    if (tensor.name.size() > 64) throw std::runtime_error("name");
+    const int64_t numel = product(tensor.shape);
+    if (numel < 0 || static_cast<size_t>(numel) != tensor.data.size()) {
+      throw std::runtime_error("tensor " + tensor.name);
+    }
+  }
   uint64_t data_offset = 0;
-  for (const Tensor& tensor : model.tensors) {
+  for (const Tensor& tensor : tensors) {
     data_offset = align_up(data_offset, kDefaultAlign);
     gguf_string(header, tensor.name);
     header.u32(static_cast<uint32_t>(tensor.shape.size()));
@@ -441,15 +448,14 @@ void write_gguf(const std::filesystem::path& path, const Model& model, bool half
     }
     header.u32(dtype);
     header.u64(data_offset);
-    const int64_t numel = product(tensor.shape);
-    data_offset += static_cast<uint64_t>(numel) * width;
+    data_offset += static_cast<uint64_t>(product(tensor.shape)) * width;
   }
   const size_t info_end = header.bytes().size();
   const size_t data_begin = static_cast<size_t>(align_up(info_end, kDefaultAlign));
   header.zeros(data_begin - info_end);
 
   data_offset = 0;
-  for (const Tensor& tensor : model.tensors) {
+  for (const Tensor& tensor : tensors) {
     const uint64_t aligned = align_up(data_offset, kDefaultAlign);
     header.zeros(static_cast<size_t>(aligned - data_offset));
     for (float value : tensor.data) {
@@ -458,7 +464,133 @@ void write_gguf(const std::filesystem::path& path, const Model& model, bool half
     }
     data_offset = aligned + static_cast<uint64_t>(tensor.data.size()) * width;
   }
+}
+
+void write_gguf_container(const std::filesystem::path& path, const std::vector<Tensor>& tensors, const Kv& kv,
+                          bool half) {
+  Bytes header;
+  header.u32(kGgufMagic);
+  header.u32(kGgufVersion);
+  header.u64(tensors.size());
+  header.u64(kv.count);
+  header.raw(kv.body.bytes().data(), kv.body.bytes().size());
+  append_gguf_tensors(header, tensors, half);
   write_file(path, header.bytes());
+}
+
+void write_gguf(const std::filesystem::path& path, const Model& model, bool half = false) {
+  require_config(model.config);
+  const Config& config = model.config;
+  Kv kv;
+  kv.str("general.architecture", kArchitecture);
+  kv.str("general.name", kArchitecture);
+  kv.u32("general.alignment", kDefaultAlign);
+  kv.u32("general.file_type", half ? 1u : 0u);
+  kv.str("general.description", "nn llm checkpoint weights. learned absolute positions, layer norm.");
+  kv.u32("nnllm.vocab_size", static_cast<uint32_t>(config.vocab));
+  kv.u32("nnllm.embedding_length", static_cast<uint32_t>(config.d_model));
+  kv.u32("nnllm.block_count", static_cast<uint32_t>(config.layers));
+  kv.u32("nnllm.feed_forward_length", static_cast<uint32_t>(config.d_ff));
+  kv.u32("nnllm.context_length", static_cast<uint32_t>(config.max_seq));
+  kv.u32("nnllm.attention.head_count", static_cast<uint32_t>(config.heads));
+  kv.f32("nnllm.dropout", config.dropout);
+  kv.boolean("nnllm.bias", config.bias);
+  kv.boolean("nnllm.tie_embeddings", false);
+  kv.str("nnllm.activation", config.swiglu ? "swiglu" : "gelu");
+  kv.str("nnllm.positional", "learned_absolute");
+  write_gguf_container(path, model.tensors, kv, half);
+}
+
+const Tensor& named_tensor(const Model& model, const std::string& name) {
+  for (const Tensor& tensor : model.tensors) {
+    if (tensor.name == name) return tensor;
+  }
+  throw std::runtime_error("tensor " + name);
+}
+
+Tensor copy_tensor(const Model& model, const std::string& name, std::vector<int> shape, std::string out_name) {
+  const Tensor& src = named_tensor(model, name);
+  if (src.shape != shape || static_cast<int64_t>(src.data.size()) != product(shape)) {
+    throw std::runtime_error("tensor " + name);
+  }
+  Tensor out;
+  out.name = std::move(out_name);
+  out.shape = std::move(shape);
+  out.data = src.data;
+  return out;
+}
+
+Tensor split_rows(const Tensor& src, int row0, int rows, std::string out_name) {
+  if (src.shape.size() != 2 || row0 < 0 || rows < 1 || row0 > src.shape[0] - rows) {
+    throw std::runtime_error("tensor " + src.name);
+  }
+  const int in = src.shape[1];
+  const size_t begin = static_cast<size_t>(row0) * static_cast<size_t>(in);
+  const size_t count = static_cast<size_t>(rows) * static_cast<size_t>(in);
+  if (begin > src.data.size() || count > src.data.size() - begin) throw std::runtime_error("tensor " + src.name);
+  Tensor out;
+  out.name = std::move(out_name);
+  out.shape = {rows, in};
+  out.data.assign(src.data.begin() + static_cast<std::ptrdiff_t>(begin),
+                  src.data.begin() + static_cast<std::ptrdiff_t>(begin + count));
+  return out;
+}
+
+std::vector<Tensor> llama_tensors(const Model& model) {
+  const Config& config = model.config;
+  const int d = config.d_model;
+  std::vector<Tensor> tensors;
+  tensors.push_back(copy_tensor(model, "tok_emb.weight", {config.vocab, d}, "token_embd.weight"));
+  for (int layer = 0; layer < config.layers; ++layer) {
+    const std::string src = "blocks." + std::to_string(layer) + ".";
+    const std::string dst = "blk." + std::to_string(layer) + ".";
+    tensors.push_back(copy_tensor(model, src + "ln1.weight", {d}, dst + "attn_norm.weight"));
+    tensors.push_back(copy_tensor(model, src + "attn.q.weight", {d, d}, dst + "attn_q.weight"));
+    tensors.push_back(copy_tensor(model, src + "attn.k.weight", {d, d}, dst + "attn_k.weight"));
+    tensors.push_back(copy_tensor(model, src + "attn.v.weight", {d, d}, dst + "attn_v.weight"));
+    tensors.push_back(copy_tensor(model, src + "attn.out.weight", {d, d}, dst + "attn_output.weight"));
+    tensors.push_back(copy_tensor(model, src + "ln2.weight", {d}, dst + "ffn_norm.weight"));
+    const Tensor& fc1 = named_tensor(model, src + "fc1.weight");
+    if (fc1.shape != std::vector<int>{config.d_ff * 2, d} ||
+        static_cast<int64_t>(fc1.data.size()) != product(fc1.shape)) {
+      throw std::runtime_error("tensor " + fc1.name);
+    }
+    tensors.push_back(split_rows(fc1, 0, config.d_ff, dst + "ffn_gate.weight"));
+    tensors.push_back(split_rows(fc1, config.d_ff, config.d_ff, dst + "ffn_up.weight"));
+    tensors.push_back(copy_tensor(model, src + "fc2.weight", {d, config.d_ff}, dst + "ffn_down.weight"));
+  }
+  tensors.push_back(copy_tensor(model, "final_ln.weight", {d}, "output_norm.weight"));
+  tensors.push_back(copy_tensor(model, "lm_head.weight", {config.vocab, d}, "output.weight"));
+  return tensors;
+}
+
+void write_llama_gguf(const std::filesystem::path& path, const Model& model) {
+  require_config(model.config);
+  if (!model.config.swiglu) throw std::runtime_error("activation");
+  if (model.config.bias) throw std::runtime_error("bias");
+  const std::vector<Tensor> tensors = llama_tensors(model);
+  const Config& config = model.config;
+  Kv kv;
+  kv.str("general.architecture", "llama");
+  kv.str("general.name", kArchitecture);
+  kv.u32("general.alignment", kDefaultAlign);
+  kv.u32("general.file_type", 0);
+  kv.str("general.description",
+         "Converted from an nnllm checkpoint trained with learned absolute positions and LayerNorm. "
+         "llama.cpp applies RoPE and RMSNorm, so the tokens differ. "
+         "LayerNorm biases and the position table are omitted.");
+  kv.str("tokenizer.ggml.model", "none");
+  kv.u32("llama.vocab_size", static_cast<uint32_t>(config.vocab));
+  kv.u32("llama.context_length", static_cast<uint32_t>(config.max_seq));
+  kv.u32("llama.embedding_length", static_cast<uint32_t>(config.d_model));
+  kv.u32("llama.block_count", static_cast<uint32_t>(config.layers));
+  kv.u32("llama.feed_forward_length", static_cast<uint32_t>(config.d_ff));
+  kv.u32("llama.attention.head_count", static_cast<uint32_t>(config.heads));
+  kv.u32("llama.attention.head_count_kv", static_cast<uint32_t>(config.heads));
+  kv.f32("llama.attention.layer_norm_rms_epsilon", 1e-5f);
+  kv.f32("llama.rope.freq_base", 10000.f);
+  kv.u32("llama.rope.dimension_count", static_cast<uint32_t>(config.d_model / config.heads));
+  write_gguf_container(path, tensors, kv, false);
 }
 
 void skip_meta(Reader& reader, uint32_t type, int depth) {
@@ -750,6 +882,171 @@ uint16_t f32_to_f16(float value) {
   return static_cast<uint16_t>(sign | half);
 }
 
+Model read_model(const std::filesystem::path& path) {
+  const std::vector<uint8_t> bytes = read_file(path);
+  if (bytes.size() < 4) throw std::runtime_error("magic");
+  const uint32_t magic = static_cast<uint32_t>(bytes[0]) | (static_cast<uint32_t>(bytes[1]) << 8) |
+                         (static_cast<uint32_t>(bytes[2]) << 16) | (static_cast<uint32_t>(bytes[3]) << 24);
+  if (magic == kCheckpointMagic) return read_checkpoint(path);
+  if (magic == kGgufMagic) return read_gguf(path);
+  throw std::runtime_error("magic");
+}
+
+struct ViewTensor {
+  std::vector<uint64_t> dims;
+  std::vector<float> data;
+};
+
+struct GgufView {
+  std::map<std::string, std::string> strings;
+  std::map<std::string, uint32_t> u32s;
+  std::map<std::string, float> f32s;
+  std::map<std::string, ViewTensor> tensors;
+};
+
+GgufView read_gguf_view(const std::filesystem::path& path) {
+  Reader reader(read_file(path));
+  if (reader.size() < 24 || reader.u32() != kGgufMagic) throw std::runtime_error("self-test llama magic");
+  if (reader.u32() != kGgufVersion) throw std::runtime_error("self-test llama version");
+  const uint64_t tensor_count = reader.u64();
+  const uint64_t kv_count = reader.u64();
+  GgufView view;
+  for (uint64_t i = 0; i < kv_count; ++i) {
+    const std::string key = reader.str_u64();
+    const uint32_t type = reader.u32();
+    if (type == kString) view.strings[key] = reader.str_u64();
+    else if (type == kU32) view.u32s[key] = reader.u32();
+    else if (type == kF32) view.f32s[key] = reader.f32();
+    else skip_meta(reader, type, 0);
+  }
+  struct Info {
+    std::string name;
+    std::vector<uint64_t> dims;
+    uint32_t dtype = 0;
+    uint64_t offset = 0;
+  };
+  std::vector<Info> infos;
+  for (uint64_t i = 0; i < tensor_count; ++i) {
+    Info info;
+    info.name = reader.str_u64();
+    const uint32_t rank = reader.u32();
+    info.dims.resize(rank);
+    for (uint32_t d = 0; d < rank; ++d) info.dims[d] = reader.u64();
+    info.dtype = reader.u32();
+    info.offset = reader.u64();
+    infos.push_back(std::move(info));
+  }
+  const size_t data_begin = static_cast<size_t>(align_up(reader.pos(), kDefaultAlign));
+  for (const Info& info : infos) {
+    if (info.dtype != kGgmlF32) throw std::runtime_error("self-test llama dtype");
+    int64_t numel = 1;
+    for (uint64_t dim : info.dims) {
+      if (dim < 1 || numel > INT64_C(0x7fffffffffffffff) / static_cast<int64_t>(dim)) {
+        throw std::runtime_error("self-test llama " + info.name);
+      }
+      numel *= static_cast<int64_t>(dim);
+    }
+    const size_t nbytes = static_cast<size_t>(numel) * 4u;
+    const uint8_t* raw = reader.at(data_begin + static_cast<size_t>(info.offset), nbytes);
+    ViewTensor tensor;
+    tensor.dims = info.dims;
+    tensor.data.resize(static_cast<size_t>(numel));
+    for (int64_t n = 0; n < numel; ++n) {
+      uint32_t bits = 0;
+      for (int b = 0; b < 4; ++b) {
+        bits |= static_cast<uint32_t>(raw[static_cast<size_t>(n) * 4 + b]) << (8 * b);
+      }
+      std::memcpy(&tensor.data[static_cast<size_t>(n)], &bits, sizeof(bits));
+    }
+    if (!view.tensors.emplace(info.name, std::move(tensor)).second) {
+      throw std::runtime_error("self-test llama " + info.name);
+    }
+  }
+  return view;
+}
+
+void check_llama_file(const Model& model, const std::filesystem::path& path) {
+  const GgufView view = read_gguf_view(path);
+  const auto architecture = view.strings.find("general.architecture");
+  const auto tokenizer = view.strings.find("tokenizer.ggml.model");
+  const auto description = view.strings.find("general.description");
+  if (architecture == view.strings.end() || architecture->second != "llama") {
+    throw std::runtime_error("self-test llama arch");
+  }
+  if (tokenizer == view.strings.end() || tokenizer->second != "none") {
+    throw std::runtime_error("self-test llama vocab");
+  }
+  if (description == view.strings.end() || description->second.find("RoPE") == std::string::npos ||
+      description->second.find("RMSNorm") == std::string::npos ||
+      description->second.find("LayerNorm") == std::string::npos ||
+      description->second.find("position") == std::string::npos) {
+    throw std::runtime_error("self-test llama description");
+  }
+  const Config& config = model.config;
+  auto need_u32 = [&](const char* key, uint32_t want) {
+    const auto found = view.u32s.find(key);
+    if (found == view.u32s.end() || found->second != want) throw std::runtime_error(std::string("self-test llama ") + key);
+  };
+  need_u32("llama.vocab_size", static_cast<uint32_t>(config.vocab));
+  need_u32("llama.context_length", static_cast<uint32_t>(config.max_seq));
+  need_u32("llama.embedding_length", static_cast<uint32_t>(config.d_model));
+  need_u32("llama.block_count", static_cast<uint32_t>(config.layers));
+  need_u32("llama.feed_forward_length", static_cast<uint32_t>(config.d_ff));
+  need_u32("llama.attention.head_count", static_cast<uint32_t>(config.heads));
+  need_u32("llama.attention.head_count_kv", static_cast<uint32_t>(config.heads));
+  need_u32("llama.rope.dimension_count", static_cast<uint32_t>(config.d_model / config.heads));
+  const auto eps = view.f32s.find("llama.attention.layer_norm_rms_epsilon");
+  const auto base = view.f32s.find("llama.rope.freq_base");
+  if (eps == view.f32s.end() || eps->second != 1e-5f || base == view.f32s.end() || base->second != 10000.f) {
+    throw std::runtime_error("self-test llama rope");
+  }
+  if (view.tensors.size() != static_cast<size_t>(9 * config.layers + 3)) {
+    throw std::runtime_error("self-test llama count");
+  }
+  for (const auto& item : view.tensors) {
+    if (item.first.find("pos_emb") != std::string::npos || item.first.find("position_embd") != std::string::npos ||
+        item.first.find(".bias") != std::string::npos) {
+      throw std::runtime_error("self-test llama extra");
+    }
+  }
+  auto same = [&](const std::string& llama_name, const std::string& src_name, std::vector<uint64_t> dims) {
+    const auto found = view.tensors.find(llama_name);
+    const Tensor& src = named_tensor(model, src_name);
+    if (found == view.tensors.end() || found->second.dims != dims || found->second.data != src.data) {
+      throw std::runtime_error("self-test llama " + llama_name);
+    }
+  };
+  const uint64_t d = static_cast<uint64_t>(config.d_model);
+  const uint64_t vocab = static_cast<uint64_t>(config.vocab);
+  const uint64_t ff = static_cast<uint64_t>(config.d_ff);
+  same("token_embd.weight", "tok_emb.weight", {d, vocab});
+  same("output_norm.weight", "final_ln.weight", {d});
+  same("output.weight", "lm_head.weight", {d, vocab});
+  for (int layer = 0; layer < config.layers; ++layer) {
+    const std::string src = "blocks." + std::to_string(layer) + ".";
+    const std::string dst = "blk." + std::to_string(layer) + ".";
+    same(dst + "attn_norm.weight", src + "ln1.weight", {d});
+    same(dst + "attn_q.weight", src + "attn.q.weight", {d, d});
+    same(dst + "attn_k.weight", src + "attn.k.weight", {d, d});
+    same(dst + "attn_v.weight", src + "attn.v.weight", {d, d});
+    same(dst + "attn_output.weight", src + "attn.out.weight", {d, d});
+    same(dst + "ffn_norm.weight", src + "ln2.weight", {d});
+    same(dst + "ffn_down.weight", src + "fc2.weight", {ff, d});
+    const Tensor& fc1 = named_tensor(model, src + "fc1.weight");
+    const size_t half = static_cast<size_t>(config.d_ff) * static_cast<size_t>(config.d_model);
+    const auto gate = view.tensors.find(dst + "ffn_gate.weight");
+    const auto up = view.tensors.find(dst + "ffn_up.weight");
+    if (gate == view.tensors.end() || up == view.tensors.end() || gate->second.dims != std::vector<uint64_t>{d, ff} ||
+        up->second.dims != std::vector<uint64_t>{d, ff} || fc1.data.size() != half * 2 ||
+        gate->second.data.size() != half || up->second.data.size() != half) {
+      throw std::runtime_error("self-test llama ffn");
+    }
+    const std::vector<float> gate_want(fc1.data.begin(), fc1.data.begin() + static_cast<std::ptrdiff_t>(half));
+    const std::vector<float> up_want(fc1.data.begin() + static_cast<std::ptrdiff_t>(half), fc1.data.end());
+    if (gate->second.data != gate_want || up->second.data != up_want) throw std::runtime_error("self-test llama ffn");
+  }
+}
+
 void write_bad_architecture(const std::filesystem::path& path) {
   Bytes out;
   out.u32(kGgufMagic);
@@ -843,6 +1140,33 @@ int self_test() {
   }
   if (!saw_tok) throw std::runtime_error("self-test tok");
 
+  const Model from_bin = read_model(bin);
+  const Model from_nnllm = read_model(gguf);
+  const auto llama_bin = dir / "llama-bin.gguf";
+  const auto llama_nnllm = dir / "llama-nnllm.gguf";
+  write_llama_gguf(llama_bin, from_bin);
+  write_llama_gguf(llama_nnllm, from_nnllm);
+  if (read_file(llama_bin) != read_file(llama_nnllm)) throw std::runtime_error("self-test llama bytes");
+  check_llama_file(model, llama_bin);
+  Model gelu = model;
+  gelu.config.swiglu = false;
+  bool gelu_rejected = false;
+  try {
+    write_llama_gguf(dir / "gelu.gguf", gelu);
+  } catch (const std::runtime_error& error) {
+    gelu_rejected = std::string(error.what()) == "activation";
+  }
+  if (!gelu_rejected) throw std::runtime_error("self-test llama activation");
+  Model biased = model;
+  biased.config.bias = true;
+  bool bias_rejected = false;
+  try {
+    write_llama_gguf(dir / "bias.gguf", biased);
+  } catch (const std::runtime_error& error) {
+    bias_rejected = std::string(error.what()) == "bias";
+  }
+  if (!bias_rejected) throw std::runtime_error("self-test llama bias");
+
   const std::vector<float> half_values = {0.f, 1.f, -2.f, 0.5f};
   for (Tensor& tensor : model.tensors) {
     for (size_t i = 0; i < tensor.data.size(); ++i) tensor.data[i] = half_values[i % half_values.size()];
@@ -889,6 +1213,14 @@ int main(int argc, char** argv) {
     }
     if (command == "import") {
       write_checkpoint(argv[3], read_gguf(argv[2]));
+      return 0;
+    }
+    if (command == "llama") {
+      write_llama_gguf(argv[3], read_model(argv[2]));
+      std::fputs(
+          "gguf: llama.cpp applies RoPE and RMSNorm. This checkpoint was trained with learned positions and "
+          "LayerNorm. The file loads and the tokens differ. LayerNorm biases and the position table are omitted.\n",
+          stderr);
       return 0;
     }
     usage();

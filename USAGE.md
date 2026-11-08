@@ -178,9 +178,10 @@ The tokenizer is not trained again. The checkpoint vocab and model shape stay as
 cmake --build build -j --target gguf
 ./build/gguf export run/model.bin run/model.gguf
 ./build/gguf import run/model.gguf run/model.bin
+./build/gguf llama run/model.bin run/model-llama.gguf
 ```
 
-`export` writes architecture `nnllm` and float32 weights. `import` reads `nnllm` files whose tensors are float32 or float16 and writes a version-1 checkpoint with no optimizer. `tokenizer.bpe` stays a separate file. A GGUF with another architecture, or with quantized tensors, is rejected. The metadata keys, tensor names, and dimension order are in [examples/gguf.md](examples/gguf.md).
+`export` writes architecture `nnllm` and float32 weights. `import` reads `nnllm` files whose tensors are float32 or float16 and writes a version-1 checkpoint with no optimizer. `llama` reads a checkpoint or an `nnllm` GGUF and writes architecture `llama` for llama.cpp. That file uses llama.cpp tensor names, splits SwiGLU `fc1` into `ffn_gate` and `ffn_up`, and omits the learned position table and the LayerNorm biases. llama.cpp then applies RoPE and RMSNorm, so the tokens differ from this library. `tokenizer.bpe` stays a separate file. `import` rejects a GGUF with another architecture, or with quantized tensors. `llama` rejects GELU and linear bias. The metadata keys, tensor names, and dimension order are in [examples/gguf.md](examples/gguf.md).
 
 `adamw_groups` throws `std::invalid_argument("weight_decay")` when `weight_decay` is NaN, infinite, or negative. Decay applies only to rank-2 parameters whose names do not contain `ln` and do not end in `.bias`. Every other parameter, including LayerNorm weight and bias, is decay 0. A new group starts only when that choice changes, so the groups stay in `parameters()` order. `Transformer::save` rejects any other order.
 
