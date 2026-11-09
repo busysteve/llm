@@ -1,7 +1,5 @@
 #include "llm/data.hpp"
 
-#include <cuda_runtime.h>
-
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -72,14 +70,7 @@ void write_text(const std::filesystem::path& path, const std::string& text) {
   CHECK(out.good());
 }
 
-std::vector<int64_t> index_to_host(const nn::IndexTensor& tensor) {
-  tensor.context().synchronize();
-  std::vector<int64_t> host(static_cast<size_t>(tensor.numel()));
-  const cudaError_t err = cudaMemcpy(host.data(), tensor.data(), host.size() * sizeof(int64_t),
-                                      cudaMemcpyDeviceToHost);
-  CHECK(err == cudaSuccess);
-  return host;
-}
+std::vector<int64_t> index_to_host(const nn::IndexTensor& tensor) { return tensor.to_host(); }
 
 // Same draw as TextDataset::next: one uniform start per row, row 0 first.
 std::vector<int64_t> replay_starts(std::mt19937& rng, int batch_size, int64_t n_starts) {

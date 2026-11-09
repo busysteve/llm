@@ -1,19 +1,13 @@
 cmake_minimum_required(VERSION 3.24)
 
-if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-  set(CMAKE_CUDA_ARCHITECTURES 86)
-endif()
-
-project(llm LANGUAGES CXX CUDA)
+project(llm LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-set(CMAKE_CUDA_STANDARD 17)
-set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
-# Default is a sibling checkout. -DNN_SOURCE=... points at another tree.
-# nn's own tests stay out of `all`; llm still links the nn library target.
+# Default is a sibling checkout. -DNN_SOURCE=... points at another tree
+# (CUDA nn, or nnCL). That project's own tests stay out of `all`.
 set(NN_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/../nn" CACHE PATH "path to nn")
 add_subdirectory(${NN_SOURCE} nn_build EXCLUDE_FROM_ALL)
 
