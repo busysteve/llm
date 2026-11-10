@@ -5,12 +5,12 @@
 Build from the repository root. Requirements are in the [README](../README.md).
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=86
+./build.sh opencl   # or: ./build.sh cuda
 cmake --build build -j --target train_tiny
 ./build/train_tiny
 ```
 
-Set `CMAKE_CUDA_ARCHITECTURES` to the GPU you have. `86` is the default.
+For the CUDA backend, `CMAKE_CUDA_ARCHITECTURES` defaults to `86`. Set it to the GPU you have before `./build.sh cuda`.
 
 ## What it trains on
 

@@ -1,6 +1,6 @@
 # Usage
 
-Programmer's guide to the tokenizer in namespace `llm`. Headers under `include/llm/` are C++17 and do not include CUDA. Link the CMake target `llm`. It links `nn` publicly, so a program that links `libllm.a` by hand also needs `nn` and the CUDA libraries `nn` was built against.
+Programmer's guide to the tokenizer in namespace `llm`. Headers under `include/llm/` are C++17 and do not include CUDA or OpenCL. Link the CMake target `llm`. It links `nn` publicly, so a program that links `libllm.a` by hand also needs `nn` and the backend libraries that tree was built against (CUDA and cuDNN, or OpenCL).
 
 `train` throws `std::invalid_argument("vocab_size")` when `vocab_size` is below 259, does not fit in `int32`, or the corpus runs out of pairs before that vocab is full. `decode` throws `std::invalid_argument("id")` for an id outside `0 .. vocab_size-1`. `load` throws `std::runtime_error` for a missing file, a bad magic, or a file that does not match the layout below.
 
@@ -175,7 +175,7 @@ The tokenizer is not trained again. The checkpoint vocab and model shape stay as
 
 ## Convert a checkpoint to GGUF
 
-`examples/gguf.cpp` converts `model.bin` to a GGUF version 3 file and back. It does not link `llm` or CUDA. It is not part of `llm_tests`. The walkthrough is [examples/gguf.md](examples/gguf.md).
+`examples/gguf.cpp` converts `model.bin` to a GGUF version 3 file and back. It does not link `llm` or a device backend. It is not part of `llm_tests`. The walkthrough is [examples/gguf.md](examples/gguf.md).
 
 ```bash
 cmake --build build -j --target gguf

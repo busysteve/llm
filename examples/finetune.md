@@ -7,7 +7,7 @@ The checkpoint's vocab and model shape stay as they are. `finetune` reads this l
 Build from the repository root. Requirements are in the [README](../README.md).
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=86
+./build.sh opencl   # or: ./build.sh cuda
 cmake --build build -j --target finetune
 ```
 

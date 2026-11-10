@@ -5,7 +5,7 @@
 Build from the repository root. Requirements are in the [README](../README.md).
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=86
+./build.sh opencl   # or: ./build.sh cuda
 cmake --build build -j --target train_books
 cmake --build build -j --target chat
 ```
