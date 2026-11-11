@@ -8,7 +8,7 @@ Public headers live under `include/llm/` and do not include CUDA or OpenCL heade
 
 - C++17 and CMake 3.24 or newer
 - One backend checkout next to this tree:
-  - CUDA: `../nn`, plus the CUDA Toolkit and cuDNN that `nn` needs. `CMAKE_CUDA_ARCHITECTURES` defaults to `86`.
+  - CUDA: `../nn`, plus the CUDA Toolkit and cuDNN that `nn` needs. `CMAKE_CUDA_ARCHITECTURES` defaults to `86`. If the default GCC is newer than 15, `./build.sh` uses `g++-15`.
   - OpenCL: `../nnCL`, plus an OpenCL ICD and a GPU. Do not set `RUSTICL_ENABLE`.
 
 `./build.sh cuda` configures against `../nn`. `./build.sh opencl` configures against `../nnCL`. With no argument, `NN_SOURCE` is used when it is set; otherwise OpenCL is chosen when `../nnCL` is present and `nvcc` is not. `add_subdirectory(... EXCLUDE_FROM_ALL)` builds `nn` only as a dependency of `llm`, so that project's tests are not part of `all`.

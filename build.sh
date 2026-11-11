@@ -41,9 +41,30 @@ if [ -f "$nn_source/src/kernels.cl" ]; then
   echo "llm backend: OpenCL ($nn_source)"
   cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DNN_SOURCE="$nn_source"
 else
+  # C++ sources in nn include CUDA headers. The HPC SDK nvcc rejects GCC later than 15.
+  host_cxx="${CXX:-}"
+  if [ -z "$host_cxx" ]; then
+    host_cxx="$(command -v c++ || command -v g++ || true)"
+  fi
+  major=""
+  if [ -n "$host_cxx" ]; then
+    major="$("$host_cxx" -dumpversion 2>/dev/null | cut -d. -f1)"
+  fi
+  if [ -n "$major" ] && [ "$major" -gt 15 ] && command -v g++-15 >/dev/null 2>&1; then
+    echo "llm host compiler: g++-15 (GCC $major is newer than this CUDA build allows)" >&2
+    host_cxx="$(command -v g++-15)"
+  fi
+  if [ -n "$host_cxx" ] && [ -f build/CMakeCache.txt ]; then
+    cached="$(sed -n 's/^CMAKE_CXX_COMPILER:FILEPATH=//p' build/CMakeCache.txt)"
+    if [ -n "$cached" ] && [ "$cached" != "$host_cxx" ]; then
+      echo "llm: clearing build/ configured with $cached" >&2
+      rm -rf build
+    fi
+  fi
   echo "llm backend: CUDA ($nn_source)"
   cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DNN_SOURCE="$nn_source" \
-    -DCMAKE_CUDA_ARCHITECTURES="${CMAKE_CUDA_ARCHITECTURES:-86}"
+    -DCMAKE_CUDA_ARCHITECTURES="${CMAKE_CUDA_ARCHITECTURES:-86}" \
+    -DCMAKE_CXX_COMPILER="$host_cxx" -DCMAKE_CUDA_HOST_COMPILER="$host_cxx"
 fi
 
 cmake --build build -j --target llm_tests
