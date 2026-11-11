@@ -1,7 +1,6 @@
 #include "llm/generate.hpp"
 #include "llm/tokenizer.hpp"
 
-#include "nn/context.hpp"
 #include "nn/transformer.hpp"
 
 #include <cstdint>
@@ -25,7 +24,6 @@ struct Options {
   int top_k = 40;
   float top_p = 0.9f;
   int seed = 1;
-  int gpu = 0;
   std::optional<std::string> once;
 };
 
@@ -48,8 +46,6 @@ void usage() {
       "  --top-k N                  default 40 (0 disables)\n"
       "  --top-p FLOAT              default 0.9\n"
       "  --seed N                   default 1\n"
-      "  --gpu N                    default 0. Device this nn build\n"
-      "                             accepts.\n"
       "  --once TEXT                one reply, then exit\n"
       "\n"
       "The prompt is the transcript, then \"User: \", the line, a newline, and\n"
@@ -93,7 +89,6 @@ Options parse(int argc, char** argv) {
     else if (flag == "--top-k") opt.top_k = need_int(i, argc, argv);
     else if (flag == "--top-p") opt.top_p = need_float(i, argc, argv);
     else if (flag == "--seed") opt.seed = need_int(i, argc, argv);
-    else if (flag == "--gpu") opt.gpu = need_int(i, argc, argv);
     else if (flag == "--once") opt.once = need(i, argc, argv);
     else throw std::runtime_error(argv[i]);
   }
@@ -105,7 +100,6 @@ Options parse(int argc, char** argv) {
     usage();
     throw std::runtime_error("model");
   }
-  if (opt.gpu < 0 || opt.gpu >= nn::device_count()) throw std::runtime_error("gpu");
   return opt;
 }
 
@@ -194,14 +188,13 @@ void interact(const llm::Tokenizer& tok, llm::Generator& generator, llm::Generat
 int main(int argc, char** argv) {
   try {
     const Options opt = parse(argc, argv);
-    std::fprintf(stderr, "gpu %d: %s\n", opt.gpu, nn::device_name(opt.gpu).c_str());
     const std::filesystem::path tok_path = opt.model / "tokenizer.bpe";
     const std::filesystem::path model_path = opt.model / "model.bin";
     if (!std::filesystem::is_regular_file(tok_path) || !std::filesystem::is_regular_file(model_path)) {
       throw std::runtime_error("model");
     }
 
-    nn::Context ctx(opt.gpu);
+    nn::Context ctx;
     const std::unique_ptr<llm::Tokenizer> tok = llm::Tokenizer::load(tok_path);
     nn::Transformer::Loaded loaded =
         nn::Transformer::load(ctx, model_path, nn::LoadMode::Inference);

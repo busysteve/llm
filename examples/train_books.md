@@ -5,7 +5,7 @@
 Build from the repository root. Requirements are in the [README](../README.md).
 
 ```bash
-./build.sh
+./build.sh opencl   # or: ./build.sh cuda
 cmake --build build -j --target train_books
 ```
 
@@ -103,11 +103,8 @@ Load `tokenizer.bpe` and `model.bin` together. `chat` does that for a dialogue c
 | `--top-k N` | 40 | `0` disables top-k |
 | `--top-p FLOAT` | 0.9 | nucleus threshold |
 | `--seed N` | 1 | model init and batch order |
-| `--gpu N` | 0 | device this nn build accepts |
 
 Weight decay stays 0.1. The cosine floor is one tenth of `--lr`. Eval is off unless `--early-stop` is positive. Defaults `--preset tiny`, `--seq-len 256`, and `--batch 4` fit a 12 GB GPU. `small` prefers 24 GB. `base` is a 24 GB model. On a smaller card keep `--seq-len` at 512 or below.
-
-`--gpu N` is the device index. `0` is the default, and the chosen name is printed on stderr before the books are read. The index is into the devices this `nn` build accepts. A negative index, or an index past that list, fails with `gpu`.
 
 `tiny`, `small`, and `base` use learned absolute positions and LayerNorm. `llama-tiny`, `llama-small`, and `llama-base` are the same widths with RoPE and RMSNorm, which is the block llama.cpp runs. Train one of those from scratch. A checkpoint that was trained with learned positions does not become that block.
 
@@ -153,7 +150,6 @@ Errors print `train_books: <reason>` on stderr and the process exits 1. Common r
 | `eval_every` | `--early-stop` is positive and `--eval-every` is not in `1 .. --steps` |
 | `valid_fraction` | `--valid-fraction` is not inside `(0, 1)` |
 | `preset` | the name is not `tiny`, `small`, `base`, `llama-tiny`, `llama-small`, or `llama-base` |
-| `gpu` | `--gpu` is negative, or it is past the devices this build can see |
 | a flag name | the flag is unknown, or its value is missing or not a number |
 
 Library details are in [USAGE.md](../USAGE.md). The one-paragraph acceptance run is [train_tiny](train_tiny.md). To keep training that checkpoint on more text, see [finetune](finetune.md).

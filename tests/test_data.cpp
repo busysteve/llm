@@ -1,5 +1,9 @@
 #include "llm/data.hpp"
 
+#if defined(LLM_NN_CUDA)
+#include <cuda_runtime.h>
+#endif
+
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -70,6 +74,19 @@ void write_text(const std::filesystem::path& path, const std::string& text) {
   CHECK(out.good());
 }
 
+std::vector<int64_t> index_to_host(const nn::IndexTensor& tensor) {
+#if defined(LLM_NN_CUDA)
+  tensor.context().synchronize();
+  std::vector<int64_t> host(static_cast<size_t>(tensor.numel()));
+  const cudaError_t err = cudaMemcpy(host.data(), tensor.data(), host.size() * sizeof(int64_t),
+                                      cudaMemcpyDeviceToHost);
+  CHECK(err == cudaSuccess);
+  return host;
+#else
+  return tensor.to_host();
+#endif
+}
+
 // Same draw as TextDataset::next: one uniform start per row, row 0 first.
 std::vector<int64_t> replay_starts(std::mt19937& rng, int batch_size, int64_t n_starts) {
   std::uniform_int_distribution<int64_t> start_dist(0, n_starts - 1);
@@ -89,8 +106,8 @@ void expect_batch(const std::vector<int32_t>& ids, const llm::Batch& batch,
   CHECK(batch.input_ids.numel() == static_cast<int64_t>(batch_size) * seq_len);
   CHECK(batch.labels.numel() == batch.input_ids.numel());
 
-  const std::vector<int64_t> input = batch.input_ids.to_host();
-  const std::vector<int64_t> labels = batch.labels.to_host();
+  const std::vector<int64_t> input = index_to_host(batch.input_ids);
+  const std::vector<int64_t> labels = index_to_host(batch.labels);
   CHECK(static_cast<int>(starts.size()) == batch_size);
   for (int row = 0; row < batch_size; ++row) {
     const int64_t start = starts[static_cast<size_t>(row)];

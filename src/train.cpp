@@ -90,7 +90,7 @@ void restore_best(const BestStep& best, nn::Context& ctx, nn::Transformer& model
   }
   opt.set_step_count(best.opt_step);
   opt.set_learning_rate(best.learning_rate);
-  // copy_from_host may return before the device has read the host snapshot.
+  // copy_from_host is async on CUDA. The host snapshot has to outlive that copy.
   ctx.synchronize();
   model.zero_grad();
   model.train();

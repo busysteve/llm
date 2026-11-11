@@ -5,7 +5,7 @@
 Build from the repository root. Requirements are in the [README](../README.md).
 
 ```bash
-./build.sh
+./build.sh opencl   # or: ./build.sh cuda
 cmake --build build -j --target train_books
 cmake --build build -j --target chat
 ```
@@ -101,10 +101,7 @@ Presets use `max_seq_len` 1024. The encoded prompt plus `--max-new-tokens` has t
 | `--top-k N` | 40 | `0` disables top-k |
 | `--top-p FLOAT` | 0.9 | nucleus threshold |
 | `--seed N` | 1 | sampling rng |
-| `--gpu N` | 0 | device this nn build accepts |
 | `--once TEXT` | | one reply, then exit |
-
-`--gpu N` is the device index. `0` is the default, and the chosen name is printed on stderr before the model is loaded. The index is into the devices this `nn` build accepts. A negative index, or an index past that list, fails with `gpu`.
 
 ## When it fails
 
@@ -113,7 +110,6 @@ Errors print `chat: <reason>` on stderr. In an interactive session the process s
 | Reason | Meaning |
 |---|---|
 | `model` | `--model` is missing, or the directory has no `tokenizer.bpe` or no `model.bin` |
-| `gpu` | `--gpu` is negative, or it is past the devices this build can see |
 | `prompt` | `--once` was given an empty string |
 | `max_seq_len` | the line plus `--max-new-tokens` is longer than the model allows |
 | `max_new_tokens`, `temperature`, `top_k`, `top_p` | that flag is out of range |
