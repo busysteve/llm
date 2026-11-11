@@ -1,6 +1,6 @@
 # How to train from a list of books
 
-`train_books` is the file-list example in [`train_books.cpp`](train_books.cpp). It reads a list of text files, trains a byte-level BPE tokenizer and a preset transformer, writes the tokenizer and the checkpoint, then loads both and prints a continuation. `--early-stop` can hold out a suffix of the tokens and stop when that validation loss stops falling. It is a separate program from `llm_tests`.
+`train_books` is the file-list example in [`train_books.cpp`](train_books.cpp). It reads a list of text files, trains a byte-level BPE tokenizer and a preset transformer, writes the tokenizer and the checkpoint, then loads both and prints a continuation. `--early-stop` can hold out a suffix of the tokens and stop when that validation loss stops falling. `--min-loss` can stop when a step's training loss reaches a threshold. It is a separate program from `llm_tests`.
 
 Build from the repository root. Requirements are in the [README](../README.md).
 
@@ -41,7 +41,13 @@ Progress is printed on stderr: each file and its size, the vocab and byte count,
 step 10 loss <loss> lr <lr> grad_norm <norm>
 ```
 
-With `--early-stop`, validation lines are printed on the same stream:
+When `--min-loss` trips, stdout also prints:
+
+```
+min_loss step <step> loss <loss>
+```
+
+`<step>` is the update that reached the threshold, and `<loss>` is that step's training loss. With `--early-stop`, validation lines are printed on the same stream:
 
 ```
 step 50 eval_ce <loss> perplexity <exp(loss)>
@@ -68,7 +74,7 @@ The default prompt, when `--prompt` is omitted, is the opening of the first file
 | `tokens.meta` | vocab size and length for `TextDataset` |
 | `model.bin` | version-2 façade checkpoint, including AdamW moments |
 
-With `--steps` of 500 or more, `model.bin` is also written every 500 steps. The final save always runs after the last step. `--steps` below 500 writes the checkpoint once, at the end. With `--early-stop`, that final file is the best validation step, including that step's AdamW moments, even when a 500-step write was a later step.
+With `--steps` of 500 or more, `model.bin` is also written every 500 steps. The final save always runs after the last step. `--steps` below 500 writes the checkpoint once, at the end. With `--early-stop`, that final file is the best validation step, including that step's AdamW moments, even when a 500-step write was a later step. When `--min-loss` stops the run, `model.bin` is the step whose training loss reached the threshold, including that step's AdamW moments.
 
 Load `tokenizer.bpe` and `model.bin` together. `chat` does that for a dialogue corpus. See [chat](chat.md).
 
@@ -87,6 +93,7 @@ Load `tokenizer.bpe` and `model.bin` together. `chat` does that for a dialogue c
 | `--warmup N` | 100 | linear warmup steps |
 | `--log-every N` | 10 | print every Nth step |
 | `--early-stop N` | 0 | stop after N validation evals with no loss drop. 0 keeps training for `--steps` |
+| `--min-loss FLOAT` | off | stop when a step's training loss is at or below `FLOAT` and keep that step |
 | `--eval-every N` | 0, or `min(50, --steps)` when `--early-stop` is positive | steps between validation evals |
 | `--valid-fraction FLOAT` | 0.1 | suffix of the token stream held out when `--early-stop` is positive |
 | `--lr FLOAT` | 3e-4 | peak learning rate |
@@ -115,6 +122,18 @@ Every `--eval-every` steps the run measures validation cross-entropy on 20 windo
   --early-stop 3
 ```
 
+## Loss threshold
+
+`--min-loss FLOAT` stops after an AdamW update whose training loss is at or below `FLOAT`. That loss is the mean next-token cross-entropy of the step's micro-batches, the same number printed as `loss`. It is separate from `eval_ce`. The threshold is off when the flag is omitted. `0` is a real threshold.
+
+The whole token stream stays in the training set. The weights, AdamW moments, and learning rate of the step that reached the threshold stay in place, and that is the `model.bin` at the end. A 500-step write from earlier in the run is replaced. When `--early-stop` is also set and this threshold trips first, the finished checkpoint is this step.
+
+```bash
+./build/train_books --files books.txt --out run \
+  --preset tiny --vocab 1024 --seq-len 256 --batch 4 --steps 1000 \
+  --min-loss 2.5
+```
+
 ## When it fails
 
 Errors print `train_books: <reason>` on stderr and the process exits 1. Common reasons:
@@ -127,6 +146,7 @@ Errors print `train_books: <reason>` on stderr and the process exits 1. Common r
 | `short valid` | `--early-stop` is positive and the stream cannot be split into two spans of `--seq-len + 1` tokens |
 | `seq_len` | `--seq-len` is above 1024 |
 | `early_stop` | `--early-stop` is negative |
+| `min_loss` | `--min-loss` is negative or infinite |
 | `eval_every` | `--early-stop` is positive and `--eval-every` is not in `1 .. --steps` |
 | `valid_fraction` | `--valid-fraction` is not inside `(0, 1)` |
 | `preset` | the name is not `tiny`, `small`, `base`, `llama-tiny`, `llama-small`, or `llama-base` |

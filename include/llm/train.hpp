@@ -5,6 +5,7 @@
 #include "nn/transformer.hpp"
 
 #include <filesystem>
+#include <limits>
 #include <random>
 
 namespace llm {
@@ -30,6 +31,9 @@ struct TrainConfig {
   // evals with no improvement and restores the best step.
   int early_stop_patience = 0;
   float early_stop_min_delta = 0.f;
+  // NaN is off. A finite value >= 0 stops when a step's training loss is at
+  // or below it and keeps that step.
+  float min_loss = std::numeric_limits<float>::quiet_NaN();
   std::filesystem::path checkpoint_path;
 };
 
@@ -39,7 +43,7 @@ float learning_rate_at(const TrainConfig& cfg, int step);
 class Trainer {
  public:
   Trainer(nn::Context& ctx, nn::Transformer& model, nn::AdamW& opt, TrainConfig cfg);
-  // Last step that ran. Less than max_steps when patience stops the loop.
+  // Last step that ran. Less than max_steps when patience or min_loss stops early.
   int fit(TextDataset& train, TextDataset* valid, std::mt19937& rng);
 
  private:

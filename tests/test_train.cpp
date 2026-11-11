@@ -211,6 +211,12 @@ void check_fit(nn::Context& ctx) {
   bad = cfg;
   bad.early_stop_min_delta = std::numeric_limits<float>::infinity();
   check_invalid([&] { llm::Trainer trainer(ctx, model, opt, bad); }, "early_stop_min_delta");
+  bad = cfg;
+  bad.min_loss = -1.f;
+  check_invalid([&] { llm::Trainer trainer(ctx, model, opt, bad); }, "min_loss");
+  bad = cfg;
+  bad.min_loss = std::numeric_limits<float>::infinity();
+  check_invalid([&] { llm::Trainer trainer(ctx, model, opt, bad); }, "min_loss");
 
   const std::vector<float> before = model.parameters().front().value->to_host();
   llm::Trainer trainer(ctx, model, opt, cfg);
@@ -349,6 +355,101 @@ void check_early_stop(nn::Context& ctx) {
   std::filesystem::remove_all(dir);
 }
 
+void check_min_loss(nn::Context& ctx) {
+  const std::filesystem::path dir = std::filesystem::temp_directory_path() / "llm-min-loss-test";
+  std::filesystem::remove_all(dir);
+  std::filesystem::create_directories(dir);
+  const std::filesystem::path bin = dir / "tokens.bin";
+  const std::filesystem::path meta = dir / "tokens.meta";
+  const std::filesystem::path ckpt = dir / "model.bin";
+
+  constexpr int32_t kVocab = 32;
+  std::vector<int32_t> ids(64);
+  for (size_t i = 0; i < ids.size(); ++i) ids[i] = static_cast<int32_t>(i % static_cast<size_t>(kVocab));
+  llm::write_token_file(bin, meta, ids, kVocab);
+
+  // min_lr == learning_rate keeps step 1 identical across different max_steps.
+  llm::TrainConfig base;
+  base.learning_rate = 1e-2f;
+  base.min_lr = 1e-2f;
+  base.weight_decay = 0.1f;
+  base.batch_size = 2;
+  base.seq_len = 4;
+  base.grad_accum_steps = 1;
+  base.warmup_steps = 0;
+  base.log_every = 0;
+  base.eval_every = 0;
+  base.grad_clip_norm = 1.f;
+
+  std::vector<std::vector<float>> want_params;
+  std::vector<std::vector<float>> want_m;
+  std::vector<std::vector<float>> want_v;
+  {
+    llm::TextDataset train(bin, meta);
+    nn::Transformer model(ctx, tiny_config(kVocab), 1);
+    nn::AdamW opt(llm::adamw_groups(model, 0.1f), base.learning_rate, 0.9f, 0.95f, 1e-8f);
+    llm::TrainConfig cfg = base;
+    cfg.max_steps = 1;
+    llm::Trainer trainer(ctx, model, opt, cfg);
+    std::mt19937 rng(1);
+    CHECK(trainer.fit(train, nullptr, rng) == 1);
+    CHECK(opt.step_count() == 1);
+    want_params = take_params(model);
+    want_m = take_tensors(opt.m());
+    want_v = take_tensors(opt.v());
+  }
+
+  {
+    llm::TextDataset train(bin, meta);
+    llm::TextDataset valid(bin, meta);
+    nn::Transformer model(ctx, tiny_config(kVocab), 1);
+    nn::AdamW opt(llm::adamw_groups(model, 0.1f), base.learning_rate, 0.9f, 0.95f, 1e-8f);
+    llm::TrainConfig cfg = base;
+    cfg.max_steps = 4;
+    cfg.min_loss = 1e6f;
+    cfg.early_stop_patience = 1;
+    cfg.early_stop_min_delta = 1e6f;
+    cfg.eval_every = 1;
+    cfg.eval_batches = 1;
+    cfg.ckpt_every = 0;
+    cfg.checkpoint_path = ckpt;
+    llm::Trainer trainer(ctx, model, opt, cfg);
+    std::mt19937 rng(1);
+    // Any real loss is below 1e6, so the threshold stops on step 1.
+    // Patience would have continued to step 2 and restored that baseline.
+    CHECK(trainer.fit(train, &valid, rng) == 1);
+    CHECK(opt.step_count() == 1);
+    check_same_params(want_params, model);
+    check_same_tensors(want_m, opt.m());
+    check_same_tensors(want_v, opt.v());
+
+    nn::Context loaded_ctx;
+    nn::Transformer::Loaded loaded = nn::Transformer::load(loaded_ctx, ckpt, nn::LoadMode::Resume);
+    CHECK(loaded.adamw.has_value());
+    CHECK(loaded.adamw->step_count() == 1);
+    CHECK(loaded.step == 1);
+    check_same_params(want_params, loaded.model);
+    check_same_tensors(want_m, loaded.adamw->m());
+    check_same_tensors(want_v, loaded.adamw->v());
+  }
+
+  {
+    llm::TextDataset train(bin, meta);
+    nn::Transformer model(ctx, tiny_config(kVocab), 1);
+    nn::AdamW opt(llm::adamw_groups(model, 0.1f), base.learning_rate, 0.9f, 0.95f, 1e-8f);
+    llm::TrainConfig cfg = base;
+    cfg.max_steps = 2;
+    cfg.min_loss = 0.f;
+    llm::Trainer trainer(ctx, model, opt, cfg);
+    std::mt19937 rng(1);
+    // Cross-entropy of an untrained step stays above 0, so the run finishes.
+    CHECK(trainer.fit(train, nullptr, rng) == 2);
+    CHECK(opt.step_count() == 2);
+  }
+
+  std::filesystem::remove_all(dir);
+}
+
 void check_generate(nn::Context& ctx) {
   const auto tok = llm::BpeTokenizer::train({"ab"}, 259);
   nn::Transformer model(ctx, tiny_config(tok->vocab_size()), 2);
@@ -428,6 +529,7 @@ void run_train_tests() {
     nn::Context ctx;
     check_fit(ctx);
     check_early_stop(ctx);
+    check_min_loss(ctx);
     check_generate(ctx);
   }
   check_presets();

@@ -40,6 +40,10 @@ void validate(const TrainConfig& cfg) {
   if (!std::isfinite(cfg.early_stop_min_delta) || cfg.early_stop_min_delta < 0.f) {
     throw std::invalid_argument("early_stop_min_delta");
   }
+  // NaN leaves the threshold off. Inf would stop on every finite loss.
+  if (!std::isnan(cfg.min_loss) && (!std::isfinite(cfg.min_loss) || cfg.min_loss < 0.f)) {
+    throw std::invalid_argument("min_loss");
+  }
   if (!std::isfinite(cfg.grad_clip_norm) || cfg.grad_clip_norm < 0.f) {
     throw std::invalid_argument("grad_clip_norm");
   }
@@ -138,6 +142,8 @@ int Trainer::fit(TextDataset& train, TextDataset* valid, std::mt19937& rng) {
   bool have_best = false;
   int waited = 0;
   int last_step = cfg_.max_steps;
+  bool hit_min_loss = false;
+  float stop_loss = 0.f;
 
   for (int step = 1; step <= cfg_.max_steps; ++step) {
     const float lr = learning_rate_at(cfg_, step);
@@ -177,6 +183,15 @@ int Trainer::fit(TextDataset& train, TextDataset* valid, std::mt19937& rng) {
       std::fflush(stdout);
     }
 
+    // The logged loss is this step's mean, measured before the update.
+    // Keep the weights from that update and skip an older validation restore.
+    if (std::isfinite(cfg_.min_loss) && std::isfinite(loss_value) && loss_value <= cfg_.min_loss) {
+      hit_min_loss = true;
+      stop_loss = loss_value;
+      last_step = step;
+      break;
+    }
+
     bool stop = false;
     if (valid != nullptr && cfg_.eval_every > 0 && cfg_.eval_batches > 0 && step % cfg_.eval_every == 0) {
       model_->eval();
@@ -212,6 +227,15 @@ int Trainer::fit(TextDataset& train, TextDataset* valid, std::mt19937& rng) {
     if (cfg_.ckpt_every > 0 && step % cfg_.ckpt_every == 0 && !cfg_.checkpoint_path.empty()) {
       model_->save(cfg_.checkpoint_path, opt_);
     }
+  }
+
+  if (hit_min_loss) {
+    model_->zero_grad();
+    model_->train();
+    if (!cfg_.checkpoint_path.empty()) model_->save(cfg_.checkpoint_path, opt_);
+    std::printf("min_loss step %d loss %.6f\n", last_step, stop_loss);
+    std::fflush(stdout);
+    return last_step;
   }
 
   if (have_best) {

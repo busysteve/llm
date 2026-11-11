@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -39,6 +40,7 @@ struct Options {
   int early_stop = 0;
   int eval_every = 0;
   float valid_fraction = 0.1f;
+  float min_loss = std::numeric_limits<float>::quiet_NaN();
   float lr = 3e-4f;
   int max_new_tokens = 80;
   float temperature = 0.8f;
@@ -71,6 +73,9 @@ void usage() {
       "  --early-stop N             default 0 (off). Stop after N validation\n"
       "                             evals with no loss drop and keep the best\n"
       "                             step, so later updates do not overfit.\n"
+      "  --min-loss FLOAT           default off. Stop when a step's training\n"
+      "                             loss is at or below FLOAT and keep that\n"
+      "                             step.\n"
       "  --eval-every N             default 0, or min(50, --steps) when\n"
       "                             --early-stop is positive\n"
       "  --valid-fraction FLOAT     default 0.1. Suffix held out for that\n"
@@ -118,6 +123,7 @@ Options parse(int argc, char** argv) {
   Options opt;
   bool help = false;
   bool eval_every_set = false;
+  bool min_loss_set = false;
   for (int i = 1; i < argc; ++i) {
     const std::string_view flag = argv[i];
     if (flag == "--help" || flag == "-h") help = true;
@@ -132,7 +138,10 @@ Options parse(int argc, char** argv) {
     else if (flag == "--warmup") opt.warmup = need_int(i, argc, argv);
     else if (flag == "--log-every") opt.log_every = need_int(i, argc, argv);
     else if (flag == "--early-stop") opt.early_stop = need_int(i, argc, argv);
-    else if (flag == "--eval-every") {
+    else if (flag == "--min-loss") {
+      opt.min_loss = need_float(i, argc, argv);
+      min_loss_set = true;
+    } else if (flag == "--eval-every") {
       opt.eval_every = need_int(i, argc, argv);
       eval_every_set = true;
     } else if (flag == "--valid-fraction") opt.valid_fraction = need_float(i, argc, argv);
@@ -153,6 +162,9 @@ Options parse(int argc, char** argv) {
     opt.eval_every = (opt.early_stop > 0 && opt.steps > 0) ? std::min(opt.steps, 50) : 0;
   }
   if (opt.early_stop < 0) throw std::runtime_error("early_stop");
+  if (min_loss_set && (!std::isfinite(opt.min_loss) || opt.min_loss < 0.f)) {
+    throw std::runtime_error("min_loss");
+  }
   if (!std::isfinite(opt.valid_fraction) || opt.valid_fraction <= 0.f || opt.valid_fraction >= 1.f) {
     throw std::runtime_error("valid_fraction");
   }
@@ -350,6 +362,7 @@ int main(int argc, char** argv) {
       cfg.eval_every = 0;
       cfg.ckpt_every = opt.steps >= 500 ? 500 : 0;
       cfg.checkpoint_path = model_path;
+      cfg.min_loss = opt.min_loss;
       if (opt.early_stop > 0) {
         cfg.eval_every = opt.eval_every;
         cfg.eval_batches = 20;
