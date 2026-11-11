@@ -1,50 +1,22 @@
 #!/bin/sh
-# Configure and build llm against either backend:
-#   ./build.sh cuda     sibling ../nn    (CUDA nn, architecture 86 unless CMAKE_CUDA_ARCHITECTURES is set)
-#   ./build.sh opencl   sibling ../nnCL  (OpenCL)
-# With no argument, NN_SOURCE is used when set. Otherwise OpenCL is chosen when
-# ../nnCL is present and nvcc is not, and CUDA is chosen otherwise.
+# Configure and build llm against an nn checkout.
+# NN_SOURCE defaults to the sibling ../nn. That tree supplies the CMake target nn.
 set -eu
 
 cd "$(dirname "$0")"
 
-backend="${1:-}"
-nn_source="${NN_SOURCE:-}"
-
-usage() {
-  echo "usage: ./build.sh [cuda|opencl]" >&2
+if [ "$#" -ne 0 ]; then
+  echo "usage: ./build.sh" >&2
+  echo "Set NN_SOURCE to an nn checkout. The default is ../nn." >&2
   exit 1
-}
-
-case "$backend" in
-  cuda|nn)
-    nn_source="$(CDPATH= cd ../nn && pwd)"
-    ;;
-  opencl|nncl|nnCL)
-    nn_source="$(CDPATH= cd ../nnCL && pwd)"
-    ;;
-  "")
-    if [ -z "$nn_source" ]; then
-      if [ -f ../nnCL/src/kernels.cl ] && ! command -v nvcc >/dev/null 2>&1; then
-        nn_source="$(CDPATH= cd ../nnCL && pwd)"
-      else
-        nn_source="$(CDPATH= cd ../nn && pwd)"
-      fi
-    fi
-    ;;
-  *)
-    usage
-    ;;
-esac
-
-if [ -f "$nn_source/src/kernels.cl" ]; then
-  echo "llm backend: OpenCL ($nn_source)"
-  cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DNN_SOURCE="$nn_source"
-else
-  echo "llm backend: CUDA ($nn_source)"
-  cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DNN_SOURCE="$nn_source" \
-    -DCMAKE_CUDA_ARCHITECTURES="${CMAKE_CUDA_ARCHITECTURES:-86}"
 fi
+
+nn_source="${NN_SOURCE:-}"
+if [ -z "$nn_source" ]; then
+  nn_source="$(CDPATH= cd ../nn && pwd)"
+fi
+
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DNN_SOURCE="$nn_source"
 
 cmake --build build -j --target llm_tests
 cmake --build build -j --target gguf

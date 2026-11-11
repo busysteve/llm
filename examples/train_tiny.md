@@ -5,12 +5,10 @@
 Build from the repository root. Requirements are in the [README](../README.md).
 
 ```bash
-./build.sh opencl   # or: ./build.sh cuda
+./build.sh
 cmake --build build -j --target train_tiny
 ./build/train_tiny
 ```
-
-For the CUDA backend, `CMAKE_CUDA_ARCHITECTURES` defaults to `86`. Set it to the GPU you have before `./build.sh cuda`.
 
 ## What it trains on
 

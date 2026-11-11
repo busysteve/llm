@@ -2,20 +2,17 @@
 
 A C++17 library for small decoder-only language models, built beside [`nn`](../nn). This tree is the tokenizer, the token dataset, transformer presets, the trainer, and the generator.
 
-Public headers live under `include/llm/` and do not include CUDA or OpenCL headers. The `llm` target links `nn`. That library is either the CUDA tree [`nn`](../nn) or the OpenCL tree [`nnCL`](../nnCL).
+Public headers live under `include/llm/` and do not include device headers. The `llm` target links `nn`. The default checkout is the sibling [`nn`](../nn). Set `NN_SOURCE` to another tree that provides the CMake target `nn`, such as [`nnCL`](../nnCL).
 
 ## Requirements
 
 - C++17 and CMake 3.24 or newer
-- One backend checkout next to this tree:
-  - CUDA: `../nn`, plus the CUDA Toolkit and cuDNN that `nn` needs. `CMAKE_CUDA_ARCHITECTURES` defaults to `86`.
-  - OpenCL: `../nnCL`, plus an OpenCL ICD and a GPU. Do not set `RUSTICL_ENABLE`.
+- An `nn` checkout. The default is `../nn`. Device toolkits are that project's requirement.
 
-`./build.sh cuda` configures against `../nn`. `./build.sh opencl` configures against `../nnCL`. With no argument, `NN_SOURCE` is used when it is set; otherwise OpenCL is chosen when `../nnCL` is present and `nvcc` is not. `add_subdirectory(... EXCLUDE_FROM_ALL)` builds `nn` only as a dependency of `llm`, so that project's tests are not part of `all`.
+`./build.sh` configures against `NN_SOURCE`, or `../nn` when that variable is unset. `add_subdirectory(... EXCLUDE_FROM_ALL)` builds `nn` only as a dependency of `llm`, so that project's tests are not part of `all`.
 
 ```bash
-./build.sh opencl
-# or: ./build.sh cuda
+./build.sh
 ```
 
 The script configures `build/`, then builds and runs `llm_tests` and `train_tiny`, and builds `train_books`, `chat`, and `gguf`. To build one target after configuring:

@@ -5,7 +5,7 @@
 Build from the repository root. Requirements are in the [README](../README.md).
 
 ```bash
-./build.sh opencl   # or: ./build.sh cuda
+./build.sh
 cmake --build build -j --target train_books
 cmake --build build -j --target chat
 ```
@@ -101,10 +101,10 @@ Presets use `max_seq_len` 1024. The encoded prompt plus `--max-new-tokens` has t
 | `--top-k N` | 40 | `0` disables top-k |
 | `--top-p FLOAT` | 0.9 | nucleus threshold |
 | `--seed N` | 1 | sampling rng |
-| `--gpu N` | 0 | CUDA device, or the OpenCL device this build accepts |
+| `--gpu N` | 0 | device this nn build accepts |
 | `--once TEXT` | | one reply, then exit |
 
-`--gpu N` is the device index. `0` is the default, and the chosen name is printed on stderr before the model is loaded. A CUDA build uses CUDA device N. An OpenCL build uses the Nth device that build accepts: `NNCL_OPENCL=auto` counts GPUs whose work-group size is at least 256, and `intel` can count the CPU device when no Intel GPU is listed. A negative index, or an index past that list, fails with `gpu`.
+`--gpu N` is the device index. `0` is the default, and the chosen name is printed on stderr before the model is loaded. The index is into the devices this `nn` build accepts. A negative index, or an index past that list, fails with `gpu`.
 
 ## When it fails
 

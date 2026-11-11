@@ -1,9 +1,9 @@
 # How to convert a checkpoint to GGUF
 
-`gguf` converts a transformer `model.bin` to a [GGUF](https://github.com/ggml-org/ggml/blob/master/docs/gguf.md) version 3 file and converts that file back. It can also write a llama.cpp file from the same checkpoint. The source is [`gguf.cpp`](gguf.cpp). It does not link `llm` or a device backend, and it is a separate program from `llm_tests`. Configuring the tree still selects `nn` or `nnCL`, the same way as the other targets.
+`gguf` converts a transformer `model.bin` to a [GGUF](https://github.com/ggml-org/ggml/blob/master/docs/gguf.md) version 3 file and converts that file back. It can also write a llama.cpp file from the same checkpoint. The source is [`gguf.cpp`](gguf.cpp). It does not link `llm` or `nn`, and it is a separate program from `llm_tests`. Configuring the tree still points `NN_SOURCE` at an `nn` checkout.
 
 ```bash
-./build.sh opencl   # or: ./build.sh cuda
+./build.sh
 cmake --build build -j --target gguf
 ./build/gguf export run/model.bin run/model.gguf
 ./build/gguf import run/model.gguf run-again/model.bin
