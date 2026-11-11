@@ -76,6 +76,8 @@ llm::TextDataset data(tokens_bin, meta_path);
 
 `TextDataset` reads both files into host memory. `numel()` and `vocab_size()` return the meta values. The constructor throws `std::runtime_error("token meta")` for a missing meta file or a file that is not those two integers (each `>= 0` for `numel`, `vocab_size` in `1 .. 2^31-1`, and no third line). It throws `std::runtime_error("token read")` for a missing bin, a short read, or a byte length that is not a multiple of 4. It throws `std::runtime_error("numel")` when that length is not `numel` int32s, and `std::runtime_error("vocab_size")` when a stored id is negative or `>= vocab_size`.
 
+`TextDataset(ids, vocab_size)` takes host ids and does not touch the files. It throws `std::invalid_argument("vocab_size")` when `vocab_size < 1`, and `std::invalid_argument("id")` when an id is negative or `>= vocab_size`. `numel()` is `ids.size()`.
+
 ## next()
 
 ```cpp
@@ -141,6 +143,8 @@ The run writes `run/tokenizer.bpe`, `run/tokens.bin`, `run/tokens.meta`, and `ru
 
 `--preset` is `tiny`, `small`, `base`, `llama-tiny`, `llama-small`, or `llama-base`. The `llama-*` names train the RoPE and RMSNorm block from scratch. `--seq-len` must be at most 1024. `--vocab` must be at least 259. Tokenizer training scans every byte once per merge, so a vocab of 4096 on several long books is much slower than the GPU steps. `--vocab 1024` is a faster first run. Defaults are `--preset tiny`, `--seq-len 256`, `--batch 4`, which fits a 12 GB GPU. `small` prefers 24 GB. `base` is a 24 GB model; keep the sequence at 512 or below on a smaller card. `--temperature 0` is greedy. `--help` prints the flags.
 
+`--early-stop N` with `N > 0` holds out the last `--valid-fraction` (default `0.1`) of the token stream, trains on the prefix, and stops after `N` validation evals with no drop in cross-entropy. The saved checkpoint is that best step. `tokens.bin` stays the full stream. `--early-stop 0` trains on the whole stream and does not evaluate.
+
 ## Talk to a trained model
 
 `examples/chat.cpp` loads `tokenizer.bpe` and `model.bin` from a `train_books` directory. It is not part of `llm_tests`. Training stays in `train_books`. The walkthrough is [examples/chat.md](examples/chat.md). Put one exchange in each file. `train_books` appends eos after each file, so that token ends the assistant turn:
@@ -203,7 +207,7 @@ llm::Trainer trainer(ctx, model, opt, cfg);
 trainer.fit(train, &valid, rng);
 ```
 
-`TrainConfig` defaults are `learning_rate` `3e-4`, `weight_decay` `0.1`, `beta1` `0.9`, `beta2` `0.95`, `batch_size` 8, `seq_len` 512, `max_steps` 10000, `grad_accum_steps` 1, `warmup_steps` 100, `min_lr` `3e-5`, `log_every` 50, `eval_every` 500, `eval_batches` 20, `ckpt_every` 1000, `grad_clip_norm` 1, `abort_on_non_finite` true, and an empty `checkpoint_path`. The constructor throws `std::invalid_argument` with the field name when `batch_size`, `seq_len`, `max_steps`, or `grad_accum_steps` is not positive; when `warmup_steps`, `log_every`, `eval_every`, `eval_batches`, or `ckpt_every` is negative; when `learning_rate` or `min_lr` is NaN, infinite, or negative; or when `grad_clip_norm` is NaN, infinite, or negative.
+`TrainConfig` defaults are `learning_rate` `3e-4`, `weight_decay` `0.1`, `beta1` `0.9`, `beta2` `0.95`, `batch_size` 8, `seq_len` 512, `max_steps` 10000, `grad_accum_steps` 1, `warmup_steps` 100, `min_lr` `3e-5`, `log_every` 50, `eval_every` 500, `eval_batches` 20, `ckpt_every` 1000, `grad_clip_norm` 1, `abort_on_non_finite` true, `early_stop_patience` 0, `early_stop_min_delta` 0, and an empty `checkpoint_path`. The constructor throws `std::invalid_argument` with the field name when `batch_size`, `seq_len`, `max_steps`, or `grad_accum_steps` is not positive; when `warmup_steps`, `log_every`, `eval_every`, `eval_batches`, `ckpt_every`, or `early_stop_patience` is negative; when `learning_rate` or `min_lr` is NaN, infinite, or negative; when `early_stop_min_delta` is NaN, infinite, or negative; or when `grad_clip_norm` is NaN, infinite, or negative.
 
 `weight_decay`, `beta1`, and `beta2` are the values to use when building `AdamW`. `fit` does not rebuild the optimizer. It calls `set_learning_rate` from `learning_rate_at`.
 
@@ -212,6 +216,10 @@ trainer.fit(train, &valid, rng);
 Each optimizer step calls `train` and `zero_grad` once, then `grad_accum_steps` micro-batches. A micro-batch is `next`, `forward`, and `sequence_cross_entropy` with ignore index `-100`. The logit gradient is scaled in place by `1 / grad_accum_steps` and passed to `backward`. `opt.step` runs after the micro-batches. A non-finite micro-batch loss throws `std::runtime_error("non-finite loss")` before that backward when `abort_on_non_finite` is set. `grad_clip_norm > 0` clips with `clip_grad_norm`. A non-finite norm throws `std::runtime_error("non-finite grad")`. `grad_clip_norm == 0` does not clip.
 
 `log_every > 0` prints step, loss, learning rate, and grad norm when `step % log_every == 0`. The printed loss is the mean of the micro-batch losses. When `valid` is non-null, `eval_every > 0`, and `eval_batches > 0`, the same cadence runs `eval_batches` forwards under `eval`, prints the mean cross-entropy and `exp` of that mean, then returns to `train`. When `ckpt_every > 0` and `checkpoint_path` is non-empty, the same cadence calls `model.save(checkpoint_path, &opt)`. That file is checkpoint version 2 with AdamW moments and the façade embeddings.
+
+`fit` returns the last step that ran. That is `max_steps` when `early_stop_patience` is 0 or patience never trips. When patience trips, the return is the step that exhausted it, which is greater than the restored step.
+
+When `early_stop_patience` is positive, `fit` throws `std::invalid_argument("early_stop_patience")` when `valid` is null, `eval_every` or `eval_batches` is not positive, or `eval_every` is greater than `max_steps`. After each eval, a finite mean cross-entropy that is lower than the best by more than `early_stop_min_delta` becomes the new best. The first finite eval is always the best. The weights, AdamW moments, `step_count`, and learning rate are copied to the host at that step. An eval that does not improve adds one to the wait count. A non-finite eval mean throws `std::runtime_error("non-finite loss")` when `abort_on_non_finite` is set, and otherwise counts as no improvement. When the wait count reaches `early_stop_patience`, `fit` stops. At the end, if a best step was stored, those weights and moments are copied back, grads are zeroed, and a non-empty `checkpoint_path` is saved. A `ckpt_every` write during the loop can still store a later step; the save at the end replaces it with the best step. `fit` prints `early_stop step <last> best_step <best> best_eval_ce <ce>`. `<last>` is the returned step. `<best>` is the restored step.
 
 ## Generator
 

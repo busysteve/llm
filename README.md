@@ -95,7 +95,7 @@ tiny fits in 12 GB. Suggested batches are `(8, 512)` and `(16, 256)`. small is t
 
 ## Trainer
 
-`Trainer::fit` runs `max_steps` AdamW updates. Each step is 1-based. The learning rate warms up linearly, then follows a cosine down to `min_lr`. `learning_rate_at` is that schedule. Micro-batches accumulate gradients on device (`Tensor::scale` by `1 / grad_accum_steps`) before one clip and one `opt.step`. A non-finite loss or grad norm throws when `abort_on_non_finite` is set. Eval, when a validation set is passed, prints mean cross-entropy and perplexity. Checkpoints use `Transformer::save(path, &adamw)`, so the file is version 2 and includes embeddings and AdamW moments.
+`Trainer::fit` runs `max_steps` AdamW updates. Each step is 1-based. The learning rate warms up linearly, then follows a cosine down to `min_lr`. `learning_rate_at` is that schedule. Micro-batches accumulate gradients on device (`Tensor::scale` by `1 / grad_accum_steps`) before one clip and one `opt.step`. A non-finite loss or grad norm throws when `abort_on_non_finite` is set. Eval, when a validation set is passed, prints mean cross-entropy and perplexity. A positive `early_stop_patience` stops after that many validation evals with no improvement and restores the best step, including AdamW moments. Checkpoints use `Transformer::save(path, &adamw)`, so the file is version 2 and includes embeddings and AdamW moments.
 
 ## Generator
 

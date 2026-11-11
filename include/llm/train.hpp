@@ -26,6 +26,10 @@ struct TrainConfig {
   int ckpt_every = 1000;
   float grad_clip_norm = 1.f;
   bool abort_on_non_finite = true;
+  // 0 runs every step. A positive count stops after that many validation
+  // evals with no improvement and restores the best step.
+  int early_stop_patience = 0;
+  float early_stop_min_delta = 0.f;
   std::filesystem::path checkpoint_path;
 };
 
@@ -35,7 +39,8 @@ float learning_rate_at(const TrainConfig& cfg, int step);
 class Trainer {
  public:
   Trainer(nn::Context& ctx, nn::Transformer& model, nn::AdamW& opt, TrainConfig cfg);
-  void fit(TextDataset& train, TextDataset* valid, std::mt19937& rng);
+  // Last step that ran. Less than max_steps when patience stops the loop.
+  int fit(TextDataset& train, TextDataset* valid, std::mt19937& rng);
 
  private:
   nn::Context* ctx_ = nullptr;

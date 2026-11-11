@@ -42,6 +42,33 @@ bool same_bits(const std::vector<float>& left, const std::vector<float>& right) 
   return std::memcmp(left.data(), right.data(), left.size() * sizeof(float)) == 0;
 }
 
+std::vector<std::vector<float>> take_params(const nn::Transformer& model) {
+  std::vector<std::vector<float>> out;
+  const std::vector<nn::NamedParam> params = model.parameters();
+  out.reserve(params.size());
+  for (const nn::NamedParam& param : params) out.push_back(param.value->to_host());
+  return out;
+}
+
+std::vector<std::vector<float>> take_tensors(const std::vector<nn::Tensor>& tensors) {
+  std::vector<std::vector<float>> out;
+  out.reserve(tensors.size());
+  for (const nn::Tensor& tensor : tensors) out.push_back(tensor.to_host());
+  return out;
+}
+
+void check_same_params(const std::vector<std::vector<float>>& want, const nn::Transformer& model) {
+  const std::vector<nn::NamedParam> params = model.parameters();
+  CHECK(params.size() == want.size());
+  for (size_t i = 0; i < want.size(); ++i) CHECK(same_bits(want[i], params[i].value->to_host()));
+}
+
+void check_same_tensors(const std::vector<std::vector<float>>& want,
+                        const std::vector<nn::Tensor>& got) {
+  CHECK(got.size() == want.size());
+  for (size_t i = 0; i < want.size(); ++i) CHECK(same_bits(want[i], got[i].to_host()));
+}
+
 int64_t param_numel(const nn::Transformer& model) {
   int64_t n = 0;
   for (const nn::NamedParam& param : model.parameters()) n += param.value->numel();
@@ -175,11 +202,20 @@ void check_fit(nn::Context& ctx) {
   bad = cfg;
   bad.grad_clip_norm = -1.f;
   check_invalid([&] { llm::Trainer trainer(ctx, model, opt, bad); }, "grad_clip_norm");
+  bad = cfg;
+  bad.early_stop_patience = -1;
+  check_invalid([&] { llm::Trainer trainer(ctx, model, opt, bad); }, "early_stop_patience");
+  bad = cfg;
+  bad.early_stop_min_delta = -1.f;
+  check_invalid([&] { llm::Trainer trainer(ctx, model, opt, bad); }, "early_stop_min_delta");
+  bad = cfg;
+  bad.early_stop_min_delta = std::numeric_limits<float>::infinity();
+  check_invalid([&] { llm::Trainer trainer(ctx, model, opt, bad); }, "early_stop_min_delta");
 
   const std::vector<float> before = model.parameters().front().value->to_host();
   llm::Trainer trainer(ctx, model, opt, cfg);
   std::mt19937 rng(1);
-  trainer.fit(data, &data, rng);
+  CHECK(trainer.fit(data, &data, rng) == 2);
   const std::vector<nn::NamedParam> trained = model.parameters();
   CHECK(!same_bits(before, trained.front().value->to_host()));
 
@@ -193,6 +229,122 @@ void check_fit(nn::Context& ctx) {
   CHECK(restored.size() == trained.size());
   CHECK(restored.front().name == "tok_emb.weight");
   CHECK(same_bits(trained.front().value->to_host(), restored.front().value->to_host()));
+
+  std::filesystem::remove_all(dir);
+}
+
+void check_early_stop(nn::Context& ctx) {
+  const std::filesystem::path dir = std::filesystem::temp_directory_path() / "llm-early-stop-test";
+  std::filesystem::remove_all(dir);
+  std::filesystem::create_directories(dir);
+  const std::filesystem::path bin = dir / "tokens.bin";
+  const std::filesystem::path meta = dir / "tokens.meta";
+  const std::filesystem::path ckpt = dir / "model.bin";
+
+  constexpr int32_t kVocab = 32;
+  std::vector<int32_t> ids(64);
+  for (size_t i = 0; i < ids.size(); ++i) ids[i] = static_cast<int32_t>(i % static_cast<size_t>(kVocab));
+  llm::write_token_file(bin, meta, ids, kVocab);
+  llm::TextDataset train(bin, meta);
+  llm::TextDataset valid(bin, meta);
+
+  // min_lr == learning_rate keeps step 1 identical across different max_steps.
+  llm::TrainConfig base;
+  base.learning_rate = 1e-2f;
+  base.min_lr = 1e-2f;
+  base.weight_decay = 0.1f;
+  base.batch_size = 2;
+  base.seq_len = 4;
+  base.grad_accum_steps = 1;
+  base.warmup_steps = 0;
+  base.log_every = 0;
+  base.eval_every = 1;
+  base.eval_batches = 1;
+  base.grad_clip_norm = 1.f;
+
+  {
+    nn::Transformer model(ctx, tiny_config(kVocab), 1);
+    nn::AdamW opt(llm::adamw_groups(model, 0.1f), base.learning_rate, 0.9f, 0.95f, 1e-8f);
+    llm::TrainConfig bad = base;
+    bad.max_steps = 4;
+    bad.early_stop_patience = 1;
+    bad.eval_every = 0;
+    llm::Trainer trainer(ctx, model, opt, bad);
+    std::mt19937 rng(1);
+    check_invalid([&] { trainer.fit(train, nullptr, rng); }, "early_stop_patience");
+    bad.eval_every = 1;
+    bad.eval_batches = 0;
+    llm::Trainer trainer_batches(ctx, model, opt, bad);
+    check_invalid([&] { trainer_batches.fit(train, &valid, rng); }, "early_stop_patience");
+    bad.eval_batches = 1;
+    bad.eval_every = 8;
+    llm::Trainer trainer_gap(ctx, model, opt, bad);
+    check_invalid([&] { trainer_gap.fit(train, &valid, rng); }, "early_stop_patience");
+  }
+
+  std::vector<std::vector<float>> want_params;
+  std::vector<std::vector<float>> want_m;
+  std::vector<std::vector<float>> want_v;
+  {
+    nn::Transformer model(ctx, tiny_config(kVocab), 1);
+    nn::AdamW opt(llm::adamw_groups(model, 0.1f), base.learning_rate, 0.9f, 0.95f, 1e-8f);
+    llm::TrainConfig cfg = base;
+    cfg.max_steps = 1;
+    cfg.ckpt_every = 0;
+    llm::Trainer trainer(ctx, model, opt, cfg);
+    std::mt19937 rng(1);
+    CHECK(trainer.fit(train, &valid, rng) == 1);
+    CHECK(opt.step_count() == 1);
+    want_params = take_params(model);
+    want_m = take_tensors(opt.m());
+    want_v = take_tensors(opt.v());
+  }
+
+  {
+    nn::Transformer model(ctx, tiny_config(kVocab), 1);
+    nn::AdamW opt(llm::adamw_groups(model, 0.1f), base.learning_rate, 0.9f, 0.95f, 1e-8f);
+    llm::TrainConfig cfg = base;
+    cfg.max_steps = 4;
+    cfg.early_stop_patience = 1;
+    cfg.early_stop_min_delta = 1e6f;
+    cfg.ckpt_every = 1;
+    cfg.checkpoint_path = ckpt;
+    llm::Trainer trainer(ctx, model, opt, cfg);
+    std::mt19937 rng(1);
+    // Step 1 is the baseline. Step 2 cannot beat it by 1e6, so patience trips.
+    CHECK(trainer.fit(train, &valid, rng) == 2);
+    CHECK(opt.step_count() == 1);
+    check_same_params(want_params, model);
+    check_same_tensors(want_m, opt.m());
+    check_same_tensors(want_v, opt.v());
+
+    nn::Context loaded_ctx;
+    nn::Transformer::Loaded loaded = nn::Transformer::load(loaded_ctx, ckpt, nn::LoadMode::Resume);
+    CHECK(loaded.adamw.has_value());
+    CHECK(loaded.adamw->step_count() == 1);
+    CHECK(loaded.step == 1);
+    check_same_params(want_params, loaded.model);
+    check_same_tensors(want_m, loaded.adamw->m());
+    check_same_tensors(want_v, loaded.adamw->v());
+  }
+
+  {
+    nn::Transformer model(ctx, tiny_config(kVocab), 1);
+    nn::AdamW opt(llm::adamw_groups(model, 0.1f), base.learning_rate, 0.9f, 0.95f, 1e-8f);
+    llm::TrainConfig cfg = base;
+    cfg.max_steps = 5;
+    cfg.early_stop_patience = 2;
+    cfg.early_stop_min_delta = 1e6f;
+    cfg.ckpt_every = 0;
+    llm::Trainer trainer(ctx, model, opt, cfg);
+    std::mt19937 rng(1);
+    // One missed eval is not enough. The second missed eval stops on step 3.
+    CHECK(trainer.fit(train, &valid, rng) == 3);
+    CHECK(opt.step_count() == 1);
+    check_same_params(want_params, model);
+    check_same_tensors(want_m, opt.m());
+    check_same_tensors(want_v, opt.v());
+  }
 
   std::filesystem::remove_all(dir);
 }
@@ -275,6 +427,7 @@ void run_train_tests() {
   {
     nn::Context ctx;
     check_fit(ctx);
+    check_early_stop(ctx);
     check_generate(ctx);
   }
   check_presets();

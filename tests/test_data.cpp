@@ -233,5 +233,24 @@ void run_data_tests() {
   CHECK(empty.vocab_size() == 8);
   check_invalid([&] { empty.next(ctx, 1, 1, rng); }, "short corpus");
 
+  {
+    llm::TextDataset memory(corpus, 50000);
+    CHECK(memory.numel() == 64);
+    CHECK(memory.vocab_size() == 50000);
+    std::mt19937 memory_rng(7);
+    std::mt19937 memory_replay = memory_rng;
+    llm::Batch batch = memory.next(ctx, batch_size, seq_len, memory_rng);
+    expect_batch(corpus, batch, replay_starts(memory_replay, batch_size, memory.numel() - seq_len),
+                 batch_size, seq_len);
+    check_invalid([&] { llm::TextDataset(std::vector<int32_t>{0, -1}, 10); }, "id");
+    check_invalid([&] { llm::TextDataset(std::vector<int32_t>{0, 10}, 10); }, "id");
+    check_invalid([&] { llm::TextDataset(std::vector<int32_t>{}, 0); }, "vocab_size");
+    check_invalid([&] { llm::TextDataset(std::vector<int32_t>{1}, -3); }, "vocab_size");
+    llm::TextDataset empty_mem(std::vector<int32_t>{}, 8);
+    CHECK(empty_mem.numel() == 0);
+    CHECK(empty_mem.vocab_size() == 8);
+    check_invalid([&] { empty_mem.next(ctx, 1, 1, rng); }, "short corpus");
+  }
+
   std::filesystem::remove_all(dir);
 }

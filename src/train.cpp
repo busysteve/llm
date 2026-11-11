@@ -7,6 +7,7 @@
 #include <limits>
 #include <stdexcept>
 #include <utility>
+#include <vector>
 
 namespace llm {
 namespace {
@@ -35,9 +36,60 @@ void validate(const TrainConfig& cfg) {
   require_non_negative(cfg.eval_every, "eval_every");
   require_non_negative(cfg.eval_batches, "eval_batches");
   require_non_negative(cfg.ckpt_every, "ckpt_every");
+  require_non_negative(cfg.early_stop_patience, "early_stop_patience");
+  if (!std::isfinite(cfg.early_stop_min_delta) || cfg.early_stop_min_delta < 0.f) {
+    throw std::invalid_argument("early_stop_min_delta");
+  }
   if (!std::isfinite(cfg.grad_clip_norm) || cfg.grad_clip_norm < 0.f) {
     throw std::invalid_argument("grad_clip_norm");
   }
+}
+
+struct BestStep {
+  std::vector<std::vector<float>> params;
+  std::vector<std::vector<float>> m;
+  std::vector<std::vector<float>> v;
+  uint64_t opt_step = 0;
+  float learning_rate = 0.f;
+  int step = 0;
+  float eval_ce = 0.f;
+};
+
+void capture_best(BestStep& best, const nn::Transformer& model, const nn::AdamW& opt, int step,
+                  float eval_ce) {
+  const std::vector<nn::NamedParam> params = model.parameters();
+  best.params.clear();
+  best.params.reserve(params.size());
+  for (const nn::NamedParam& param : params) best.params.push_back(param.value->to_host());
+  best.m.clear();
+  best.v.clear();
+  best.m.reserve(opt.m().size());
+  best.v.reserve(opt.v().size());
+  for (const nn::Tensor& moment : opt.m()) best.m.push_back(moment.to_host());
+  for (const nn::Tensor& moment : opt.v()) best.v.push_back(moment.to_host());
+  best.opt_step = opt.step_count();
+  best.learning_rate = opt.learning_rate();
+  best.step = step;
+  best.eval_ce = eval_ce;
+}
+
+void restore_best(const BestStep& best, nn::Context& ctx, nn::Transformer& model, nn::AdamW& opt) {
+  const std::vector<nn::NamedParam> params = model.parameters();
+  if (params.size() != best.params.size() || opt.m().size() != best.m.size() ||
+      opt.v().size() != best.v.size()) {
+    throw std::runtime_error("early_stop");
+  }
+  for (size_t i = 0; i < params.size(); ++i) params[i].value->copy_from_host(best.params[i]);
+  for (size_t i = 0; i < best.m.size(); ++i) {
+    opt.m()[i].copy_from_host(best.m[i]);
+    opt.v()[i].copy_from_host(best.v[i]);
+  }
+  opt.set_step_count(best.opt_step);
+  opt.set_learning_rate(best.learning_rate);
+  // copy_from_host is async on CUDA. The host snapshot has to outlive that copy.
+  ctx.synchronize();
+  model.zero_grad();
+  model.train();
 }
 
 float mean_loss(TextDataset& data, nn::Context& ctx, nn::Transformer& model, int batches, int batch_size,
@@ -75,7 +127,18 @@ Trainer::Trainer(nn::Context& ctx, nn::Transformer& model, nn::AdamW& opt, Train
   validate(cfg_);
 }
 
-void Trainer::fit(TextDataset& train, TextDataset* valid, std::mt19937& rng) {
+int Trainer::fit(TextDataset& train, TextDataset* valid, std::mt19937& rng) {
+  if (cfg_.early_stop_patience > 0 &&
+      (valid == nullptr || cfg_.eval_every < 1 || cfg_.eval_batches < 1 ||
+       cfg_.eval_every > cfg_.max_steps)) {
+    throw std::invalid_argument("early_stop_patience");
+  }
+
+  BestStep best;
+  bool have_best = false;
+  int waited = 0;
+  int last_step = cfg_.max_steps;
+
   for (int step = 1; step <= cfg_.max_steps; ++step) {
     const float lr = learning_rate_at(cfg_, step);
     opt_->set_learning_rate(lr);
@@ -114,6 +177,7 @@ void Trainer::fit(TextDataset& train, TextDataset* valid, std::mt19937& rng) {
       std::fflush(stdout);
     }
 
+    bool stop = false;
     if (valid != nullptr && cfg_.eval_every > 0 && cfg_.eval_batches > 0 && step % cfg_.eval_every == 0) {
       model_->eval();
       const float mean_ce = mean_loss(*valid, *ctx_, *model_, cfg_.eval_batches, cfg_.batch_size,
@@ -122,12 +186,43 @@ void Trainer::fit(TextDataset& train, TextDataset* valid, std::mt19937& rng) {
       std::printf("step %d eval_ce %.6f perplexity %.6f\n", step, mean_ce, perplexity);
       std::fflush(stdout);
       model_->train();
+
+      if (cfg_.early_stop_patience > 0) {
+        // The first finite eval is the baseline. A later drop has to beat min_delta.
+        const bool improved = std::isfinite(mean_ce) &&
+                              (!have_best || (best.eval_ce - mean_ce) > cfg_.early_stop_min_delta);
+        if (!std::isfinite(mean_ce) && cfg_.abort_on_non_finite) {
+          throw std::runtime_error("non-finite loss");
+        }
+        if (improved) {
+          capture_best(best, *model_, *opt_, step, mean_ce);
+          have_best = true;
+          waited = 0;
+        } else if (++waited >= cfg_.early_stop_patience) {
+          stop = true;
+        }
+      }
+    }
+
+    if (stop) {
+      last_step = step;
+      break;
     }
 
     if (cfg_.ckpt_every > 0 && step % cfg_.ckpt_every == 0 && !cfg_.checkpoint_path.empty()) {
       model_->save(cfg_.checkpoint_path, opt_);
     }
   }
+
+  if (have_best) {
+    // Moments are restored with the weights so a resumed AdamW matches that step.
+    restore_best(best, *ctx_, *model_, *opt_);
+    if (!cfg_.checkpoint_path.empty()) model_->save(cfg_.checkpoint_path, opt_);
+    std::printf("early_stop step %d best_step %d best_eval_ce %.6f\n", last_step, best.step,
+                best.eval_ce);
+    std::fflush(stdout);
+  }
+  return last_step;
 }
 
 }  // namespace llm

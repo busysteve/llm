@@ -18,6 +18,8 @@ struct Batch {
 class TextDataset {
  public:
   TextDataset(std::filesystem::path tokens_bin, std::filesystem::path meta_path);
+  // Ids already on the host. Checks match write_token_file.
+  TextDataset(std::vector<int32_t> ids, int32_t vocab_size);
   int64_t numel() const;
   int32_t vocab_size() const;
   Batch next(nn::Context& ctx, int batch_size, int seq_len, std::mt19937& rng);

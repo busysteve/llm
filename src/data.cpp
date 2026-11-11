@@ -93,6 +93,16 @@ TextDataset::TextDataset(std::filesystem::path tokens_bin, std::filesystem::path
   vocab_size_ = meta.vocab_size;
 }
 
+TextDataset::TextDataset(std::vector<int32_t> ids, int32_t vocab_size) {
+  if (vocab_size < 1) throw std::invalid_argument("vocab_size");
+  for (int32_t id : ids) {
+    if (id < 0 || id >= vocab_size) throw std::invalid_argument("id");
+  }
+  numel_ = static_cast<int64_t>(ids.size());
+  vocab_size_ = vocab_size;
+  ids_ = std::move(ids);
+}
+
 int64_t TextDataset::numel() const { return numel_; }
 
 int32_t TextDataset::vocab_size() const { return vocab_size_; }
