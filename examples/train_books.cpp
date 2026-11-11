@@ -4,6 +4,7 @@
 #include "llm/presets.hpp"
 #include "llm/train.hpp"
 
+#include "nn/context.hpp"
 #include "nn/transformer.hpp"
 
 #include <algorithm>
@@ -47,6 +48,7 @@ struct Options {
   int top_k = 40;
   float top_p = 0.9f;
   int seed = 1;
+  int gpu = 0;
   std::string prompt;
 };
 
@@ -88,6 +90,8 @@ void usage() {
       "  --top-k N                  default 40 (0 disables)\n"
       "  --top-p FLOAT              default 0.9\n"
       "  --seed N                   default 1\n"
+      "  --gpu N                    default 0. CUDA device, or the OpenCL\n"
+      "                             device this build accepts.\n"
       "\n"
       "Each book is one tokenizer string, then encoded with an eos token appended.\n"
       "Tokenizer training scans the corpus once per merge, so a large vocab on\n"
@@ -152,6 +156,7 @@ Options parse(int argc, char** argv) {
     else if (flag == "--top-k") opt.top_k = need_int(i, argc, argv);
     else if (flag == "--top-p") opt.top_p = need_float(i, argc, argv);
     else if (flag == "--seed") opt.seed = need_int(i, argc, argv);
+    else if (flag == "--gpu") opt.gpu = need_int(i, argc, argv);
     else throw std::runtime_error(argv[i]);
   }
   if (help) {
@@ -176,6 +181,7 @@ Options parse(int argc, char** argv) {
     usage();
     throw std::runtime_error("files");
   }
+  if (opt.gpu < 0 || opt.gpu >= nn::device_count()) throw std::runtime_error("gpu");
   return opt;
 }
 
@@ -273,6 +279,7 @@ nn::TransformerConfig preset_config(const std::string& name, int vocab) {
 int main(int argc, char** argv) {
   try {
     const Options opt = parse(argc, argv);
+    std::fprintf(stderr, "gpu %d: %s\n", opt.gpu, nn::device_name(opt.gpu).c_str());
     const std::vector<std::filesystem::path> paths = read_list(opt.files);
 
     std::vector<std::string> books;
@@ -345,7 +352,7 @@ int main(int argc, char** argv) {
         file_data.emplace(bin_path, meta_path);
         train_data = &*file_data;
       }
-      nn::Context ctx;
+      nn::Context ctx(opt.gpu);
       nn::Transformer model(ctx, config, static_cast<uint32_t>(opt.seed));
       nn::AdamW optimizer(llm::adamw_groups(model, 0.1f), opt.lr, 0.9f, 0.95f, 1e-8f);
 
@@ -376,7 +383,7 @@ int main(int argc, char** argv) {
     }
     std::fprintf(stderr, "saved %s\n", model_path.string().c_str());
 
-    nn::Context ctx;
+    nn::Context ctx(opt.gpu);
     const std::unique_ptr<llm::Tokenizer> loaded_tok = llm::Tokenizer::load(tok_path);
     nn::Transformer::Loaded loaded =
         nn::Transformer::load(ctx, model_path, nn::LoadMode::Inference);

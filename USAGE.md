@@ -141,7 +141,7 @@ The run writes `run/tokenizer.bpe`, `run/tokens.bin`, `run/tokens.meta`, and `ru
   --prompt "The morning after"
 ```
 
-`--preset` is `tiny`, `small`, `base`, `llama-tiny`, `llama-small`, or `llama-base`. The `llama-*` names train the RoPE and RMSNorm block from scratch. `--seq-len` must be at most 1024. `--vocab` must be at least 259. Tokenizer training scans every byte once per merge, so a vocab of 4096 on several long books is much slower than the GPU steps. `--vocab 1024` is a faster first run. Defaults are `--preset tiny`, `--seq-len 256`, `--batch 4`, which fits a 12 GB GPU. `small` prefers 24 GB. `base` is a 24 GB model; keep the sequence at 512 or below on a smaller card. `--temperature 0` is greedy. `--help` prints the flags.
+`--preset` is `tiny`, `small`, `base`, `llama-tiny`, `llama-small`, or `llama-base`. The `llama-*` names train the RoPE and RMSNorm block from scratch. `--seq-len` must be at most 1024. `--vocab` must be at least 259. Tokenizer training scans every byte once per merge, so a vocab of 4096 on several long books is much slower than the GPU steps. `--vocab 1024` is a faster first run. Defaults are `--preset tiny`, `--seq-len 256`, `--batch 4`, which fits a 12 GB GPU. `small` prefers 24 GB. `base` is a 24 GB model; keep the sequence at 512 or below on a smaller card. `--temperature 0` is greedy. `--gpu N` selects the device, default `0`. A CUDA build uses that CUDA device. An OpenCL build uses the Nth device that nnCL build accepts. `--help` prints the flags.
 
 `--early-stop N` with `N > 0` holds out the last `--valid-fraction` (default `0.1`) of the token stream, trains on the prefix, and stops after `N` validation evals with no drop in cross-entropy. The saved checkpoint is that best step. `tokens.bin` stays the full stream. `--early-stop 0` trains on the whole stream and does not evaluate. `--min-loss FLOAT` stops when a step's training loss is at or below `FLOAT` and keeps that step on the whole stream. Omitting `--min-loss` leaves the threshold off. When that threshold stops the run, the saved checkpoint is that step even if `--early-stop` had stored an earlier validation best.
 
@@ -164,7 +164,7 @@ cmake --build build -j --target chat
 
 Presets use `max_seq_len` 1024. The encoded prompt plus `--max-new-tokens` has to fit. `chat` drops the oldest `User:` / `Assistant:` turn until it does. A line that still does not fit prints `max_seq_len` and leaves the transcript as it was. Each reply prefills the whole prompt. There is no cache carried from one turn to the next.
 
-Defaults are `--max-new-tokens 128`, `--temperature 0.8`, `--top-k 40`, `--top-p 0.9`, and `--seed 1`. `--temperature 0` is greedy. `--help` prints the flags.
+Defaults are `--max-new-tokens 128`, `--temperature 0.8`, `--top-k 40`, `--top-p 0.9`, and `--seed 1`. `--temperature 0` is greedy. `--gpu N` selects the device, default `0`. A CUDA build uses that CUDA device. An OpenCL build uses the Nth device that nnCL build accepts. `--help` prints the flags.
 
 ## Fine-tune an existing checkpoint
 
