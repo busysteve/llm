@@ -1,6 +1,6 @@
 # How to converse with a trained model
 
-`chat` is the dialogue example in [`chat.cpp`](chat.cpp). It loads `tokenizer.bpe` and `model.bin` from a directory written by [`train_books`](train_books.md) and continues a `User:` / `Assistant:` transcript. It does not train. It is a separate program from `llm_tests`.
+`chat` is the dialogue example in [`chat.cpp`](chat.cpp). It loads `tokenizer.bpe` and `model.bin` from a directory written by [`train_books`](train_books.md) or [`gguf from`](gguf.md) and continues a `User:` / `Assistant:` transcript. It does not train. It is a separate program from `llm_tests`.
 
 Build from the repository root. Requirements are in the [README](../README.md).
 
@@ -44,7 +44,7 @@ Paths in the list are resolved from the list's directory.
 
 Two short exchanges and a few steps are enough to prove the loop. They are not enough for a reply that answers the question. A usable transcript model needs many exchanges and a full training run. The same tiny preset memorizes a small corpus rather than learning general conversation.
 
-`chat-run/` must contain `tokenizer.bpe` and `model.bin`. The other `train_books` files are not read by `chat`.
+`chat-run/` must contain `tokenizer.bpe` and `model.bin`. The other `train_books` files are not read by `chat`. A public llama.cpp GGUF becomes that directory with `gguf from MODEL.GGUF chat-run`. See [gguf](gguf.md).
 
 ## Talk
 

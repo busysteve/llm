@@ -1,6 +1,6 @@
 # How to convert a checkpoint to GGUF
 
-`gguf` converts a transformer `model.bin` to a [GGUF](https://github.com/ggml-org/ggml/blob/master/docs/gguf.md) version 3 file and converts that file back. It can also write a llama.cpp file from the same checkpoint. The source is [`gguf.cpp`](gguf.cpp). It does not link `llm` or a device backend, and it is a separate program from `llm_tests`. Configuring the tree still selects `nn` or `nnCL`, the same way as the other targets.
+`gguf` converts a transformer `model.bin` to a [GGUF](https://github.com/ggml-org/ggml/blob/master/docs/gguf.md) version 3 file and converts that file back. It can write a llama.cpp file from the same checkpoint, and it can turn a public llama.cpp GGUF into a directory `chat` loads. The source is [`gguf.cpp`](gguf.cpp). It does not link `llm` or a device backend, and it is a separate program from `llm_tests`. Configuring the tree still selects `nn` or `nnCL`, the same way as the other targets.
 
 ```bash
 ./build.sh opencl   # or: ./build.sh cuda
@@ -9,11 +9,23 @@ cmake --build build -j --target gguf
 ./build/gguf import run/model.gguf run-again/model.bin
 ./build/gguf llama run/model.bin run/model-llama.gguf
 ./build/gguf llama run/model.bin run/model-llama.gguf run/tokenizer.bpe
+./build/gguf from model.gguf chat-run
+./build/chat --model chat-run
 ```
 
 `export` reads a family-6 checkpoint written by `train_books`, `finetune`, or `Transformer::save`. It keeps the float32 weights and writes architecture `nnllm`. `import` reads that file and writes a version-1 checkpoint with the weights and no optimizer block. `LoadMode::Inference` accepts that file. A later `finetune` run builds a fresh AdamW from it. `finetune --resume` needs the original checkpoint, because AdamW moments are not in the GGUF.
 
 An `export` or `import` file does not contain `tokenizer.bpe`. Keep that file next to the checkpoint you train or chat with. `gguf llama` copies it into the llama.cpp file when it sits beside the checkpoint, or when you pass its path.
+
+## A public GGUF to a chat directory
+
+`gguf from MODEL.GGUF OUTDIR [--context N]` reads a llama.cpp GGUF and writes the files `chat` loads: `model.bin`, `tokenizer.bpe`, `tokens.bin`, and `tokens.meta`. Architecture `nnllm` uses `import` for the weights and copies a sibling `tokenizer.bpe`. Architecture `llama`, `qwen2`, `mistral`, and other files with the same tensor names are mapped onto the RoPE / RMSNorm / SwiGLU block.
+
+The GPT-2 tokenizer in the GGUF is remapped to this library's LPB1 layout: ids `0..255` are raw bytes, later ids are merges in learn order, and the last three ids are pad, bos, and eos. Extra special tokens are dropped. Embedding and `lm_head` rows follow that map. `tokens.bin` is the encoded string `User: hello\nAssistant: hello\n` plus eos, so the directory matches a `train_books` run. `chat` reads only `tokenizer.bpe` and `model.bin`.
+
+Quantized tensors (float16, bfloat16, Q8_0, Q8_1, Q4_0, Q4_1, Q5_0, Q5_1, Q4_K, Q5_K, Q6_K, Q8_K) expand to float32. GQA repeats each KV head so K and V become `(d_model, d_model)`. Tied embeddings copy `token_embd` onto `lm_head`. `--context N` sets `max_seq_len`. The default is `min(source context, 1024)`.
+
+The runtime still uses RoPE base 10000 and RMSNorm epsilon `1e-5`. A source file with another base prints a warning and still converts. Qwen3-style QK-norm, a head dimension other than `d_model / heads`, MoE expert tensors, GELU, and linear bias stop the conversion.
 
 ## The nnllm architecture
 
@@ -124,11 +136,13 @@ gguf: llama.cpp applies RoPE and RMSNorm. This checkpoint was trained with learn
 
 ## What this tool rejects
 
-`import` accepts an `nnllm` file whose positions are `learned_absolute` or `rope`. It rejects a GGUF whose `general.architecture` is `llama`, `gpt2`, or anything other than `nnllm` with `gguf: architecture`. Quantized tensor types are rejected with `gguf: quantized`. `llama.cpp` does not implement the `nnllm` architecture, so it will not run an `export` file.
+`import` accepts an `nnllm` file whose positions are `learned_absolute` or `rope`. It rejects a GGUF whose `general.architecture` is `llama`, `gpt2`, or anything other than `nnllm` with `gguf: architecture`. Quantized tensor types on that path are rejected with `gguf: quantized`. `llama.cpp` does not implement the `nnllm` architecture, so it will not run an `export` file.
+
+`from` accepts architecture `nnllm` when a sibling `tokenizer.bpe` is present, and accepts llama.cpp files whose tensors match the RoPE / RMSNorm / SwiGLU block. It expands the quantized types listed above. A SentencePiece tokenizer, QK-norm, a head dim other than `d_model / heads`, MoE, a fused QKV matrix, GELU, and linear bias stop that conversion.
 
 ## Check the converter
 
-`gguf self-test` builds a small checkpoint, writes GGUF, reads it back, and checks a float16 round trip. It also writes the llama.cpp file from both the checkpoint and the `nnllm` GGUF, checks the `fc1` split, and checks that GELU and linear bias are rejected. It embeds a 260-id `tokenizer.bpe` with one merge and checks the GPT-2 token list. It does not need a GPU.
+`gguf self-test` builds a small checkpoint, writes GGUF, reads it back, and checks a float16 round trip. It also writes the llama.cpp file from both the checkpoint and the `nnllm` GGUF, checks the `fc1` split, and checks that GELU and linear bias are rejected. It embeds a 260-id `tokenizer.bpe` with one merge and checks the GPT-2 token list. `from` round-trips that llama.cpp file into a chat directory, and the test checks Q8_0 dequant, GQA KV repeat, and GPT-2 byte remapping. It does not need a GPU.
 
 ```bash
 ./build/gguf self-test
@@ -144,13 +158,19 @@ Errors print `gguf: <reason>` on stderr and the process exits 1.
 | `version` | the checkpoint version is outside 1..2, or the GGUF version is not 3 |
 | `family` | the checkpoint is not a transformer |
 | `architecture` | `import` saw a `general.architecture` other than `nnllm` |
-| `quantized` | a tensor is neither float32 nor float16 |
+| `quantized` | `import` saw a tensor that is neither float32 nor float16, or `from` saw an unsupported quant type |
 | `activation` | the activation string is unknown, or `gguf llama` was given GELU |
 | `bias` | `gguf llama` was given linear biases |
 | `tensor <name>` | a weight is missing, duplicated, or the wrong shape |
 | `tie_embeddings` | the config asks for a tied embedding, which this runtime rejects |
 | `positional` | positions are not `learned_absolute` or `rope` |
-| `tokenizer` | `tokenizer.bpe` is not an LPB1 file, a piece is duplicated, or a special name is already a piece |
+| `tokenizer` | `tokenizer.bpe` is not an LPB1 file, a piece is duplicated, a special name is already a piece, or `from` has no GPT-2 BPE with merges |
 | `vocab` | the `tokenizer.bpe` vocab size does not match the checkpoint |
+| `qk_norm` | `from` saw `attn_q_norm` or `attn_k_norm` |
+| `head_dim` | `from` saw a key/value width other than `d_model / heads` |
+| `head_count_kv` | KV heads do not divide query heads |
+| `moe` | `from` saw expert tensors |
+| `qkv` | `from` saw a fused QKV matrix |
+| `context` | `--context` is missing or not a positive integer |
 | `use_rope` | a RoPE file has an odd head dimension |
 | `read` or `write` | the path could not be opened |

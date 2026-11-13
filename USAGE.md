@@ -147,7 +147,7 @@ The run writes `run/tokenizer.bpe`, `run/tokens.bin`, `run/tokens.meta`, and `ru
 
 ## Talk to a trained model
 
-`examples/chat.cpp` loads `tokenizer.bpe` and `model.bin` from a `train_books` directory. It is not part of `llm_tests`. Training stays in `train_books`. The walkthrough is [examples/chat.md](examples/chat.md). Put one exchange in each file. `train_books` appends eos after each file, so that token ends the assistant turn:
+`examples/chat.cpp` loads `tokenizer.bpe` and `model.bin` from a `train_books` directory or from `gguf from`. It is not part of `llm_tests`. Training stays in `train_books`. The walkthrough is [examples/chat.md](examples/chat.md). Put one exchange in each file. `train_books` appends eos after each file, so that token ends the assistant turn:
 
 ```
 User: What is the harbor bell for?
@@ -179,7 +179,7 @@ The tokenizer is not trained again. The checkpoint vocab and model shape stay as
 
 ## Convert a checkpoint to GGUF
 
-`examples/gguf.cpp` converts `model.bin` to a GGUF version 3 file and back. It does not link `llm` or a device backend. It is not part of `llm_tests`. The walkthrough is [examples/gguf.md](examples/gguf.md).
+`examples/gguf.cpp` converts `model.bin` to a GGUF version 3 file and back, writes a llama.cpp GGUF, and converts a public llama.cpp GGUF into a `chat` directory. It does not link `llm` or a device backend. It is not part of `llm_tests`. The walkthrough is [examples/gguf.md](examples/gguf.md).
 
 ```bash
 cmake --build build -j --target gguf
@@ -187,9 +187,11 @@ cmake --build build -j --target gguf
 ./build/gguf import run/model.gguf run/model.bin
 ./build/gguf llama run/model.bin run/model-llama.gguf
 ./build/gguf llama run/model.bin run/model-llama.gguf run/tokenizer.bpe
+./build/gguf from model.gguf chat-run
+./build/chat --model chat-run
 ```
 
-`export` writes architecture `nnllm` and float32 weights. `import` reads `nnllm` files whose tensors are float32 or float16 and writes a version-1 checkpoint with no optimizer. `nnllm.positional` is `learned_absolute` or `rope`. `llama` reads a checkpoint or an `nnllm` GGUF and writes architecture `llama` for llama.cpp. That file uses llama.cpp tensor names and splits SwiGLU `fc1` into `ffn_gate` and `ffn_up`. A learned-position checkpoint omits the position table and the LayerNorm biases, and llama.cpp then applies RoPE and RMSNorm, so those tokens differ. A RoPE checkpoint already uses that block, so the export keeps every tensor and does not print the mismatch warning. A `tokenizer.bpe` beside the checkpoint, or a path given after the output, is embedded so `llama-cli` can encode a prompt. The pre-tokenizer is `superbpe`: a merge that crosses a digit boundary can get a different id than this library's encoder. `import` rejects a GGUF with another architecture, or with quantized tensors. `llama` rejects GELU and linear bias. The metadata keys, tensor names, and dimension order are in [examples/gguf.md](examples/gguf.md).
+`export` writes architecture `nnllm` and float32 weights. `import` reads `nnllm` files whose tensors are float32 or float16 and writes a version-1 checkpoint with no optimizer. `nnllm.positional` is `learned_absolute` or `rope`. `llama` reads a checkpoint or an `nnllm` GGUF and writes architecture `llama` for llama.cpp. That file uses llama.cpp tensor names and splits SwiGLU `fc1` into `ffn_gate` and `ffn_up`. A learned-position checkpoint omits the position table and the LayerNorm biases, and llama.cpp then applies RoPE and RMSNorm, so those tokens differ. A RoPE checkpoint already uses that block, so the export keeps every tensor and does not print the mismatch warning. A `tokenizer.bpe` beside the checkpoint, or a path given after the output, is embedded so `llama-cli` can encode a prompt. The pre-tokenizer is `superbpe`: a merge that crosses a digit boundary can get a different id than this library's encoder. `from` reads a public llama.cpp GGUF and writes a `chat` directory: `model.bin`, `tokenizer.bpe`, `tokens.bin`, and `tokens.meta`. GPT-2 BPE is remapped to LPB1. Quantized tensors expand to float32. GQA repeats KV heads. `import` rejects a GGUF with another architecture, or with quantized tensors. `llama` rejects GELU and linear bias. `from` rejects QK-norm, a head dim other than `d_model / heads`, MoE, GELU, and linear bias. The metadata keys, tensor names, and dimension order are in [examples/gguf.md](examples/gguf.md).
 
 `adamw_groups` throws `std::invalid_argument("weight_decay")` when `weight_decay` is NaN, infinite, or negative. Decay applies only to rank-2 parameters whose names do not contain `ln` and do not end in `.bias`. Every other parameter, including LayerNorm weight and bias, is decay 0. A new group starts only when that choice changes, so the groups stay in `parameters()` order. `Transformer::save` rejects any other order.
 

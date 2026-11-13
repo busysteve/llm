@@ -1,12 +1,19 @@
 #include <array>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <fcntl.h>
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <utility>
 #include <vector>
 
@@ -17,7 +24,22 @@ constexpr uint32_t kGgufMagic = 0x46554747u;
 constexpr uint32_t kGgufVersion = 3u;
 constexpr uint32_t kGgmlF32 = 0u;
 constexpr uint32_t kGgmlF16 = 1u;
+constexpr uint32_t kGgmlQ4_0 = 2u;
+constexpr uint32_t kGgmlQ4_1 = 3u;
+constexpr uint32_t kGgmlQ5_0 = 6u;
+constexpr uint32_t kGgmlQ5_1 = 7u;
+constexpr uint32_t kGgmlQ8_0 = 8u;
+constexpr uint32_t kGgmlQ8_1 = 9u;
+constexpr uint32_t kGgmlQ2_K = 10u;
+constexpr uint32_t kGgmlQ3_K = 11u;
+constexpr uint32_t kGgmlQ4_K = 12u;
+constexpr uint32_t kGgmlQ5_K = 13u;
+constexpr uint32_t kGgmlQ6_K = 14u;
+constexpr uint32_t kGgmlQ8_K = 15u;
+constexpr uint32_t kGgmlBF16 = 30u;
 constexpr uint32_t kDefaultAlign = 32u;
+constexpr int kQK = 32;
+constexpr int kQK_K = 256;
 constexpr char kArchitecture[] = "nnllm";
 
 enum Meta : uint32_t {
@@ -61,12 +83,14 @@ struct Model {
 };
 
 uint16_t f32_to_f16(float value);
+float f16_to_f32(uint16_t bits);
 
 void usage() {
   std::fputs(
       "usage: gguf export MODEL.BIN MODEL.GGUF\n"
       "       gguf import MODEL.GGUF MODEL.BIN\n"
       "       gguf llama MODEL MODEL.GGUF [TOKENIZER.BPE]\n"
+      "       gguf from MODEL.GGUF OUTDIR [--context N]\n"
       "       gguf self-test\n"
       "\n"
       "export writes a GGUF version 3 file, architecture nnllm, float32.\n"
@@ -83,6 +107,15 @@ void usage() {
       "tensor. A tokenizer.bpe next to the checkpoint, or a path passed after\n"
       "the output, is written into the file so llama-cli can encode a prompt.\n"
       "GELU and linear-bias models are rejected.\n"
+      "\n"
+      "from reads a public llama.cpp GGUF (architecture llama, qwen2, mistral,\n"
+      "and the same tensor layout) and writes a chat directory: model.bin,\n"
+      "tokenizer.bpe, tokens.bin, and tokens.meta. GPT-2 BPE is remapped to\n"
+      "this library's LPB1 layout (bytes 0..255, merges, then pad/bos/eos).\n"
+      "Quantized tensors are expanded to float32. GQA repeats KV heads.\n"
+      "Tied embeddings copy token_embd onto lm_head. --context N sets\n"
+      "max_seq_len (default min(source, 1024)). QK-norm, a head dim other\n"
+      "than d_model/heads, MoE, GELU, and linear bias are rejected.\n"
       "\n"
       "import rejects a GGUF whose architecture is not nnllm, and rejects\n"
       "quantized tensors.\n",
@@ -123,8 +156,10 @@ class Bytes {
 
 class Reader {
  public:
-  explicit Reader(std::vector<uint8_t> bytes) : bytes_(std::move(bytes)) {}
-  size_t left() const { return bytes_.size() - pos_; }
+  explicit Reader(std::vector<uint8_t> bytes)
+      : owned_(std::move(bytes)), bytes_(owned_.data()), size_(owned_.size()) {}
+  Reader(const uint8_t* bytes, size_t size) : bytes_(bytes), size_(size) {}
+  size_t left() const { return size_ - pos_; }
   size_t pos() const { return pos_; }
   uint8_t u8() {
     need(1);
@@ -160,9 +195,10 @@ class Reader {
     if (n > 256) throw std::runtime_error("name");
     return take(n);
   }
-  std::string str_u64() {
+  std::string str_u64() { return str_u64_max(65535); }
+  std::string str_u64_max(uint64_t max_n) {
     const uint64_t n = u64();
-    if (n > 65535) throw std::runtime_error("name");
+    if (n > max_n) throw std::runtime_error("name");
     return take(static_cast<size_t>(n));
   }
   void skip(size_t n) {
@@ -170,23 +206,64 @@ class Reader {
     pos_ += n;
   }
   const uint8_t* at(size_t offset, size_t n) const {
-    if (offset > bytes_.size() || n > bytes_.size() - offset) throw std::runtime_error("truncated");
-    return bytes_.data() + offset;
+    if (offset > size_ || n > size_ - offset) throw std::runtime_error("truncated");
+    return bytes_ + offset;
   }
-  size_t size() const { return bytes_.size(); }
+  size_t size() const { return size_; }
 
  private:
   void need(size_t n) const {
-    if (pos_ + n > bytes_.size()) throw std::runtime_error("truncated");
+    if (pos_ + n > size_) throw std::runtime_error("truncated");
   }
   std::string take(size_t n) {
     need(n);
-    std::string value(reinterpret_cast<const char*>(bytes_.data() + pos_), n);
+    std::string value(reinterpret_cast<const char*>(bytes_ + pos_), n);
     pos_ += n;
     return value;
   }
-  std::vector<uint8_t> bytes_;
+  std::vector<uint8_t> owned_;
+  const uint8_t* bytes_ = nullptr;
+  size_t size_ = 0;
   size_t pos_ = 0;
+};
+
+class MappedFile {
+ public:
+  explicit MappedFile(const std::filesystem::path& path) {
+    fd_ = ::open(path.c_str(), O_RDONLY);
+    if (fd_ < 0) throw std::runtime_error("read");
+    struct stat st {};
+    if (::fstat(fd_, &st) != 0 || st.st_size < 0) {
+      ::close(fd_);
+      fd_ = -1;
+      throw std::runtime_error("read");
+    }
+    size_ = static_cast<size_t>(st.st_size);
+    if (size_ == 0) {
+      data_ = nullptr;
+      return;
+    }
+    void* mapped = ::mmap(nullptr, size_, PROT_READ, MAP_PRIVATE, fd_, 0);
+    if (mapped == MAP_FAILED) {
+      ::close(fd_);
+      fd_ = -1;
+      throw std::runtime_error("read");
+    }
+    data_ = static_cast<const uint8_t*>(mapped);
+  }
+  MappedFile(const MappedFile&) = delete;
+  MappedFile& operator=(const MappedFile&) = delete;
+  ~MappedFile() {
+    if (data_ != nullptr && size_ > 0) ::munmap(const_cast<uint8_t*>(data_), size_);
+    if (fd_ >= 0) ::close(fd_);
+  }
+  const uint8_t* data() const { return data_; }
+  size_t size() const { return size_; }
+
+ private:
+  int fd_ = -1;
+  const uint8_t* data_ = nullptr;
+  size_t size_ = 0;
 };
 
 std::vector<uint8_t> read_file(const std::filesystem::path& path) {
@@ -1243,6 +1320,819 @@ void write_bad_architecture(const std::filesystem::path& path) {
   write_file(path, out.bytes());
 }
 
+int ggml_block_size(uint32_t dtype) {
+  switch (dtype) {
+    case kGgmlF32:
+    case kGgmlF16:
+    case kGgmlBF16:
+      return 1;
+    case kGgmlQ4_0:
+    case kGgmlQ4_1:
+    case kGgmlQ5_0:
+    case kGgmlQ5_1:
+    case kGgmlQ8_0:
+    case kGgmlQ8_1:
+      return kQK;
+    case kGgmlQ2_K:
+    case kGgmlQ3_K:
+    case kGgmlQ4_K:
+    case kGgmlQ5_K:
+    case kGgmlQ6_K:
+    case kGgmlQ8_K:
+      return kQK_K;
+    default:
+      return 0;
+  }
+}
+
+size_t ggml_type_size(uint32_t dtype) {
+  switch (dtype) {
+    case kGgmlF32:
+      return 4;
+    case kGgmlF16:
+    case kGgmlBF16:
+      return 2;
+    case kGgmlQ4_0:
+      return 18;
+    case kGgmlQ4_1:
+      return 20;
+    case kGgmlQ5_0:
+      return 22;
+    case kGgmlQ5_1:
+      return 24;
+    case kGgmlQ8_0:
+      return 34;
+    case kGgmlQ8_1:
+      return 36;
+    case kGgmlQ2_K:
+      return 84;
+    case kGgmlQ3_K:
+      return 110;
+    case kGgmlQ4_K:
+      return 144;
+    case kGgmlQ5_K:
+      return 176;
+    case kGgmlQ6_K:
+      return 210;
+    case kGgmlQ8_K:
+      return 292;
+    default:
+      return 0;
+  }
+}
+
+uint16_t load_u16(const uint8_t* p) {
+  return static_cast<uint16_t>(p[0]) | (static_cast<uint16_t>(p[1]) << 8);
+}
+
+float load_f32_bits(const uint8_t* p) {
+  uint32_t bits = 0;
+  for (int b = 0; b < 4; ++b) bits |= static_cast<uint32_t>(p[b]) << (8 * b);
+  float value = 0.f;
+  std::memcpy(&value, &bits, sizeof(value));
+  return value;
+}
+
+void get_scale_min_k4(int j, const uint8_t* q, uint8_t* d, uint8_t* m) {
+  if (j < 4) {
+    *d = q[j] & 63;
+    *m = q[j + 4] & 63;
+  } else {
+    *d = (q[j + 4] & 0xF) | ((q[j - 4] >> 6) << 4);
+    *m = (q[j + 4] >> 4) | ((q[j] >> 6) << 4);
+  }
+}
+
+void dequantize(uint32_t dtype, const uint8_t* raw, int64_t numel, std::vector<float>& out) {
+  out.resize(static_cast<size_t>(numel));
+  const int blck = ggml_block_size(dtype);
+  const size_t tsize = ggml_type_size(dtype);
+  if (blck < 1 || tsize < 1) throw std::runtime_error("quantized");
+  if (numel % blck != 0) throw std::runtime_error("quantized");
+  const int64_t nb = numel / blck;
+  if (dtype == kGgmlF32) {
+    for (int64_t i = 0; i < numel; ++i) out[static_cast<size_t>(i)] = load_f32_bits(raw + static_cast<size_t>(i) * 4);
+    return;
+  }
+  if (dtype == kGgmlF16) {
+    for (int64_t i = 0; i < numel; ++i) {
+      out[static_cast<size_t>(i)] = f16_to_f32(load_u16(raw + static_cast<size_t>(i) * 2));
+    }
+    return;
+  }
+  if (dtype == kGgmlBF16) {
+    for (int64_t i = 0; i < numel; ++i) {
+      const uint32_t bits = static_cast<uint32_t>(load_u16(raw + static_cast<size_t>(i) * 2)) << 16;
+      std::memcpy(&out[static_cast<size_t>(i)], &bits, sizeof(bits));
+    }
+    return;
+  }
+  for (int64_t i = 0; i < nb; ++i) {
+    const uint8_t* block = raw + static_cast<size_t>(i) * tsize;
+    float* y = out.data() + static_cast<size_t>(i) * static_cast<size_t>(blck);
+    if (dtype == kGgmlQ8_0) {
+      const float d = f16_to_f32(load_u16(block));
+      for (int j = 0; j < kQK; ++j) y[j] = static_cast<int8_t>(block[2 + j]) * d;
+    } else if (dtype == kGgmlQ8_1) {
+      const float d = f16_to_f32(load_u16(block));
+      for (int j = 0; j < kQK; ++j) y[j] = static_cast<int8_t>(block[4 + j]) * d;
+    } else if (dtype == kGgmlQ4_0) {
+      const float d = f16_to_f32(load_u16(block));
+      for (int j = 0; j < kQK / 2; ++j) {
+        y[j] = (static_cast<int>(block[2 + j] & 0x0F) - 8) * d;
+        y[j + kQK / 2] = (static_cast<int>(block[2 + j] >> 4) - 8) * d;
+      }
+    } else if (dtype == kGgmlQ4_1) {
+      const float d = f16_to_f32(load_u16(block));
+      const float m = f16_to_f32(load_u16(block + 2));
+      for (int j = 0; j < kQK / 2; ++j) {
+        y[j] = static_cast<int>(block[4 + j] & 0x0F) * d + m;
+        y[j + kQK / 2] = static_cast<int>(block[4 + j] >> 4) * d + m;
+      }
+    } else if (dtype == kGgmlQ5_0) {
+      const float d = f16_to_f32(load_u16(block));
+      uint32_t qh = 0;
+      std::memcpy(&qh, block + 2, 4);
+      for (int j = 0; j < kQK / 2; ++j) {
+        const uint8_t xh0 = static_cast<uint8_t>(((qh >> (j + 0)) << 4) & 0x10);
+        const uint8_t xh1 = static_cast<uint8_t>((qh >> (j + 12)) & 0x10);
+        y[j] = (static_cast<int>((block[6 + j] & 0x0F) | xh0) - 16) * d;
+        y[j + kQK / 2] = (static_cast<int>((block[6 + j] >> 4) | xh1) - 16) * d;
+      }
+    } else if (dtype == kGgmlQ5_1) {
+      const float d = f16_to_f32(load_u16(block));
+      const float m = f16_to_f32(load_u16(block + 2));
+      uint32_t qh = 0;
+      std::memcpy(&qh, block + 4, 4);
+      for (int j = 0; j < kQK / 2; ++j) {
+        const uint8_t xh0 = static_cast<uint8_t>(((qh >> (j + 0)) << 4) & 0x10);
+        const uint8_t xh1 = static_cast<uint8_t>((qh >> (j + 12)) & 0x10);
+        y[j] = static_cast<int>((block[8 + j] & 0x0F) | xh0) * d + m;
+        y[j + kQK / 2] = static_cast<int>((block[8 + j] >> 4) | xh1) * d + m;
+      }
+    } else if (dtype == kGgmlQ4_K) {
+      const float d = f16_to_f32(load_u16(block));
+      const float min = f16_to_f32(load_u16(block + 2));
+      const uint8_t* scales = block + 4;
+      const uint8_t* q = block + 16;
+      float* yp = y;
+      int is = 0;
+      for (int j = 0; j < kQK_K; j += 64) {
+        uint8_t sc = 0, m = 0;
+        get_scale_min_k4(is + 0, scales, &sc, &m);
+        const float d1 = d * sc;
+        const float m1 = min * m;
+        get_scale_min_k4(is + 1, scales, &sc, &m);
+        const float d2 = d * sc;
+        const float m2 = min * m;
+        for (int l = 0; l < 32; ++l) *yp++ = d1 * (q[l] & 0xF) - m1;
+        for (int l = 0; l < 32; ++l) *yp++ = d2 * (q[l] >> 4) - m2;
+        q += 32;
+        is += 2;
+      }
+    } else if (dtype == kGgmlQ5_K) {
+      const float d = f16_to_f32(load_u16(block));
+      const float min = f16_to_f32(load_u16(block + 2));
+      const uint8_t* scales = block + 4;
+      const uint8_t* qh = block + 16;
+      const uint8_t* ql = block + 48;
+      float* yp = y;
+      int is = 0;
+      uint8_t u1 = 1, u2 = 2;
+      for (int j = 0; j < kQK_K; j += 64) {
+        uint8_t sc = 0, m = 0;
+        get_scale_min_k4(is + 0, scales, &sc, &m);
+        const float d1 = d * sc;
+        const float m1 = min * m;
+        get_scale_min_k4(is + 1, scales, &sc, &m);
+        const float d2 = d * sc;
+        const float m2 = min * m;
+        for (int l = 0; l < 32; ++l) *yp++ = d1 * ((ql[l] & 0xF) + (qh[l] & u1 ? 16 : 0)) - m1;
+        for (int l = 0; l < 32; ++l) *yp++ = d2 * ((ql[l] >> 4) + (qh[l] & u2 ? 16 : 0)) - m2;
+        ql += 32;
+        is += 2;
+        u1 = static_cast<uint8_t>(u1 << 2);
+        u2 = static_cast<uint8_t>(u2 << 2);
+      }
+    } else if (dtype == kGgmlQ6_K) {
+      const uint8_t* ql = block;
+      const uint8_t* qh = block + 128;
+      const int8_t* sc = reinterpret_cast<const int8_t*>(block + 192);
+      const float d = f16_to_f32(load_u16(block + 208));
+      float* yp = y;
+      for (int n = 0; n < kQK_K; n += 128) {
+        for (int l = 0; l < 32; ++l) {
+          const int is = l / 16;
+          const int8_t q1 = static_cast<int8_t>((ql[l + 0] & 0xF) | (((qh[l] >> 0) & 3) << 4)) - 32;
+          const int8_t q2 = static_cast<int8_t>((ql[l + 32] & 0xF) | (((qh[l] >> 2) & 3) << 4)) - 32;
+          const int8_t q3 = static_cast<int8_t>((ql[l + 0] >> 4) | (((qh[l] >> 4) & 3) << 4)) - 32;
+          const int8_t q4 = static_cast<int8_t>((ql[l + 32] >> 4) | (((qh[l] >> 6) & 3) << 4)) - 32;
+          yp[l + 0] = d * sc[is + 0] * q1;
+          yp[l + 32] = d * sc[is + 2] * q2;
+          yp[l + 64] = d * sc[is + 4] * q3;
+          yp[l + 96] = d * sc[is + 6] * q4;
+        }
+        yp += 128;
+        ql += 64;
+        qh += 32;
+        sc += 8;
+      }
+    } else if (dtype == kGgmlQ8_K) {
+      const float d = load_f32_bits(block);
+      const int8_t* qs = reinterpret_cast<const int8_t*>(block + 4);
+      for (int j = 0; j < kQK_K; ++j) y[j] = d * qs[j];
+    } else {
+      throw std::runtime_error("quantized");
+    }
+  }
+}
+
+struct PublicTensor {
+  std::string name;
+  std::vector<int> shape;
+  uint32_t dtype = 0;
+  uint64_t offset = 0;
+  int64_t numel = 0;
+};
+
+struct PublicGguf {
+  std::string architecture;
+  uint32_t alignment = kDefaultAlign;
+  size_t data_begin = 0;
+  std::map<std::string, std::string> strings;
+  std::map<std::string, uint32_t> u32s;
+  std::map<std::string, float> f32s;
+  std::map<std::string, bool> bools;
+  std::map<std::string, std::vector<std::string>> strs;
+  std::map<std::string, PublicTensor> tensors;
+};
+
+uint32_t utf8_decode_one(const std::string& s, size_t& i) {
+  if (i >= s.size()) throw std::runtime_error("tokenizer");
+  const unsigned char b0 = static_cast<unsigned char>(s[i++]);
+  if (b0 < 0x80u) return b0;
+  if ((b0 & 0xe0u) == 0xc0u) {
+    if (i >= s.size()) throw std::runtime_error("tokenizer");
+    const unsigned char b1 = static_cast<unsigned char>(s[i++]);
+    if ((b1 & 0xc0u) != 0x80u) throw std::runtime_error("tokenizer");
+    return (static_cast<uint32_t>(b0 & 0x1fu) << 6) | (b1 & 0x3fu);
+  }
+  if ((b0 & 0xf0u) == 0xe0u) {
+    if (i + 1 >= s.size()) throw std::runtime_error("tokenizer");
+    const unsigned char b1 = static_cast<unsigned char>(s[i++]);
+    const unsigned char b2 = static_cast<unsigned char>(s[i++]);
+    if ((b1 & 0xc0u) != 0x80u || (b2 & 0xc0u) != 0x80u) throw std::runtime_error("tokenizer");
+    return (static_cast<uint32_t>(b0 & 0x0fu) << 12) | (static_cast<uint32_t>(b1 & 0x3fu) << 6) | (b2 & 0x3fu);
+  }
+  throw std::runtime_error("tokenizer");
+}
+
+std::optional<std::string> gpt2_to_bytes(const std::string& piece, const std::array<int, 1024>& cpt_to_byte) {
+  std::string raw;
+  size_t i = 0;
+  while (i < piece.size()) {
+    const uint32_t cpt = utf8_decode_one(piece, i);
+    if (cpt >= cpt_to_byte.size() || cpt_to_byte[cpt] < 0) return std::nullopt;
+    raw.push_back(static_cast<char>(cpt_to_byte[cpt]));
+  }
+  return raw;
+}
+
+std::array<int, 1024> gpt2_cpt_to_byte() {
+  std::array<int, 1024> map;
+  map.fill(-1);
+  const std::array<std::string, 256> tokens = gpt2_byte_tokens();
+  for (int byte = 0; byte < 256; ++byte) {
+    size_t i = 0;
+    const uint32_t cpt = utf8_decode_one(tokens[static_cast<size_t>(byte)], i);
+    if (i != tokens[static_cast<size_t>(byte)].size() || cpt >= map.size()) {
+      throw std::runtime_error("tokenizer");
+    }
+    map[cpt] = byte;
+  }
+  return map;
+}
+
+struct ConvertedBpe {
+  Tokenizer tok;
+  std::vector<int32_t> orig_to_new;
+  std::vector<int32_t> new_to_orig;
+};
+
+ConvertedBpe bpe_from_gpt2(const std::vector<std::string>& tokens, const std::vector<std::string>& merges,
+                           int pad_orig, int bos_orig, int eos_orig) {
+  if (tokens.size() < 259) throw std::runtime_error("tokenizer");
+  const std::array<int, 1024> cpt_to_byte = gpt2_cpt_to_byte();
+  std::map<std::string, int> token_index;
+  for (size_t i = 0; i < tokens.size(); ++i) {
+    if (!token_index.emplace(tokens[i], static_cast<int>(i)).second) throw std::runtime_error("tokenizer");
+  }
+  std::vector<int> byte_orig(256, -1);
+  for (size_t i = 0; i < tokens.size(); ++i) {
+    const std::optional<std::string> raw = gpt2_to_bytes(tokens[i], cpt_to_byte);
+    if (raw && raw->size() == 1) {
+      const int b = static_cast<unsigned char>((*raw)[0]);
+      if (byte_orig[static_cast<size_t>(b)] >= 0) throw std::runtime_error("tokenizer");
+      byte_orig[static_cast<size_t>(b)] = static_cast<int>(i);
+    }
+  }
+  for (int b = 0; b < 256; ++b) {
+    if (byte_orig[static_cast<size_t>(b)] < 0) throw std::runtime_error("tokenizer");
+  }
+
+  ConvertedBpe out;
+  out.orig_to_new.assign(tokens.size(), -1);
+  const int n_merges = static_cast<int>(merges.size());
+  const int vocab = 256 + n_merges + 3;
+  if (vocab < 259) throw std::runtime_error("tokenizer");
+  out.new_to_orig.assign(static_cast<size_t>(vocab), -1);
+  for (int b = 0; b < 256; ++b) {
+    const int orig = byte_orig[static_cast<size_t>(b)];
+    out.orig_to_new[static_cast<size_t>(orig)] = b;
+    out.new_to_orig[static_cast<size_t>(b)] = orig;
+  }
+
+  std::vector<std::pair<int, int>> pairs;
+  pairs.reserve(static_cast<size_t>(n_merges));
+  for (int i = 0; i < n_merges; ++i) {
+    const std::string& merge = merges[static_cast<size_t>(i)];
+    const size_t sp = merge.find(' ');
+    if (sp == std::string::npos || merge.find(' ', sp + 1) != std::string::npos) {
+      throw std::runtime_error("tokenizer");
+    }
+    const std::string left = merge.substr(0, sp);
+    const std::string right = merge.substr(sp + 1);
+    const auto left_it = token_index.find(left);
+    const auto right_it = token_index.find(right);
+    const auto result_it = token_index.find(left + right);
+    if (left_it == token_index.end() || right_it == token_index.end() || result_it == token_index.end()) {
+      throw std::runtime_error("tokenizer");
+    }
+    const int left_new = out.orig_to_new[static_cast<size_t>(left_it->second)];
+    const int right_new = out.orig_to_new[static_cast<size_t>(right_it->second)];
+    const int new_id = 256 + i;
+    if (left_new < 0 || right_new < 0 || left_new >= new_id || right_new >= new_id) {
+      throw std::runtime_error("tokenizer");
+    }
+    if (out.orig_to_new[static_cast<size_t>(result_it->second)] >= 0) throw std::runtime_error("tokenizer");
+    out.orig_to_new[static_cast<size_t>(result_it->second)] = new_id;
+    out.new_to_orig[static_cast<size_t>(new_id)] = result_it->second;
+    pairs.emplace_back(left_new, right_new);
+  }
+
+  auto special_orig = [&](int orig, int fallback) {
+    if (orig >= 0 && orig < static_cast<int>(tokens.size())) return orig;
+    return fallback;
+  };
+  const int pad = special_orig(pad_orig, static_cast<int>(tokens.size()) - 3);
+  const int bos = special_orig(bos_orig, static_cast<int>(tokens.size()) - 2);
+  const int eos = special_orig(eos_orig, static_cast<int>(tokens.size()) - 1);
+  out.new_to_orig[static_cast<size_t>(vocab - 3)] = pad;
+  out.new_to_orig[static_cast<size_t>(vocab - 2)] = bos;
+  out.new_to_orig[static_cast<size_t>(vocab - 1)] = eos;
+  out.orig_to_new[static_cast<size_t>(pad)] = vocab - 3;
+  out.orig_to_new[static_cast<size_t>(bos)] = vocab - 2;
+  out.orig_to_new[static_cast<size_t>(eos)] = vocab - 1;
+
+  out.tok.vocab = vocab;
+  out.tok.pad = vocab - 3;
+  out.tok.bos = vocab - 2;
+  out.tok.eos = vocab - 1;
+  out.tok.merges.reserve(pairs.size());
+  for (const auto& pair : pairs) {
+    out.tok.merges.push_back(std::to_string(pair.first) + " " + std::to_string(pair.second));
+  }
+  out.tok.tokens.clear();
+  out.tok.types.assign(static_cast<size_t>(vocab), 1);
+  out.tok.types[static_cast<size_t>(out.tok.pad)] = 3;
+  out.tok.types[static_cast<size_t>(out.tok.bos)] = 3;
+  out.tok.types[static_cast<size_t>(out.tok.eos)] = 3;
+  return out;
+}
+
+struct BpePairs {
+  ConvertedBpe map;
+  std::vector<std::pair<uint32_t, uint32_t>> pairs;
+};
+
+BpePairs convert_gpt2_bpe(const std::vector<std::string>& tokens, const std::vector<std::string>& merges,
+                          int pad_orig, int bos_orig, int eos_orig) {
+  BpePairs out;
+  out.map = bpe_from_gpt2(tokens, merges, pad_orig, bos_orig, eos_orig);
+  out.pairs.reserve(merges.size());
+  for (const std::string& merge : out.map.tok.merges) {
+    const size_t sp = merge.find(' ');
+    out.pairs.emplace_back(static_cast<uint32_t>(std::stoul(merge.substr(0, sp))),
+                           static_cast<uint32_t>(std::stoul(merge.substr(sp + 1))));
+  }
+  return out;
+}
+
+void write_bpe_file(const std::filesystem::path& path, const BpePairs& bpe) {
+  Bytes out;
+  out.u32(0x3142504cu);
+  out.u32(static_cast<uint32_t>(bpe.map.tok.vocab));
+  out.u32(static_cast<uint32_t>(bpe.pairs.size()));
+  out.u32(static_cast<uint32_t>(bpe.map.tok.pad));
+  out.u32(static_cast<uint32_t>(bpe.map.tok.bos));
+  out.u32(static_cast<uint32_t>(bpe.map.tok.eos));
+  for (const auto& pair : bpe.pairs) {
+    out.u32(pair.first);
+    out.u32(pair.second);
+  }
+  write_file(path, out.bytes());
+}
+
+std::vector<int32_t> encode_lpb1(const BpePairs& bpe, std::string_view text, bool add_eos) {
+  std::vector<int32_t> ids;
+  ids.reserve(text.size());
+  for (char ch : text) ids.push_back(static_cast<int32_t>(static_cast<unsigned char>(ch)));
+  for (size_t i = 0; i < bpe.pairs.size(); ++i) {
+    if (ids.size() < 2) break;
+    const int32_t left = static_cast<int32_t>(bpe.pairs[i].first);
+    const int32_t right = static_cast<int32_t>(bpe.pairs[i].second);
+    const int32_t merged = static_cast<int32_t>(256 + i);
+    std::vector<int32_t> next;
+    next.reserve(ids.size());
+    size_t j = 0;
+    while (j < ids.size()) {
+      if (j + 1 < ids.size() && ids[j] == left && ids[j + 1] == right) {
+        next.push_back(merged);
+        j += 2;
+      } else {
+        next.push_back(ids[j]);
+        ++j;
+      }
+    }
+    ids = std::move(next);
+  }
+  if (add_eos) ids.push_back(bpe.map.tok.eos);
+  return ids;
+}
+
+void write_token_files(const std::filesystem::path& bin_path, const std::filesystem::path& meta_path,
+                       const std::vector<int32_t>& ids, int vocab) {
+  Bytes bin;
+  for (int32_t id : ids) {
+    if (id < 0 || id >= vocab) throw std::runtime_error("id");
+    bin.i32(id);
+  }
+  write_file(bin_path, bin.bytes());
+  const std::string meta = std::to_string(ids.size()) + "\n" + std::to_string(vocab) + "\n";
+  write_file(meta_path, std::vector<uint8_t>(meta.begin(), meta.end()));
+}
+
+Tensor permute_rows(const Tensor& src, const std::vector<int32_t>& new_to_orig, int new_vocab) {
+  if (src.shape.size() != 2 || src.shape[0] < 1 || src.shape[1] < 1) throw std::runtime_error("tensor " + src.name);
+  const int old_vocab = src.shape[0];
+  const int d = src.shape[1];
+  if (static_cast<int64_t>(src.data.size()) != product(src.shape)) throw std::runtime_error("tensor " + src.name);
+  Tensor out;
+  out.name = src.name;
+  out.shape = {new_vocab, d};
+  out.data.assign(static_cast<size_t>(new_vocab) * static_cast<size_t>(d), 0.f);
+  for (int row = 0; row < new_vocab; ++row) {
+    const int orig = new_to_orig[static_cast<size_t>(row)];
+    if (orig < 0 || orig >= old_vocab) continue;
+    const float* from = src.data.data() + static_cast<size_t>(orig) * static_cast<size_t>(d);
+    float* to = out.data.data() + static_cast<size_t>(row) * static_cast<size_t>(d);
+    std::memcpy(to, from, static_cast<size_t>(d) * sizeof(float));
+  }
+  return out;
+}
+
+Tensor repeat_kv_heads(const Tensor& src, int heads, int kv_heads, int d_model) {
+  if (kv_heads < 1 || heads < kv_heads || heads % kv_heads != 0) throw std::runtime_error("head_count_kv");
+  const int dh = d_model / heads;
+  const int src_out = kv_heads * dh;
+  if (src.shape != std::vector<int>{src_out, d_model}) throw std::runtime_error("tensor " + src.name);
+  if (heads == kv_heads) {
+    Tensor out = src;
+    out.shape = {d_model, d_model};
+    return out;
+  }
+  const int repeat = heads / kv_heads;
+  Tensor out;
+  out.name = src.name;
+  out.shape = {d_model, d_model};
+  out.data.resize(static_cast<size_t>(d_model) * static_cast<size_t>(d_model));
+  for (int h = 0; h < kv_heads; ++h) {
+    for (int r = 0; r < repeat; ++r) {
+      const int dst_h = h * repeat + r;
+      for (int d = 0; d < dh; ++d) {
+        const float* from =
+            src.data.data() + (static_cast<size_t>(h) * static_cast<size_t>(dh) + static_cast<size_t>(d)) *
+                                  static_cast<size_t>(d_model);
+        float* to = out.data.data() + (static_cast<size_t>(dst_h) * static_cast<size_t>(dh) + static_cast<size_t>(d)) *
+                                          static_cast<size_t>(d_model);
+        std::memcpy(to, from, static_cast<size_t>(d_model) * sizeof(float));
+      }
+    }
+  }
+  return out;
+}
+
+PublicGguf parse_public_gguf(Reader& reader) {
+  if (reader.size() < 24 || reader.u32() != kGgufMagic) throw std::runtime_error("magic");
+  if (reader.u32() != kGgufVersion) throw std::runtime_error("version");
+  const uint64_t tensor_count = reader.u64();
+  const uint64_t kv_count = reader.u64();
+  if (tensor_count > 1000000u || kv_count > 100000u) throw std::runtime_error("truncated");
+  PublicGguf view;
+  for (uint64_t i = 0; i < kv_count; ++i) {
+    const std::string key = reader.str_u64_max(65535);
+    const uint32_t type = reader.u32();
+    if (key == "general.alignment") {
+      view.alignment = meta_u32(reader, type);
+      continue;
+    }
+    if (type == kString) {
+      view.strings[key] = reader.str_u64_max(1u << 20);
+    } else if (type == kU32) {
+      view.u32s[key] = reader.u32();
+    } else if (type == kI32) {
+      const int32_t value = reader.i32();
+      if (value < 0) throw std::runtime_error("metadata");
+      view.u32s[key] = static_cast<uint32_t>(value);
+    } else if (type == kU64) {
+      const uint64_t value = reader.u64();
+      if (value > 0xffffffffu) throw std::runtime_error("metadata");
+      view.u32s[key] = static_cast<uint32_t>(value);
+    } else if (type == kF32) {
+      view.f32s[key] = reader.f32();
+    } else if (type == kBool) {
+      const uint8_t value = reader.u8();
+      if (value > 1) throw std::runtime_error("metadata");
+      view.bools[key] = value != 0;
+    } else if (type == kArray) {
+      const uint32_t elem = reader.u32();
+      const uint64_t n = reader.u64();
+      if (n > 2000000u) throw std::runtime_error("metadata");
+      if (elem == kString) {
+        std::vector<std::string> values;
+        values.reserve(static_cast<size_t>(n));
+        for (uint64_t j = 0; j < n; ++j) values.push_back(reader.str_u64_max(65535));
+        view.strs.emplace(key, std::move(values));
+      } else {
+        for (uint64_t j = 0; j < n; ++j) skip_meta(reader, elem, 1);
+      }
+    } else {
+      skip_meta(reader, type, 0);
+    }
+  }
+  if (view.alignment < 8 || view.alignment > 4096 || (view.alignment & (view.alignment - 1)) != 0) {
+    throw std::runtime_error("alignment");
+  }
+  for (uint64_t i = 0; i < tensor_count; ++i) {
+    PublicTensor tensor;
+    tensor.name = reader.str_u64();
+    if (tensor.name.size() > 64) throw std::runtime_error("name");
+    const uint32_t rank = reader.u32();
+    if (rank < 1 || rank > 4) throw std::runtime_error("rank");
+    std::vector<uint64_t> dims(rank);
+    for (uint32_t d = 0; d < rank; ++d) dims[d] = reader.u64();
+    tensor.shape.resize(rank);
+    for (uint32_t d = 0; d < rank; ++d) {
+      const uint64_t dim = dims[rank - 1 - d];
+      if (dim < 1 || dim > static_cast<uint64_t>(0x7fffffff)) throw std::runtime_error("tensor " + tensor.name);
+      tensor.shape[d] = static_cast<int>(dim);
+    }
+    tensor.dtype = reader.u32();
+    tensor.offset = reader.u64();
+    if (tensor.offset % view.alignment != 0) throw std::runtime_error("alignment");
+    tensor.numel = product(tensor.shape);
+    if (tensor.numel < 0) throw std::runtime_error("tensor " + tensor.name);
+    if (!view.tensors.emplace(tensor.name, tensor).second) throw std::runtime_error("tensor " + tensor.name);
+  }
+  view.data_begin = static_cast<size_t>(align_up(reader.pos(), view.alignment));
+  const auto arch = view.strings.find("general.architecture");
+  if (arch == view.strings.end() || arch->second.empty()) throw std::runtime_error("architecture");
+  view.architecture = arch->second;
+  return view;
+}
+
+uint32_t need_u32_key(const PublicGguf& view, const std::string& key) {
+  const auto found = view.u32s.find(key);
+  if (found == view.u32s.end()) throw std::runtime_error(key);
+  return found->second;
+}
+
+uint32_t optional_u32_key(const PublicGguf& view, const std::string& key, uint32_t fallback) {
+  const auto found = view.u32s.find(key);
+  if (found == view.u32s.end()) return fallback;
+  return found->second;
+}
+
+Tensor load_public_tensor(const PublicGguf& view, const uint8_t* data, size_t size, const std::string& name,
+                          std::vector<int> want) {
+  const auto found = view.tensors.find(name);
+  if (found == view.tensors.end()) throw std::runtime_error("tensor " + name);
+  const PublicTensor& info = found->second;
+  if (info.shape != want) throw std::runtime_error("tensor " + name);
+  const int blck = ggml_block_size(info.dtype);
+  const size_t tsize = ggml_type_size(info.dtype);
+  if (blck < 1 || tsize < 1) throw std::runtime_error("quantized");
+  const uint64_t nbytes = static_cast<uint64_t>(info.numel / blck) * tsize;
+  if (view.data_begin > size || info.offset > size - view.data_begin ||
+      nbytes > size - view.data_begin - info.offset) {
+    throw std::runtime_error("truncated");
+  }
+  Tensor out;
+  out.name = name;
+  out.shape = std::move(want);
+  dequantize(info.dtype, data + view.data_begin + static_cast<size_t>(info.offset), info.numel, out.data);
+  return out;
+}
+
+bool has_tensor(const PublicGguf& view, const std::string& name) {
+  return view.tensors.find(name) != view.tensors.end();
+}
+
+void require_no_tensor(const PublicGguf& view, const std::string& name, const char* reason) {
+  if (has_tensor(view, name)) throw std::runtime_error(reason);
+}
+
+Model public_to_nnllm(const PublicGguf& view, const uint8_t* data, size_t size, const BpePairs& bpe, int max_seq) {
+  if (view.architecture == "nnllm") throw std::runtime_error("architecture");
+  const std::string p = view.architecture + ".";
+  Config config;
+  config.d_model = static_cast<int>(need_u32_key(view, p + "embedding_length"));
+  config.layers = static_cast<int>(need_u32_key(view, p + "block_count"));
+  config.d_ff = static_cast<int>(need_u32_key(view, p + "feed_forward_length"));
+  config.heads = static_cast<int>(need_u32_key(view, p + "attention.head_count"));
+  const int kv_heads = static_cast<int>(optional_u32_key(view, p + "attention.head_count_kv",
+                                                        static_cast<uint32_t>(config.heads)));
+  const int src_ctx = static_cast<int>(need_u32_key(view, p + "context_length"));
+  config.max_seq = max_seq > 0 ? max_seq : (src_ctx > 1024 ? 1024 : src_ctx);
+  config.vocab = bpe.map.tok.vocab;
+  config.dropout = 0.f;
+  config.bias = false;
+  config.swiglu = true;
+  config.rope = true;
+  require_config(config);
+  if (kv_heads < 1 || config.heads % kv_heads != 0) throw std::runtime_error("head_count_kv");
+  const int dh = config.d_model / config.heads;
+  const int key_length = static_cast<int>(optional_u32_key(view, p + "attention.key_length", static_cast<uint32_t>(dh)));
+  const int value_length =
+      static_cast<int>(optional_u32_key(view, p + "attention.value_length", static_cast<uint32_t>(dh)));
+  if (key_length != dh || value_length != dh) throw std::runtime_error("head_dim");
+
+  const auto rope_base = view.f32s.find(p + "rope.freq_base");
+  if (rope_base != view.f32s.end() && rope_base->second != 10000.f) {
+    std::fprintf(stderr, "gguf: rope.freq_base is %g; this runtime uses 10000.\n",
+                 static_cast<double>(rope_base->second));
+  }
+
+  for (int layer = 0; layer < config.layers; ++layer) {
+    const std::string blk = "blk." + std::to_string(layer) + ".";
+    require_no_tensor(view, blk + "attn_q_norm.weight", "qk_norm");
+    require_no_tensor(view, blk + "attn_k_norm.weight", "qk_norm");
+    require_no_tensor(view, blk + "ffn_gate_exps.weight", "moe");
+    require_no_tensor(view, blk + "attn_qkv.weight", "qkv");
+  }
+
+  const int src_vocab = has_tensor(view, "token_embd.weight") ? view.tensors.at("token_embd.weight").shape[0]
+                                                             : bpe.map.new_to_orig.size();
+  Tensor tok = load_public_tensor(view, data, size, "token_embd.weight", {src_vocab, config.d_model});
+  tok = permute_rows(tok, bpe.map.new_to_orig, config.vocab);
+  tok.name = "tok_emb.weight";
+
+  Tensor head;
+  if (has_tensor(view, "output.weight")) {
+    head = load_public_tensor(view, data, size, "output.weight", {src_vocab, config.d_model});
+    head = permute_rows(head, bpe.map.new_to_orig, config.vocab);
+  } else {
+    head = tok;
+  }
+  head.name = "lm_head.weight";
+
+  Model model;
+  model.config = config;
+  model.tensors.push_back(std::move(tok));
+  for (int layer = 0; layer < config.layers; ++layer) {
+    const std::string src = "blk." + std::to_string(layer) + ".";
+    const std::string dst = "blocks." + std::to_string(layer) + ".";
+    Tensor ln1 = load_public_tensor(view, data, size, src + "attn_norm.weight", {config.d_model});
+    ln1.name = dst + "ln1.weight";
+    model.tensors.push_back(std::move(ln1));
+
+    Tensor q = load_public_tensor(view, data, size, src + "attn_q.weight", {config.d_model, config.d_model});
+    q.name = dst + "attn.q.weight";
+    model.tensors.push_back(std::move(q));
+
+    Tensor k = load_public_tensor(view, data, size, src + "attn_k.weight", {kv_heads * dh, config.d_model});
+    k = repeat_kv_heads(k, config.heads, kv_heads, config.d_model);
+    k.name = dst + "attn.k.weight";
+    model.tensors.push_back(std::move(k));
+
+    Tensor v = load_public_tensor(view, data, size, src + "attn_v.weight", {kv_heads * dh, config.d_model});
+    v = repeat_kv_heads(v, config.heads, kv_heads, config.d_model);
+    v.name = dst + "attn.v.weight";
+    model.tensors.push_back(std::move(v));
+
+    Tensor o = load_public_tensor(view, data, size, src + "attn_output.weight", {config.d_model, config.d_model});
+    o.name = dst + "attn.out.weight";
+    model.tensors.push_back(std::move(o));
+
+    Tensor ln2 = load_public_tensor(view, data, size, src + "ffn_norm.weight", {config.d_model});
+    ln2.name = dst + "ln2.weight";
+    model.tensors.push_back(std::move(ln2));
+
+    Tensor gate = load_public_tensor(view, data, size, src + "ffn_gate.weight", {config.d_ff, config.d_model});
+    Tensor up = load_public_tensor(view, data, size, src + "ffn_up.weight", {config.d_ff, config.d_model});
+    Tensor fc1;
+    fc1.name = dst + "fc1.weight";
+    fc1.shape = {config.d_ff * 2, config.d_model};
+    fc1.data = gate.data;
+    fc1.data.insert(fc1.data.end(), up.data.begin(), up.data.end());
+    model.tensors.push_back(std::move(fc1));
+
+    Tensor down = load_public_tensor(view, data, size, src + "ffn_down.weight", {config.d_model, config.d_ff});
+    down.name = dst + "fc2.weight";
+    model.tensors.push_back(std::move(down));
+  }
+  Tensor final_ln = load_public_tensor(view, data, size, "output_norm.weight", {config.d_model});
+  final_ln.name = "final_ln.weight";
+  model.tensors.push_back(std::move(final_ln));
+  model.tensors.push_back(std::move(head));
+  return model;
+}
+
+void convert_from_public(const std::filesystem::path& gguf_path, const std::filesystem::path& out_dir, int context) {
+  MappedFile mapped(gguf_path);
+  Reader reader(mapped.data(), mapped.size());
+  PublicGguf view = parse_public_gguf(reader);
+
+  if (view.architecture == kArchitecture) {
+    const Model model = read_gguf(gguf_path);
+    const auto sibling = gguf_path.parent_path() / "tokenizer.bpe";
+    if (!std::filesystem::is_regular_file(sibling)) throw std::runtime_error("tokenizer");
+    const Tokenizer tok = load_bpe(sibling);
+    if (tok.vocab != model.config.vocab) throw std::runtime_error("vocab");
+    std::filesystem::create_directories(out_dir);
+    write_checkpoint(out_dir / "model.bin", model);
+    std::filesystem::copy_file(sibling, out_dir / "tokenizer.bpe", std::filesystem::copy_options::overwrite_existing);
+    BpePairs bpe;
+    bpe.map.tok = tok;
+    Reader bpe_reader(read_file(sibling));
+    if (bpe_reader.u32() != 0x3142504cu) throw std::runtime_error("tokenizer");
+    bpe_reader.u32();
+    const uint32_t n_merges = bpe_reader.u32();
+    bpe_reader.u32();
+    bpe_reader.u32();
+    bpe_reader.u32();
+    for (uint32_t i = 0; i < n_merges; ++i) {
+      const uint32_t left = bpe_reader.u32();
+      const uint32_t right = bpe_reader.u32();
+      bpe.pairs.emplace_back(left, right);
+    }
+    const std::vector<int32_t> ids = encode_lpb1(bpe, "User: hello\nAssistant: hello\n", true);
+    write_token_files(out_dir / "tokens.bin", out_dir / "tokens.meta", ids, tok.vocab);
+    return;
+  }
+
+  const auto tok_model = view.strings.find("tokenizer.ggml.model");
+  if (tok_model == view.strings.end() || tok_model->second != "gpt2") throw std::runtime_error("tokenizer");
+  const auto tokens = view.strs.find("tokenizer.ggml.tokens");
+  const auto merges = view.strs.find("tokenizer.ggml.merges");
+  if (tokens == view.strs.end() || merges == view.strs.end()) throw std::runtime_error("tokenizer");
+  const int pad = static_cast<int>(optional_u32_key(view, "tokenizer.ggml.padding_token_id",
+                                                   tokens->second.empty() ? 0 : static_cast<uint32_t>(tokens->second.size() - 3)));
+  const int bos = static_cast<int>(optional_u32_key(view, "tokenizer.ggml.bos_token_id",
+                                                   tokens->second.empty() ? 0 : static_cast<uint32_t>(tokens->second.size() - 2)));
+  const int eos = static_cast<int>(optional_u32_key(view, "tokenizer.ggml.eos_token_id",
+                                                   tokens->second.empty() ? 0 : static_cast<uint32_t>(tokens->second.size() - 1)));
+  const BpePairs bpe = convert_gpt2_bpe(tokens->second, merges->second, pad, bos, eos);
+  Model model = public_to_nnllm(view, mapped.data(), mapped.size(), bpe, context);
+  std::filesystem::create_directories(out_dir);
+  write_bpe_file(out_dir / "tokenizer.bpe", bpe);
+  const std::vector<int32_t> ids = encode_lpb1(bpe, "User: hello\nAssistant: hello\n", true);
+  write_token_files(out_dir / "tokens.bin", out_dir / "tokens.meta", ids, bpe.map.tok.vocab);
+  write_checkpoint(out_dir / "model.bin", model);
+}
+
+void write_q8_0(Bytes& out, const std::vector<float>& values) {
+  if (values.size() % static_cast<size_t>(kQK) != 0) throw std::runtime_error("self-test q8");
+  const size_t nb = values.size() / static_cast<size_t>(kQK);
+  for (size_t i = 0; i < nb; ++i) {
+    float amax = 0.f;
+    for (int j = 0; j < kQK; ++j) {
+      const float a = values[i * static_cast<size_t>(kQK) + static_cast<size_t>(j)];
+      if (a > amax || -a > amax) amax = a < 0.f ? -a : a;
+    }
+    const float d = amax / 127.f;
+    const float id = d != 0.f ? 1.f / d : 0.f;
+    out.u16(f32_to_f16(d));
+    for (int j = 0; j < kQK; ++j) {
+      const float x = values[i * static_cast<size_t>(kQK) + static_cast<size_t>(j)] * id;
+      int q = static_cast<int>(x >= 0.f ? x + 0.5f : x - 0.5f);
+      if (q > 127) q = 127;
+      if (q < -128) q = -128;
+      out.u8(static_cast<uint8_t>(q));
+    }
+  }
+}
+
 int self_test() {
   Config config;
   config.vocab = 32;
@@ -1522,6 +2412,83 @@ int self_test() {
   }
   if (!bad_bpe) throw std::runtime_error("self-test tokenizer read");
 
+  convert_from_public(tok_gguf, dir / "from-out", 16);
+  const Tokenizer from_tok = load_bpe(dir / "from-out" / "tokenizer.bpe");
+  if (from_tok.vocab != 260 || from_tok.tokens[97] != "a" || from_tok.tokens[256] != "ab" ||
+      from_tok.merges.size() != 1 || from_tok.merges[0] != "a b") {
+    throw std::runtime_error("self-test from tokenizer");
+  }
+  const Model from_loaded = read_checkpoint(dir / "from-out" / "model.bin");
+  if (!from_loaded.config.rope || from_loaded.config.vocab != 260 || from_loaded.tensors.size() != tok_model.tensors.size()) {
+    throw std::runtime_error("self-test from model");
+  }
+  for (size_t i = 0; i < tok_model.tensors.size(); ++i) {
+    if (from_loaded.tensors[i].name != tok_model.tensors[i].name ||
+        from_loaded.tensors[i].shape != tok_model.tensors[i].shape ||
+        from_loaded.tensors[i].data != tok_model.tensors[i].data) {
+      throw std::runtime_error("self-test from " + tok_model.tensors[i].name);
+    }
+  }
+  if (!std::filesystem::is_regular_file(dir / "from-out" / "tokens.bin") ||
+      !std::filesystem::is_regular_file(dir / "from-out" / "tokens.meta")) {
+    throw std::runtime_error("self-test from tokens");
+  }
+
+  std::vector<float> q8_src(32);
+  for (int i = 0; i < 32; ++i) q8_src[static_cast<size_t>(i)] = static_cast<float>(i - 8) * 0.25f;
+  Bytes q8_bytes;
+  write_q8_0(q8_bytes, q8_src);
+  std::vector<float> q8_back;
+  dequantize(kGgmlQ8_0, q8_bytes.bytes().data(), 32, q8_back);
+  if (q8_back.size() != 32) throw std::runtime_error("self-test q8 size");
+  for (int i = 0; i < 32; ++i) {
+    const float err = q8_back[static_cast<size_t>(i)] - q8_src[static_cast<size_t>(i)];
+    if (err > 0.03f || err < -0.03f) throw std::runtime_error("self-test q8");
+  }
+
+  Tensor kv_weight;
+  kv_weight.name = "k";
+  kv_weight.shape = {4, 8};
+  kv_weight.data.resize(32);
+  for (int i = 0; i < 32; ++i) kv_weight.data[static_cast<size_t>(i)] = static_cast<float>(i + 1);
+  const Tensor kv_rep = repeat_kv_heads(kv_weight, 4, 2, 8);
+  if (kv_rep.shape != std::vector<int>{8, 8}) throw std::runtime_error("self-test gqa shape");
+  for (int d = 0; d < 2; ++d) {
+    for (int col = 0; col < 8; ++col) {
+      const float a = kv_weight.data[static_cast<size_t>(d) * 8 + static_cast<size_t>(col)];
+      if (kv_rep.data[static_cast<size_t>(d) * 8 + static_cast<size_t>(col)] != a ||
+          kv_rep.data[static_cast<size_t>(2 + d) * 8 + static_cast<size_t>(col)] != a) {
+        throw std::runtime_error("self-test gqa");
+      }
+    }
+  }
+
+  const std::array<std::string, 256> byte_tok = gpt2_byte_tokens();
+  std::vector<int> gpt2_order;
+  std::array<bool, 256> used{};
+  auto push_byte = [&](int b) {
+    gpt2_order.push_back(b);
+    used[static_cast<size_t>(b)] = true;
+  };
+  for (int b = 0x21; b <= 0x7e; ++b) push_byte(b);
+  for (int b = 0xa1; b <= 0xac; ++b) push_byte(b);
+  for (int b = 0xae; b <= 0xff; ++b) push_byte(b);
+  for (int b = 0; b < 256; ++b) {
+    if (!used[static_cast<size_t>(b)]) gpt2_order.push_back(b);
+  }
+  std::vector<std::string> shuffled;
+  shuffled.reserve(259);
+  for (int b : gpt2_order) shuffled.push_back(byte_tok[static_cast<size_t>(b)]);
+  shuffled.push_back("<pad>");
+  shuffled.push_back("<bos>");
+  shuffled.push_back("<|endoftext|>");
+  const BpePairs remapped = convert_gpt2_bpe(shuffled, {}, 256, 257, 258);
+  if (remapped.map.tok.vocab != 259 || !remapped.pairs.empty() || gpt2_order[0] != 33 ||
+      remapped.map.orig_to_new[0] != 33 || remapped.map.new_to_orig[33] != 0 ||
+      remapped.map.orig_to_new[256] != 256 || remapped.map.new_to_orig[256] != 256) {
+    throw std::runtime_error("self-test remap");
+  }
+
   std::filesystem::remove_all(dir);
   std::printf("self-test ok\n");
   return 0;
@@ -1541,6 +2508,30 @@ int main(int argc, char** argv) {
       throw std::runtime_error("usage");
     }
     const std::string command = argv[1];
+    if (command == "from") {
+      if (argc < 4) {
+        usage();
+        throw std::runtime_error("usage");
+      }
+      int context = 0;
+      for (int i = 4; i < argc; ++i) {
+        const std::string flag = argv[i];
+        if (flag == "--context") {
+          if (i + 1 >= argc) throw std::runtime_error("usage");
+          ++i;
+          char* end = nullptr;
+          const long value = std::strtol(argv[i], &end, 10);
+          if (end == argv[i] || *end != '\0' || value < 1 || value > 0x7fffffff) {
+            throw std::runtime_error("context");
+          }
+          context = static_cast<int>(value);
+        } else {
+          throw std::runtime_error(argv[i]);
+        }
+      }
+      convert_from_public(argv[2], argv[3], context);
+      return 0;
+    }
     if (command == "llama" ? (argc != 4 && argc != 5) : argc != 4) {
       usage();
       throw std::runtime_error("usage");
