@@ -44,7 +44,7 @@ Paths in the list are resolved from the list's directory.
 
 Two short exchanges and a few steps are enough to prove the loop. They are not enough for a reply that answers the question. A usable transcript model needs many exchanges and a full training run. The same tiny preset memorizes a small corpus rather than learning general conversation.
 
-`chat-run/` must contain `tokenizer.bpe` and `model.bin`. The other `train_books` files are not read by `chat`. A public llama.cpp GGUF becomes that directory with `gguf from MODEL.GGUF chat-run`. See [gguf](gguf.md).
+`chat-run/` must contain `tokenizer.bpe` and `model.bin`. The other `train_books` files are not read by `chat`. A public llama.cpp GGUF, including Qwen2 and Qwen3, becomes that directory with `gguf from MODEL.GGUF chat-run`. A model trained with `--preset qwen-tiny`, `qwen-small`, or `qwen-base` loads the same way. See [gguf](gguf.md).
 
 ## Talk
 

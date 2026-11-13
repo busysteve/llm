@@ -61,7 +61,8 @@ void usage() {
       "transformer, writes tokenizer.bpe and model.bin, then loads both and\n"
       "generates a continuation.\n"
       "\n"
-      "  --preset tiny|small|base|llama-tiny|llama-small|llama-base\n"
+      "  --preset tiny|small|base|llama-tiny|llama-small|llama-base|\n"
+      "          qwen-tiny|qwen-small|qwen-base\n"
       "                             default tiny\n"
       "  --vocab N                  default 4096 (minimum 259)\n"
       "  --seq-len N                default 256, at most 1024\n"
@@ -93,7 +94,10 @@ void usage() {
       "Tokenizer training scans the corpus once per merge, so a large vocab on\n"
       "long books is the slow part. --vocab 1024 is a faster first run.\n"
       "tiny fits in 12 GB at this default batch and length. small prefers 24 GB.\n"
-      "base is a 24 GB model; prefer --seq-len 512 or less on a smaller card.\n",
+      "base is a 24 GB model; prefer --seq-len 512 or less on a smaller card.\n"
+      "llama-* is that width with RoPE and RMSNorm. qwen-* is the Qwen3 block:\n"
+      "grouped-query attention, head dim 128, QK-norm, RoPE base 1e6, and\n"
+      "RMSNorm epsilon 1e-6. Train a qwen preset from scratch.\n",
       stderr);
 }
 
@@ -265,6 +269,9 @@ nn::TransformerConfig preset_config(const std::string& name, int vocab) {
   if (name == "llama-tiny") return llm::presets::llama_tiny(vocab);
   if (name == "llama-small") return llm::presets::llama_small(vocab);
   if (name == "llama-base") return llm::presets::llama_base(vocab);
+  if (name == "qwen-tiny") return llm::presets::qwen_tiny(vocab);
+  if (name == "qwen-small") return llm::presets::qwen_small(vocab);
+  if (name == "qwen-base") return llm::presets::qwen_base(vocab);
   throw std::runtime_error("preset");
 }
 

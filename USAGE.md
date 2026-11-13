@@ -105,18 +105,21 @@ std::vector<nn::AdamWGroup> groups = llm::adamw_groups(model, /*weight_decay=*/0
 nn::AdamW opt(std::move(groups), 3e-4f, 0.9f, 0.95f, 1e-8f);
 ```
 
-`tiny`, `small`, `base`, `llama_tiny`, `llama_small`, and `llama_base` throw `std::invalid_argument("vocab_size")` when `vocab_size < 1`. The other fields are fixed: dropout `0`, `bias` false, `tie_embeddings` false, SwiGLU, `max_seq_len` 1024. The first three use learned-absolute positions and LayerNorm. The `llama_*` presets set `positional` to RoPE, which selects RMSNorm and adjacent-pair RoPE on Q and K. A checkpoint trained with learned positions does not become that block.
+`tiny`, `small`, `base`, `llama_tiny`, `llama_small`, `llama_base`, `qwen_tiny`, `qwen_small`, and `qwen_base` throw `std::invalid_argument("vocab_size")` when `vocab_size < 1`. The other fields are fixed: dropout `0`, `bias` false, `tie_embeddings` false, SwiGLU, `max_seq_len` 1024. The first three use learned-absolute positions and LayerNorm. The `llama_*` presets set `positional` to RoPE, which selects RMSNorm and adjacent-pair RoPE on Q and K. The `qwen_*` presets use that RoPE block with head dim 128, fewer KV heads than query heads, QK-norm, RoPE base `1e6`, and RMSNorm epsilon `1e-6`. A checkpoint trained with learned positions does not become either block.
 
-| Preset | `num_layers` | `d_model` | `num_heads` | `d_ff` | Positions |
-|---|---:|---:|---:|---:|---|
-| tiny | 4 | 256 | 4 | 768 | learned absolute |
-| small | 6 | 512 | 8 | 1536 | learned absolute |
-| base | 12 | 768 | 12 | 2048 | learned absolute |
-| llama_tiny | 4 | 256 | 4 | 768 | RoPE, RMSNorm |
-| llama_small | 6 | 512 | 8 | 1536 | RoPE, RMSNorm |
-| llama_base | 12 | 768 | 12 | 2048 | RoPE, RMSNorm |
+| Preset | `num_layers` | `d_model` | `num_heads` | KV heads | Head dim | `d_ff` | Positions |
+|---|---:|---:|---:|---:|---:|---:|---|
+| tiny | 4 | 256 | 4 | 4 | 64 | 768 | learned absolute |
+| small | 6 | 512 | 8 | 8 | 64 | 1536 | learned absolute |
+| base | 12 | 768 | 12 | 12 | 64 | 2048 | learned absolute |
+| llama_tiny | 4 | 256 | 4 | 4 | 64 | 768 | RoPE, RMSNorm |
+| llama_small | 6 | 512 | 8 | 8 | 64 | 1536 | RoPE, RMSNorm |
+| llama_base | 12 | 768 | 12 | 12 | 64 | 2048 | RoPE, RMSNorm |
+| qwen_tiny | 4 | 256 | 4 | 2 | 128 | 768 | Qwen3 |
+| qwen_small | 6 | 512 | 8 | 2 | 128 | 1536 | Qwen3 |
+| qwen_base | 12 | 768 | 12 | 4 | 128 | 2048 | Qwen3 |
 
-Untied parameter counts at vocab 16000 are tiny 11866624 (11.87M), small 37368832 (37.37M), and base 110335488 (110.34M). The llama presets are llama_tiny 11602176 (11.60M), llama_small 36837888 (36.84M), and llama_base 109529856 (109.53M). The GPU notes below are float32, one GPU, full attention, and no activation checkpointing.
+Untied parameter counts at vocab 16000 are tiny 11866624 (11.87M), small 37368832 (37.37M), and base 110335488 (110.34M). The llama presets are llama_tiny 11602176 (11.60M), llama_small 36837888 (36.84M), and llama_base 109529856 (109.53M). The qwen presets are qwen_tiny 12127488 (12.13M), qwen_small 38412288 (38.41M), and qwen_base 118970112 (118.97M). The GPU notes below are float32, one GPU, full attention, and no activation checkpointing.
 
 tiny fits in 12 GB. Suggested batches are `(8, 512)` and `(16, 256)`. small is tight in 12 GB at `(4, 512)`; 24 GB is comfortable. base is a 24 GB target, not a 12 GB target at `T=512`. Keep `T <= 1024` for base, and prefer `T <= 512` on a 12 GB GPU.
 
@@ -133,7 +136,7 @@ cmake --build build -j --target train_books
 
 `books.txt` is one path per line. Blank lines and lines whose first character is `#` are ignored. A relative path is resolved from the directory that contains the list. Each file is read in full, trained as its own BPE string, and encoded with eos appended so a book boundary is a token. Pairs do not cross from one file into the next. The raw text is released before the network is built.
 
-The run writes `run/tokenizer.bpe`, `run/tokens.bin`, `run/tokens.meta`, and `run/model.bin`. `model.bin` is a version-2 façade checkpoint. After training, the process drops the training context, loads the tokenizer and `model.bin` with `LoadMode::Inference`, and prints a continuation. The default prompt is the opening of the first book. Generation stops on eos.
+The run writes `run/tokenizer.bpe`, `run/tokens.bin`, `run/tokens.meta`, and `run/model.bin`. `model.bin` is a version-2 façade checkpoint, or version 4 for a `qwen-*` preset. After training, the process drops the training context, loads the tokenizer and `model.bin` with `LoadMode::Inference`, and prints a continuation. The default prompt is the opening of the first book. Generation stops on eos.
 
 ```bash
 ./build/train_books --files books.txt --out run \
@@ -141,7 +144,7 @@ The run writes `run/tokenizer.bpe`, `run/tokens.bin`, `run/tokens.meta`, and `ru
   --prompt "The morning after"
 ```
 
-`--preset` is `tiny`, `small`, `base`, `llama-tiny`, `llama-small`, or `llama-base`. The `llama-*` names train the RoPE and RMSNorm block from scratch. `--seq-len` must be at most 1024. `--vocab` must be at least 259. Tokenizer training scans every byte once per merge, so a vocab of 4096 on several long books is much slower than the GPU steps. `--vocab 1024` is a faster first run. Defaults are `--preset tiny`, `--seq-len 256`, `--batch 4`, which fits a 12 GB GPU. `small` prefers 24 GB. `base` is a 24 GB model; keep the sequence at 512 or below on a smaller card. `--temperature 0` is greedy. `--help` prints the flags.
+`--preset` is `tiny`, `small`, `base`, `llama-tiny`, `llama-small`, `llama-base`, `qwen-tiny`, `qwen-small`, or `qwen-base`. The `llama-*` names train the RoPE and RMSNorm block from scratch. The `qwen-*` names train the Qwen3 block from scratch. `--seq-len` must be at most 1024. `--vocab` must be at least 259. Tokenizer training scans every byte once per merge, so a vocab of 4096 on several long books is much slower than the GPU steps. `--vocab 1024` is a faster first run. Defaults are `--preset tiny`, `--seq-len 256`, `--batch 4`, which fits a 12 GB GPU. `small` prefers 24 GB. `base` is a 24 GB model; keep the sequence at 512 or below on a smaller card. `--temperature 0` is greedy. `--help` prints the flags.
 
 `--early-stop N` with `N > 0` holds out the last `--valid-fraction` (default `0.1`) of the token stream, trains on the prefix, and stops after `N` validation evals with no drop in cross-entropy. The saved checkpoint is that best step. `tokens.bin` stays the full stream. `--early-stop 0` trains on the whole stream and does not evaluate. `--min-loss FLOAT` stops when a step's training loss is at or below `FLOAT` and keeps that step on the whole stream. Omitting `--min-loss` leaves the threshold off. When that threshold stops the run, the saved checkpoint is that step even if `--early-stop` had stored an earlier validation best.
 
@@ -191,7 +194,7 @@ cmake --build build -j --target gguf
 ./build/chat --model chat-run
 ```
 
-`export` writes architecture `nnllm` and float32 weights. `import` reads `nnllm` files whose tensors are float32 or float16 and writes a version-1 checkpoint with no optimizer. `nnllm.positional` is `learned_absolute` or `rope`. `llama` reads a checkpoint or an `nnllm` GGUF and writes architecture `llama` for llama.cpp. That file uses llama.cpp tensor names and splits SwiGLU `fc1` into `ffn_gate` and `ffn_up`. A learned-position checkpoint omits the position table and the LayerNorm biases, and llama.cpp then applies RoPE and RMSNorm, so those tokens differ. A RoPE checkpoint already uses that block, so the export keeps every tensor and does not print the mismatch warning. A `tokenizer.bpe` beside the checkpoint, or a path given after the output, is embedded so `llama-cli` can encode a prompt. The pre-tokenizer is `superbpe`: a merge that crosses a digit boundary can get a different id than this library's encoder. `from` reads a public llama.cpp GGUF and writes a `chat` directory: `model.bin`, `tokenizer.bpe`, `tokens.bin`, and `tokens.meta`. GPT-2 BPE is remapped to LPB1. Quantized tensors expand to float32. GQA repeats KV heads. `import` rejects a GGUF with another architecture, or with quantized tensors. `llama` rejects GELU and linear bias. `from` rejects QK-norm, a head dim other than `d_model / heads`, MoE, GELU, and linear bias. The metadata keys, tensor names, and dimension order are in [examples/gguf.md](examples/gguf.md).
+`export` writes architecture `nnllm` and float32 weights. `import` reads `nnllm` files whose tensors are float32 or float16 and writes a checkpoint with no optimizer. That file is version 1, or version 3 when the block is Qwen-style. `nnllm.positional` is `learned_absolute` or `rope`. `llama` reads a checkpoint or an `nnllm` GGUF and writes a file llama.cpp can load. A classic block is architecture `llama`. A Qwen-style block is `qwen3` when QK-norm is on, and `qwen2` otherwise. That file uses llama.cpp tensor names and splits SwiGLU `fc1` into `ffn_gate` and `ffn_up`. A learned-position checkpoint omits the position table and the LayerNorm biases, and llama.cpp then applies RoPE and RMSNorm, so those tokens differ. A RoPE checkpoint already uses that block, so the export keeps every tensor and does not print the mismatch warning. A `tokenizer.bpe` beside the checkpoint, or a path given after the output, is embedded so `llama-cli` can encode a prompt. The pre-tokenizer is `superbpe`: a merge that crosses a digit boundary can get a different id than this library's encoder. `from` reads a public llama.cpp GGUF, including Qwen2 and Qwen3, and writes a `chat` directory: `model.bin`, `tokenizer.bpe`, `tokens.bin`, and `tokens.meta`. GPT-2 BPE is remapped to LPB1. Quantized tensors expand to float32. Grouped-query attention, a head dim other than `d_model / heads`, QK-norm, the file's RoPE base, and its RMSNorm epsilon are kept. That checkpoint is version 1, or version 3 for a Qwen-style block. `import` rejects a GGUF with another architecture, or with quantized tensors. `llama` rejects GELU and linear bias. `from` rejects partial RoPE, MoE, a fused QKV matrix, GELU, and linear bias. The metadata keys, tensor names, and dimension order are in [examples/gguf.md](examples/gguf.md).
 
 `adamw_groups` throws `std::invalid_argument("weight_decay")` when `weight_decay` is NaN, infinite, or negative. Decay applies only to rank-2 parameters whose names do not contain `ln` and do not end in `.bias`. Every other parameter, including LayerNorm weight and bias, is decay 0. A new group starts only when that choice changes, so the groups stay in `parameters()` order. `Transformer::save` rejects any other order.
 
@@ -217,7 +220,7 @@ trainer.fit(train, &valid, rng);
 
 Each optimizer step calls `train` and `zero_grad` once, then `grad_accum_steps` micro-batches. A micro-batch is `next`, `forward`, and `sequence_cross_entropy` with ignore index `-100`. The logit gradient is scaled in place by `1 / grad_accum_steps` and passed to `backward`. `opt.step` runs after the micro-batches. A non-finite micro-batch loss throws `std::runtime_error("non-finite loss")` before that backward when `abort_on_non_finite` is set. `grad_clip_norm > 0` clips with `clip_grad_norm`. A non-finite norm throws `std::runtime_error("non-finite grad")`. `grad_clip_norm == 0` does not clip.
 
-`log_every > 0` prints step, loss, learning rate, and grad norm when `step % log_every == 0`. The printed loss is the mean of the micro-batch losses. When `valid` is non-null, `eval_every > 0`, and `eval_batches > 0`, the same cadence runs `eval_batches` forwards under `eval`, prints the mean cross-entropy and `exp` of that mean, then returns to `train`. When `ckpt_every > 0` and `checkpoint_path` is non-empty, the same cadence calls `model.save(checkpoint_path, &opt)`. That file is checkpoint version 2 with AdamW moments and the façade embeddings.
+`log_every > 0` prints step, loss, learning rate, and grad norm when `step % log_every == 0`. The printed loss is the mean of the micro-batch losses. When `valid` is non-null, `eval_every > 0`, and `eval_batches > 0`, the same cadence runs `eval_batches` forwards under `eval`, prints the mean cross-entropy and `exp` of that mean, then returns to `train`. When `ckpt_every > 0` and `checkpoint_path` is non-empty, the same cadence calls `model.save(checkpoint_path, &opt)`. That file is checkpoint version 2, or version 4 for a Qwen-style block, with AdamW moments and the façade embeddings.
 
 `fit` returns the last step that ran. That is `max_steps` when no stop trips. When patience trips, the return is the step that exhausted it, which is greater than the restored step. When `min_loss` trips, the return is the step whose training loss reached the threshold, and that step stays loaded.
 

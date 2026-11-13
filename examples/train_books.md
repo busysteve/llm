@@ -72,7 +72,7 @@ The default prompt, when `--prompt` is omitted, is the opening of the first file
 | `tokenizer.bpe` | byte-level BPE, magic `LPB1` |
 | `tokens.bin` | token ids, int32 little-endian |
 | `tokens.meta` | vocab size and length for `TextDataset` |
-| `model.bin` | version-2 façade checkpoint, including AdamW moments |
+| `model.bin` | version-2 façade checkpoint, or version 4 for a `qwen-*` preset, including AdamW moments |
 
 With `--steps` of 500 or more, `model.bin` is also written every 500 steps. The final save always runs after the last step. `--steps` below 500 writes the checkpoint once, at the end. With `--early-stop`, that final file is the best validation step, including that step's AdamW moments, even when a 500-step write was a later step. When `--min-loss` stops the run, `model.bin` is the step whose training loss reached the threshold, including that step's AdamW moments.
 
@@ -84,7 +84,7 @@ Load `tokenizer.bpe` and `model.bin` together. `chat` does that for a dialogue c
 
 | Flag | Default | Role |
 |---|---|---|
-| `--preset tiny\|small\|base\|llama-tiny\|llama-small\|llama-base` | `tiny` | model shape |
+| `--preset tiny\|small\|base\|llama-tiny\|llama-small\|llama-base\|qwen-tiny\|qwen-small\|qwen-base` | `tiny` | model shape |
 | `--vocab N` | 4096 | BPE size, minimum 259 |
 | `--seq-len N` | 256 | tokens per example, at most 1024 |
 | `--batch N` | 4 | examples per step |
@@ -106,7 +106,7 @@ Load `tokenizer.bpe` and `model.bin` together. `chat` does that for a dialogue c
 
 Weight decay stays 0.1. The cosine floor is one tenth of `--lr`. Eval is off unless `--early-stop` is positive. Defaults `--preset tiny`, `--seq-len 256`, and `--batch 4` fit a 12 GB GPU. `small` prefers 24 GB. `base` is a 24 GB model. On a smaller card keep `--seq-len` at 512 or below.
 
-`tiny`, `small`, and `base` use learned absolute positions and LayerNorm. `llama-tiny`, `llama-small`, and `llama-base` are the same widths with RoPE and RMSNorm, which is the block llama.cpp runs. Train one of those from scratch. A checkpoint that was trained with learned positions does not become that block.
+`tiny`, `small`, and `base` use learned absolute positions and LayerNorm. `llama-tiny`, `llama-small`, and `llama-base` are the same widths with RoPE and RMSNorm, which is the block llama.cpp runs. `qwen-tiny`, `qwen-small`, and `qwen-base` are the Qwen3 block: head dim 128, grouped-query attention, QK-norm, RoPE base `1e6`, and RMSNorm epsilon `1e-6`. Train a llama or qwen preset from scratch. A checkpoint that was trained with learned positions does not become either block. The saved `qwen-*` checkpoint is version 4.
 
 ## Early stop
 
@@ -149,7 +149,7 @@ Errors print `train_books: <reason>` on stderr and the process exits 1. Common r
 | `min_loss` | `--min-loss` is negative or infinite |
 | `eval_every` | `--early-stop` is positive and `--eval-every` is not in `1 .. --steps` |
 | `valid_fraction` | `--valid-fraction` is not inside `(0, 1)` |
-| `preset` | the name is not `tiny`, `small`, `base`, `llama-tiny`, `llama-small`, or `llama-base` |
+| `preset` | the name is not `tiny`, `small`, `base`, `llama-tiny`, `llama-small`, `llama-base`, `qwen-tiny`, `qwen-small`, or `qwen-base` |
 | a flag name | the flag is unknown, or its value is missing or not a number |
 
 Library details are in [USAGE.md](../USAGE.md). The one-paragraph acceptance run is [train_tiny](train_tiny.md). To keep training that checkpoint on more text, see [finetune](finetune.md).

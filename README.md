@@ -39,7 +39,7 @@ cmake --build build -j --target gguf
 include/llm/tokenizer.hpp   Tokenizer
 include/llm/bpe.hpp         BpeTokenizer
 include/llm/data.hpp        TextDataset and token files
-include/llm/presets.hpp     tiny / small / base and llama configs, AdamW groups
+include/llm/presets.hpp     tiny / small / base, llama, and qwen configs, AdamW groups
 include/llm/train.hpp       learning-rate schedule and Trainer
 include/llm/generate.hpp    Generator
 src/bpe.cpp                 byte-level BPE, train, and the LPB1 file
@@ -75,30 +75,33 @@ The on-disk form is little-endian with magic `LPB1`. The byte layout is in [USAG
 
 ## Presets
 
-`llm::presets::tiny`, `small`, and `base` return an `nn::TransformerConfig`. `vocab_size` must be positive. Dropout is 0, bias is off, embeddings are not tied, the activation is SwiGLU, positions are learned absolute, and `max_seq_len` is 1024. `llama_tiny`, `llama_small`, and `llama_base` are the same widths with `positional` set to RoPE, which selects RMSNorm and adjacent-pair RoPE. A learned-position checkpoint cannot be turned into that block. Train a llama preset from scratch.
+`llm::presets::tiny`, `small`, and `base` return an `nn::TransformerConfig`. `vocab_size` must be positive. Dropout is 0, bias is off, embeddings are not tied, the activation is SwiGLU, positions are learned absolute, and `max_seq_len` is 1024. `llama_tiny`, `llama_small`, and `llama_base` are the same widths with `positional` set to RoPE, which selects RMSNorm and adjacent-pair RoPE. `qwen_tiny`, `qwen_small`, and `qwen_base` are the Qwen3 block: RoPE base `1e6`, RMSNorm epsilon `1e-6`, head dim 128, grouped-query attention, and a QK-norm of width 128 before RoPE. A learned-position checkpoint cannot be turned into either of those blocks. Train a llama or qwen preset from scratch.
 
-| Preset | Layers | `d_model` | Heads | `d_ff` | Positions |
-|---|---:|---:|---:|---:|---|
-| tiny | 4 | 256 | 4 | 768 | learned absolute |
-| small | 6 | 512 | 8 | 1536 | learned absolute |
-| base | 12 | 768 | 12 | 2048 | learned absolute |
-| llama_tiny | 4 | 256 | 4 | 768 | RoPE, RMSNorm |
-| llama_small | 6 | 512 | 8 | 1536 | RoPE, RMSNorm |
-| llama_base | 12 | 768 | 12 | 2048 | RoPE, RMSNorm |
+| Preset | Layers | `d_model` | Heads | KV heads | Head dim | `d_ff` | Positions |
+|---|---:|---:|---:|---:|---:|---:|---|
+| tiny | 4 | 256 | 4 | 4 | 64 | 768 | learned absolute |
+| small | 6 | 512 | 8 | 8 | 64 | 1536 | learned absolute |
+| base | 12 | 768 | 12 | 12 | 64 | 2048 | learned absolute |
+| llama_tiny | 4 | 256 | 4 | 4 | 64 | 768 | RoPE, RMSNorm |
+| llama_small | 6 | 512 | 8 | 8 | 64 | 1536 | RoPE, RMSNorm |
+| llama_base | 12 | 768 | 12 | 12 | 64 | 2048 | RoPE, RMSNorm |
+| qwen_tiny | 4 | 256 | 4 | 2 | 128 | 768 | Qwen3 |
+| qwen_small | 6 | 512 | 8 | 2 | 128 | 1536 | Qwen3 |
+| qwen_base | 12 | 768 | 12 | 4 | 128 | 2048 | Qwen3 |
 
 A Mermaid diagram of the `llama_base` architecture (with sizes and specs) is in [docs/llama-base-architecture.md](docs/llama-base-architecture.md).
 
 `llm::adamw_groups` walks `parameters()` in order. Rank-2 tensors whose names do not refer to LayerNorm take the given weight decay. Biases, names containing `ln`, and every other rank-1 tensor take 0. Groups are contiguous runs of that choice, so concatenating them is still `parameters()` order. A NaN or negative `weight_decay` throws `weight_decay`.
 
-Untied parameter counts at vocab 16000 are tiny 11866624 (11.87M), small 37368832 (37.37M), and base 110335488 (110.34M). The llama presets drop the position table and the norm biases: llama_tiny 11602176 (11.60M), llama_small 36837888 (36.84M), and llama_base 109529856 (109.53M). The GPU notes below are float32, one GPU, full attention, and no activation checkpointing.
+Untied parameter counts at vocab 16000 are tiny 11866624 (11.87M), small 37368832 (37.37M), and base 110335488 (110.34M). The llama presets drop the position table and the norm biases: llama_tiny 11602176 (11.60M), llama_small 36837888 (36.84M), and llama_base 109529856 (109.53M). The qwen presets add the wider Q projection and the QK-norm weights: qwen_tiny 12127488 (12.13M), qwen_small 38412288 (38.41M), and qwen_base 118970112 (118.97M). The GPU notes below are float32, one GPU, full attention, and no activation checkpointing.
 
 tiny fits in 12 GB. Suggested batches are `(8, 512)` and `(16, 256)`. small is tight in 12 GB at `(4, 512)`; 24 GB is comfortable. base is a 24 GB target, not a 12 GB target at `T=512`. Keep `T <= 1024` for base, and prefer `T <= 512` on a 12 GB GPU.
 
-`examples/train_tiny.cpp` trains `presets::tiny` at the byte-level BPE vocab, a few million parameters, so that acceptance run fits easily. That preset stays learned absolute. `train_books --preset llama-tiny` is the RoPE and RMSNorm shape.
+`examples/train_tiny.cpp` trains `presets::tiny` at the byte-level BPE vocab, a few million parameters, so that acceptance run fits easily. That preset stays learned absolute. `train_books --preset llama-tiny` is the RoPE and RMSNorm shape. `train_books --preset qwen-tiny` is the Qwen3 shape. A public Qwen2 or Qwen3 GGUF loads through `gguf from` and `chat`.
 
 ## Trainer
 
-`Trainer::fit` runs `max_steps` AdamW updates. Each step is 1-based. The learning rate warms up linearly, then follows a cosine down to `min_lr`. `learning_rate_at` is that schedule. Micro-batches accumulate gradients on device (`Tensor::scale` by `1 / grad_accum_steps`) before one clip and one `opt.step`. A non-finite loss or grad norm throws when `abort_on_non_finite` is set. Eval, when a validation set is passed, prints mean cross-entropy and perplexity. A positive `early_stop_patience` stops after that many validation evals with no improvement and restores the best step, including AdamW moments. A finite `min_loss` of at least 0 stops when a step's training loss is at or below that value and keeps that step. Checkpoints use `Transformer::save(path, &adamw)`, so the file is version 2 and includes embeddings and AdamW moments.
+`Trainer::fit` runs `max_steps` AdamW updates. Each step is 1-based. The learning rate warms up linearly, then follows a cosine down to `min_lr`. `learning_rate_at` is that schedule. Micro-batches accumulate gradients on device (`Tensor::scale` by `1 / grad_accum_steps`) before one clip and one `opt.step`. A non-finite loss or grad norm throws when `abort_on_non_finite` is set. Eval, when a validation set is passed, prints mean cross-entropy and perplexity. A positive `early_stop_patience` stops after that many validation evals with no improvement and restores the best step, including AdamW moments. A finite `min_loss` of at least 0 stops when a step's training loss is at or below that value and keeps that step. Checkpoints use `Transformer::save(path, &adamw)`, so the file is version 2, or version 4 for a Qwen-style block, and includes embeddings and AdamW moments.
 
 ## Generator
 

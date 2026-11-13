@@ -519,6 +519,90 @@ void check_presets() {
       CHECK(param.name.size() < 5 || param.name.compare(param.name.size() - 5, 5, ".bias") != 0);
     }
   }
+  check_invalid([] { llm::presets::qwen_tiny(0); }, "vocab_size");
+  const nn::TransformerConfig qwen = llm::presets::qwen_tiny(16000);
+  CHECK(qwen.positional == nn::PositionalEncoding::Rope);
+  CHECK(qwen.num_layers == 4);
+  CHECK(qwen.d_model == 256);
+  CHECK(qwen.num_heads == 4);
+  CHECK(qwen.num_kv_heads == 2);
+  CHECK(qwen.head_dim == 128);
+  CHECK(qwen.qk_norm);
+  CHECK(qwen.rope_theta == 1000000.f);
+  CHECK(qwen.rms_eps == 1e-6f);
+  CHECK(qwen.d_ff == 768);
+  CHECK(qwen.bias == false);
+  CHECK(llm::presets::qwen_small(8).num_layers == 6);
+  CHECK(llm::presets::qwen_small(8).num_heads == 8);
+  CHECK(llm::presets::qwen_small(8).num_kv_heads == 2);
+  CHECK(llm::presets::qwen_small(8).head_dim == 128);
+  CHECK(llm::presets::qwen_base(8).d_model == 768);
+  CHECK(llm::presets::qwen_base(8).num_heads == 12);
+  CHECK(llm::presets::qwen_base(8).num_kv_heads == 4);
+  CHECK(llm::presets::qwen_base(8).d_ff == 2048);
+  {
+    nn::Context ctx;
+    nn::Transformer model(ctx, qwen, 1);
+    CHECK(param_numel(model) == 12127488);
+    bool saw_q = false;
+    bool saw_k = false;
+    for (const nn::NamedParam& param : model.parameters()) {
+      CHECK(param.name.find("pos_emb") == std::string::npos);
+      if (param.name == "blocks.0.attn.q_norm.weight") {
+        saw_q = true;
+        CHECK(param.value->shape() == std::vector<int>{128});
+      }
+      if (param.name == "blocks.0.attn.k_norm.weight") {
+        saw_k = true;
+        CHECK(param.value->shape() == std::vector<int>{128});
+      }
+      if (param.name == "blocks.0.attn.q.weight") CHECK((param.value->shape() == std::vector<int>{512, 256}));
+      if (param.name == "blocks.0.attn.k.weight") CHECK((param.value->shape() == std::vector<int>{256, 256}));
+    }
+    CHECK(saw_q);
+    CHECK(saw_k);
+  }
+  {
+    nn::Context ctx;
+    nn::Transformer model(ctx, llm::presets::qwen_small(16000), 1);
+    CHECK(param_numel(model) == 38412288);
+  }
+  {
+    nn::Context ctx;
+    nn::Transformer model(ctx, llm::presets::qwen_base(16000), 1);
+    CHECK(param_numel(model) == 118970112);
+  }
+  {
+    const auto tok = llm::BpeTokenizer::train({"ab"}, 259);
+    nn::TransformerConfig config = llm::presets::qwen_tiny(tok->vocab_size());
+    config.num_layers = 1;
+    config.d_model = 32;
+    config.num_heads = 4;
+    config.num_kv_heads = 2;
+    config.head_dim = 16;
+    config.d_ff = 64;
+    config.max_seq_len = 32;
+    nn::Context ctx;
+    nn::Transformer model(ctx, config, 3);
+    llm::Generator generator(ctx, model, *tok);
+    llm::GenerateConfig cfg;
+    cfg.max_new_tokens = 2;
+    cfg.temperature = 0.f;
+    cfg.top_k = 1;
+    std::mt19937 rng(1);
+    const std::string text = generator.generate("ab", cfg, rng);
+    const auto dir = std::filesystem::temp_directory_path() / "llm-qwen-preset";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    const auto path = dir / "model.bin";
+    model.save(path, nullptr);
+    nn::Context loaded_ctx;
+    nn::Transformer::Loaded loaded = nn::Transformer::load(loaded_ctx, path, nn::LoadMode::Inference);
+    llm::Generator again(loaded_ctx, loaded.model, *tok);
+    std::mt19937 rng2(1);
+    CHECK(again.generate("ab", cfg, rng2) == text);
+    std::filesystem::remove_all(dir);
+  }
 }
 
 }  // namespace

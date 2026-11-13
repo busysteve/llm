@@ -24,6 +24,17 @@ nn::TransformerConfig make_config(int vocab_size, int layers, int d_model, int h
   return config;
 }
 
+nn::TransformerConfig qwen_width(int vocab_size, int layers, int d_model, int heads, int kv_heads, int d_ff) {
+  nn::TransformerConfig config = make_config(vocab_size, layers, d_model, heads, d_ff);
+  config.positional = nn::PositionalEncoding::Rope;
+  config.num_kv_heads = kv_heads;
+  config.head_dim = 128;
+  config.qk_norm = true;
+  config.rope_theta = 1000000.f;
+  config.rms_eps = 1e-6f;
+  return config;
+}
+
 bool apply_decay(const nn::NamedParam& param) {
   if (param.value == nullptr || param.value->rank() != 2) return false;
   if (param.name.find("ln") != std::string::npos) return false;
@@ -60,6 +71,12 @@ nn::TransformerConfig llama_base(int vocab_size) {
   config.positional = nn::PositionalEncoding::Rope;
   return config;
 }
+
+nn::TransformerConfig qwen_tiny(int vocab_size) { return qwen_width(vocab_size, 4, 256, 4, 2, 768); }
+
+nn::TransformerConfig qwen_small(int vocab_size) { return qwen_width(vocab_size, 6, 512, 8, 2, 1536); }
+
+nn::TransformerConfig qwen_base(int vocab_size) { return qwen_width(vocab_size, 12, 768, 12, 4, 2048); }
 
 }  // namespace presets
 

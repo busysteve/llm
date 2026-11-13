@@ -1,4 +1,5 @@
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -69,7 +70,27 @@ struct Config {
   bool bias = false;
   bool swiglu = true;
   bool rope = false;
+  int kv_heads = 0;       // 0 => heads
+  int head_dim = 0;       // 0 => d_model / heads
+  bool qk_norm = false;
+  float rope_theta = 10000.f;
+  float rms_eps = 1e-5f;
 };
+
+int config_head_dim(const Config& config) {
+  return config.head_dim > 0 ? config.head_dim : config.d_model / config.heads;
+}
+
+int config_kv_heads(const Config& config) {
+  return config.kv_heads > 0 ? config.kv_heads : config.heads;
+}
+
+bool config_extended(const Config& config) {
+  const bool wide = config.head_dim > 0 &&
+                    (config.d_model % config.heads != 0 || config.head_dim != config.d_model / config.heads);
+  const bool grouped = config.kv_heads > 0 && config.kv_heads != config.heads;
+  return wide || grouped || config.qk_norm || config.rope_theta != 10000.f || config.rms_eps != 1e-5f;
+}
 
 struct Tensor {
   std::string name;
@@ -96,11 +117,14 @@ void usage() {
       "export writes a GGUF version 3 file, architecture nnllm, float32.\n"
       "Tensor bytes stay in this library's row-major order. The GGUF dimension\n"
       "list stores the contiguous dimension first. import reads that file back,\n"
-      "including float16 tensors, and writes a version-1 checkpoint with no\n"
-      "optimizer. AdamW moments are not stored.\n"
+      "including float16 tensors, and writes a checkpoint with no optimizer.\n"
+      "That file is version 1, or version 3 for a Qwen-style block. AdamW\n"
+      "moments are not stored.\n"
       "\n"
       "llama reads a transformer checkpoint or an nnllm GGUF and writes a GGUF\n"
-      "with architecture llama. SwiGLU fc1 is split into ffn_gate and ffn_up.\n"
+      "llama.cpp can load. A classic block is architecture llama. A Qwen-style\n"
+      "block is qwen3 when QK-norm is on, and qwen2 otherwise. SwiGLU fc1 is\n"
+      "split into ffn_gate and ffn_up.\n"
       "A learned-position checkpoint omits the position table and LayerNorm\n"
       "biases. llama.cpp then applies RoPE and RMSNorm, so those tokens differ.\n"
       "A RoPE checkpoint already uses that block, and the file keeps every\n"
@@ -108,14 +132,15 @@ void usage() {
       "the output, is written into the file so llama-cli can encode a prompt.\n"
       "GELU and linear-bias models are rejected.\n"
       "\n"
-      "from reads a public llama.cpp GGUF (architecture llama, qwen2, mistral,\n"
-      "and the same tensor layout) and writes a chat directory: model.bin,\n"
-      "tokenizer.bpe, tokens.bin, and tokens.meta. GPT-2 BPE is remapped to\n"
-      "this library's LPB1 layout (bytes 0..255, merges, then pad/bos/eos).\n"
-      "Quantized tensors are expanded to float32. GQA repeats KV heads.\n"
+      "from reads a public llama.cpp GGUF (architecture llama, qwen2, qwen3,\n"
+      "mistral, and the same tensor layout) and writes a chat directory:\n"
+      "model.bin, tokenizer.bpe, tokens.bin, and tokens.meta. GPT-2 BPE is\n"
+      "remapped to this library's LPB1 layout (bytes 0..255, merges, then\n"
+      "pad/bos/eos). Quantized tensors are expanded to float32. Grouped-query\n"
+      "attention, a head dim other than d_model/heads, and QK-norm are kept.\n"
       "Tied embeddings copy token_embd onto lm_head. --context N sets\n"
-      "max_seq_len (default min(source, 1024)). QK-norm, a head dim other\n"
-      "than d_model/heads, MoE, GELU, and linear bias are rejected.\n"
+      "max_seq_len (default min(source, 1024)). MoE, GELU, linear bias, and a\n"
+      "partial RoPE dimension are rejected.\n"
       "\n"
       "import rejects a GGUF whose architecture is not nnllm, and rejects\n"
       "quantized tensors.\n",
@@ -315,15 +340,23 @@ std::vector<Tensor> expected_tensors(const Config& config) {
     add(name + ".weight", {d});
     if (!config.rope) add(name + ".bias", {d});
   };
+  const int dh = config_head_dim(config);
+  const int kv = config_kv_heads(config);
+  const int q_dim = config.heads * dh;
+  const int kv_dim = kv * dh;
   add("tok_emb.weight", {config.vocab, d});
   if (!config.rope) add("pos_emb.weight", {config.max_seq, d});
   for (int layer = 0; layer < config.layers; ++layer) {
     const std::string prefix = "blocks." + std::to_string(layer) + ".";
     norm(prefix + "ln1");
-    linear(prefix + "attn.q", d, d);
-    linear(prefix + "attn.k", d, d);
-    linear(prefix + "attn.v", d, d);
-    linear(prefix + "attn.out", d, d);
+    linear(prefix + "attn.q", q_dim, d);
+    linear(prefix + "attn.k", kv_dim, d);
+    linear(prefix + "attn.v", kv_dim, d);
+    linear(prefix + "attn.out", d, q_dim);
+    if (config.qk_norm) {
+      add(prefix + "attn.q_norm.weight", {dh});
+      add(prefix + "attn.k_norm.weight", {dh});
+    }
     norm(prefix + "ln2");
     linear(prefix + "fc1", fc1, d);
     linear(prefix + "fc2", d, config.d_ff);
@@ -338,8 +371,18 @@ void require_config(const Config& config) {
       config.d_ff < 1 || config.max_seq < 1) {
     throw std::runtime_error("config");
   }
-  if (config.d_model % config.heads != 0) throw std::runtime_error("num_heads");
-  if (config.rope && ((config.d_model / config.heads) % 2 != 0)) throw std::runtime_error("use_rope");
+  if (config.head_dim == 0) {
+    if (config.d_model % config.heads != 0) throw std::runtime_error("num_heads");
+  } else if (config.head_dim < 1) {
+    throw std::runtime_error("head_dim");
+  }
+  const int dh = config_head_dim(config);
+  const int kv = config_kv_heads(config);
+  if (kv < 1 || kv > config.heads || config.heads % kv != 0) throw std::runtime_error("head_count_kv");
+  if (dh > 0x7fffffff / config.heads || dh > 0x7fffffff / kv) throw std::runtime_error("head_dim");
+  if (config.rope && dh % 2 != 0) throw std::runtime_error("use_rope");
+  if (!(config.rope_theta > 0.f) || !std::isfinite(config.rope_theta)) throw std::runtime_error("rope_theta");
+  if (!(config.rms_eps > 0.f) || !std::isfinite(config.rms_eps)) throw std::runtime_error("rms_eps");
   if (!(config.dropout >= 0.f) || !(config.dropout < 1.f)) throw std::runtime_error("dropout");
   if (config.swiglu && config.d_ff > 0x7fffffff / 2) throw std::runtime_error("d_ff");
 }
@@ -348,7 +391,7 @@ Model read_checkpoint(const std::filesystem::path& path) {
   Reader reader(read_file(path));
   if (reader.u32() != kCheckpointMagic) throw std::runtime_error("magic");
   const uint32_t version = reader.u32();
-  if (version < 1 || version > 2) throw std::runtime_error("version");
+  if (version < 1 || version > 4) throw std::runtime_error("version");
   if (reader.u32() != 6) throw std::runtime_error("family");
   const uint32_t training = reader.u32();
   reader.u64();
@@ -367,12 +410,19 @@ Model read_checkpoint(const std::filesystem::path& path) {
   config.bias = reader.u32() != 0;
   const uint32_t activation = reader.u32();
   const uint32_t positional = reader.u32();
-  reader.pad8();
   if (activation == 1) config.swiglu = false;
   else if (activation == 2) config.swiglu = true;
   else throw std::runtime_error("activation");
   if (positional == 2) config.rope = true;
   else if (positional != 1) throw std::runtime_error("positional");
+  if (version >= 3) {
+    config.head_dim = reader.i32();
+    config.kv_heads = reader.i32();
+    config.qk_norm = reader.u32() != 0;
+    config.rope_theta = reader.f32();
+    config.rms_eps = reader.f32();
+  }
+  reader.pad8();
   require_config(config);
 
   const uint32_t count = reader.u32();
@@ -415,7 +465,7 @@ void write_checkpoint(const std::filesystem::path& path, const Model& model) {
   require_config(model.config);
   Bytes out;
   out.u32(kCheckpointMagic);
-  out.u32(1);
+  out.u32(config_extended(model.config) ? 3u : 1u);
   out.u32(6);
   out.u32(0);
   out.u64(0);
@@ -433,6 +483,13 @@ void write_checkpoint(const std::filesystem::path& path, const Model& model) {
   out.u32(config.bias ? 1u : 0u);
   out.u32(config.swiglu ? 2u : 1u);
   out.u32(config.rope ? 2u : 1u);
+  if (config_extended(config)) {
+    out.i32(config.head_dim);
+    out.i32(config.kv_heads);
+    out.u32(config.qk_norm ? 1u : 0u);
+    out.f32(config.rope_theta);
+    out.f32(config.rms_eps);
+  }
   out.pad8();
   out.u32(static_cast<uint32_t>(model.tensors.size()));
   out.u32(0);
@@ -495,23 +552,23 @@ uint64_t align_up(uint64_t value, uint64_t alignment) {
 struct Kv {
   Bytes body;
   uint64_t count = 0;
-  void str(const char* key, const std::string& value) {
-    gguf_kv_string(body, key, value);
+  void str(const std::string& key, const std::string& value) {
+    gguf_kv_string(body, key.c_str(), value);
     ++count;
   }
-  void u32(const char* key, uint32_t value) {
-    gguf_kv_u32(body, key, value);
+  void u32(const std::string& key, uint32_t value) {
+    gguf_kv_u32(body, key.c_str(), value);
     ++count;
   }
-  void f32(const char* key, float value) {
-    gguf_kv_f32(body, key, value);
+  void f32(const std::string& key, float value) {
+    gguf_kv_f32(body, key.c_str(), value);
     ++count;
   }
-  void boolean(const char* key, bool value) {
-    gguf_kv_bool(body, key, value);
+  void boolean(const std::string& key, bool value) {
+    gguf_kv_bool(body, key.c_str(), value);
     ++count;
   }
-  void strs(const char* key, const std::vector<std::string>& values) {
+  void strs(const std::string& key, const std::vector<std::string>& values) {
     gguf_string(body, key);
     body.u32(kArray);
     body.u32(kString);
@@ -519,7 +576,7 @@ struct Kv {
     for (const std::string& value : values) gguf_string(body, value);
     ++count;
   }
-  void i32s(const char* key, const std::vector<int32_t>& values) {
+  void i32s(const std::string& key, const std::vector<int32_t>& values) {
     gguf_string(body, key);
     body.u32(kArray);
     body.u32(kI32);
@@ -595,6 +652,14 @@ void write_gguf(const std::filesystem::path& path, const Model& model, bool half
   kv.u32("nnllm.feed_forward_length", static_cast<uint32_t>(config.d_ff));
   kv.u32("nnllm.context_length", static_cast<uint32_t>(config.max_seq));
   kv.u32("nnllm.attention.head_count", static_cast<uint32_t>(config.heads));
+  if (config_extended(config)) {
+    kv.u32("nnllm.attention.head_count_kv", static_cast<uint32_t>(config_kv_heads(config)));
+    kv.u32("nnllm.attention.key_length", static_cast<uint32_t>(config_head_dim(config)));
+    kv.u32("nnllm.attention.value_length", static_cast<uint32_t>(config_head_dim(config)));
+    kv.boolean("nnllm.qk_norm", config.qk_norm);
+    kv.f32("nnllm.rope.freq_base", config.rope_theta);
+    kv.f32("nnllm.attention.layer_norm_rms_epsilon", config.rms_eps);
+  }
   kv.f32("nnllm.dropout", config.dropout);
   kv.boolean("nnllm.bias", config.bias);
   kv.boolean("nnllm.tie_embeddings", false);
@@ -641,16 +706,24 @@ Tensor split_rows(const Tensor& src, int row0, int rows, std::string out_name) {
 std::vector<Tensor> llama_tensors(const Model& model) {
   const Config& config = model.config;
   const int d = config.d_model;
+  const int dh = config_head_dim(config);
+  const int kv = config_kv_heads(config);
+  const int q_dim = config.heads * dh;
+  const int kv_dim = kv * dh;
   std::vector<Tensor> tensors;
   tensors.push_back(copy_tensor(model, "tok_emb.weight", {config.vocab, d}, "token_embd.weight"));
   for (int layer = 0; layer < config.layers; ++layer) {
     const std::string src = "blocks." + std::to_string(layer) + ".";
     const std::string dst = "blk." + std::to_string(layer) + ".";
     tensors.push_back(copy_tensor(model, src + "ln1.weight", {d}, dst + "attn_norm.weight"));
-    tensors.push_back(copy_tensor(model, src + "attn.q.weight", {d, d}, dst + "attn_q.weight"));
-    tensors.push_back(copy_tensor(model, src + "attn.k.weight", {d, d}, dst + "attn_k.weight"));
-    tensors.push_back(copy_tensor(model, src + "attn.v.weight", {d, d}, dst + "attn_v.weight"));
-    tensors.push_back(copy_tensor(model, src + "attn.out.weight", {d, d}, dst + "attn_output.weight"));
+    tensors.push_back(copy_tensor(model, src + "attn.q.weight", {q_dim, d}, dst + "attn_q.weight"));
+    tensors.push_back(copy_tensor(model, src + "attn.k.weight", {kv_dim, d}, dst + "attn_k.weight"));
+    tensors.push_back(copy_tensor(model, src + "attn.v.weight", {kv_dim, d}, dst + "attn_v.weight"));
+    tensors.push_back(copy_tensor(model, src + "attn.out.weight", {d, q_dim}, dst + "attn_output.weight"));
+    if (config.qk_norm) {
+      tensors.push_back(copy_tensor(model, src + "attn.q_norm.weight", {dh}, dst + "attn_q_norm.weight"));
+      tensors.push_back(copy_tensor(model, src + "attn.k_norm.weight", {dh}, dst + "attn_k_norm.weight"));
+    }
     tensors.push_back(copy_tensor(model, src + "ln2.weight", {d}, dst + "ffn_norm.weight"));
     const Tensor& fc1 = named_tensor(model, src + "fc1.weight");
     if (fc1.shape != std::vector<int>{config.d_ff * 2, d} ||
@@ -786,8 +859,11 @@ void write_llama_gguf(const std::filesystem::path& path, const Model& model, con
   if (tokenizer != nullptr && tokenizer->vocab != model.config.vocab) throw std::runtime_error("vocab");
   const std::vector<Tensor> tensors = llama_tensors(model);
   const Config& config = model.config;
+  const bool qwen = config_extended(config);
+  const char* arch = !qwen ? "llama" : (config.qk_norm ? "qwen3" : "qwen2");
+  const std::string prefix = std::string(arch) + ".";
   Kv kv;
-  kv.str("general.architecture", "llama");
+  kv.str("general.architecture", arch);
   kv.str("general.name", kArchitecture);
   kv.u32("general.alignment", kDefaultAlign);
   kv.u32("general.file_type", 0);
@@ -812,16 +888,18 @@ void write_llama_gguf(const std::filesystem::path& path, const Model& model, con
     kv.strs("tokenizer.ggml.merges", tokenizer->merges);
     kv.i32s("tokenizer.ggml.token_type", tokenizer->types);
   }
-  kv.u32("llama.vocab_size", static_cast<uint32_t>(config.vocab));
-  kv.u32("llama.context_length", static_cast<uint32_t>(config.max_seq));
-  kv.u32("llama.embedding_length", static_cast<uint32_t>(config.d_model));
-  kv.u32("llama.block_count", static_cast<uint32_t>(config.layers));
-  kv.u32("llama.feed_forward_length", static_cast<uint32_t>(config.d_ff));
-  kv.u32("llama.attention.head_count", static_cast<uint32_t>(config.heads));
-  kv.u32("llama.attention.head_count_kv", static_cast<uint32_t>(config.heads));
-  kv.f32("llama.attention.layer_norm_rms_epsilon", 1e-5f);
-  kv.f32("llama.rope.freq_base", 10000.f);
-  kv.u32("llama.rope.dimension_count", static_cast<uint32_t>(config.d_model / config.heads));
+  kv.u32(prefix + "vocab_size", static_cast<uint32_t>(config.vocab));
+  kv.u32(prefix + "context_length", static_cast<uint32_t>(config.max_seq));
+  kv.u32(prefix + "embedding_length", static_cast<uint32_t>(config.d_model));
+  kv.u32(prefix + "block_count", static_cast<uint32_t>(config.layers));
+  kv.u32(prefix + "feed_forward_length", static_cast<uint32_t>(config.d_ff));
+  kv.u32(prefix + "attention.head_count", static_cast<uint32_t>(config.heads));
+  kv.u32(prefix + "attention.head_count_kv", static_cast<uint32_t>(config_kv_heads(config)));
+  kv.u32(prefix + "attention.key_length", static_cast<uint32_t>(config_head_dim(config)));
+  kv.u32(prefix + "attention.value_length", static_cast<uint32_t>(config_head_dim(config)));
+  kv.f32(prefix + "attention.layer_norm_rms_epsilon", config.rms_eps);
+  kv.f32(prefix + "rope.freq_base", config.rope_theta);
+  kv.u32(prefix + "rope.dimension_count", static_cast<uint32_t>(config_head_dim(config)));
   write_gguf_container(path, tensors, kv, false);
 }
 
@@ -1001,6 +1079,18 @@ Model read_gguf(const std::filesystem::path& path) {
   config.d_ff = static_cast<int>(u32_at("nnllm.feed_forward_length"));
   config.max_seq = static_cast<int>(u32_at("nnllm.context_length"));
   config.heads = static_cast<int>(u32_at("nnllm.attention.head_count"));
+  auto has_key = [&](const char* key) { return fields.find(key) != fields.end(); };
+  if (has_key("nnllm.attention.head_count_kv")) {
+    config.kv_heads = static_cast<int>(u32_at("nnllm.attention.head_count_kv"));
+  }
+  if (has_key("nnllm.attention.key_length")) {
+    config.head_dim = static_cast<int>(u32_at("nnllm.attention.key_length"));
+  }
+  if (has_key("nnllm.qk_norm")) config.qk_norm = bool_at("nnllm.qk_norm");
+  if (has_key("nnllm.rope.freq_base")) config.rope_theta = f32_at("nnllm.rope.freq_base");
+  if (has_key("nnllm.attention.layer_norm_rms_epsilon")) {
+    config.rms_eps = f32_at("nnllm.attention.layer_norm_rms_epsilon");
+  }
   config.dropout = f32_at("nnllm.dropout");
   if (bool_at("nnllm.tie_embeddings")) throw std::runtime_error("tie_embeddings");
   config.bias = bool_at("nnllm.bias");
@@ -1969,26 +2059,52 @@ Model public_to_nnllm(const PublicGguf& view, const uint8_t* data, size_t size, 
   config.bias = false;
   config.swiglu = true;
   config.rope = true;
-  require_config(config);
-  if (kv_heads < 1 || config.heads % kv_heads != 0) throw std::runtime_error("head_count_kv");
-  const int dh = config.d_model / config.heads;
-  const int key_length = static_cast<int>(optional_u32_key(view, p + "attention.key_length", static_cast<uint32_t>(dh)));
+  config.kv_heads = kv_heads;
+  const int natural = config.d_model % config.heads == 0 ? config.d_model / config.heads : 0;
+  const int key_length =
+      static_cast<int>(optional_u32_key(view, p + "attention.key_length", static_cast<uint32_t>(natural)));
   const int value_length =
-      static_cast<int>(optional_u32_key(view, p + "attention.value_length", static_cast<uint32_t>(dh)));
-  if (key_length != dh || value_length != dh) throw std::runtime_error("head_dim");
-
+      static_cast<int>(optional_u32_key(view, p + "attention.value_length", static_cast<uint32_t>(key_length)));
+  if (key_length < 1 || value_length != key_length) throw std::runtime_error("head_dim");
+  config.head_dim = key_length;
   const auto rope_base = view.f32s.find(p + "rope.freq_base");
+  if (rope_base != view.f32s.end()) config.rope_theta = rope_base->second;
+  const auto rms_eps = view.f32s.find(p + "attention.layer_norm_rms_epsilon");
+  if (rms_eps != view.f32s.end()) config.rms_eps = rms_eps->second;
+  const auto rope_dim = view.u32s.find(p + "rope.dimension_count");
+  if (rope_dim != view.u32s.end() && static_cast<int>(rope_dim->second) != key_length) {
+    throw std::runtime_error("rope_dim");
+  }
   if (rope_base != view.f32s.end() && rope_base->second != 10000.f) {
-    std::fprintf(stderr, "gguf: rope.freq_base is %g; this runtime uses 10000.\n",
+    std::fprintf(stderr, "gguf: rope.freq_base is %g; the checkpoint stores that base.\n",
                  static_cast<double>(rope_base->second));
   }
+  config.qk_norm = has_tensor(view, "blk.0.attn_q_norm.weight");
+  require_config(config);
+  const int dh = config_head_dim(config);
+  const int q_dim = config.heads * dh;
+  const int kv_dim = kv_heads * dh;
 
   for (int layer = 0; layer < config.layers; ++layer) {
     const std::string blk = "blk." + std::to_string(layer) + ".";
-    require_no_tensor(view, blk + "attn_q_norm.weight", "qk_norm");
-    require_no_tensor(view, blk + "attn_k_norm.weight", "qk_norm");
+    if (config.qk_norm) {
+      if (!has_tensor(view, blk + "attn_q_norm.weight") || !has_tensor(view, blk + "attn_k_norm.weight")) {
+        throw std::runtime_error("qk_norm");
+      }
+    } else {
+      require_no_tensor(view, blk + "attn_q_norm.weight", "qk_norm");
+      require_no_tensor(view, blk + "attn_k_norm.weight", "qk_norm");
+    }
     require_no_tensor(view, blk + "ffn_gate_exps.weight", "moe");
     require_no_tensor(view, blk + "attn_qkv.weight", "qkv");
+    if (!has_tensor(view, blk + "ffn_gate.weight")) throw std::runtime_error("gelu");
+    require_no_tensor(view, blk + "attn_q.bias", "bias");
+    require_no_tensor(view, blk + "attn_k.bias", "bias");
+    require_no_tensor(view, blk + "attn_v.bias", "bias");
+    require_no_tensor(view, blk + "attn_output.bias", "bias");
+    require_no_tensor(view, blk + "ffn_gate.bias", "bias");
+    require_no_tensor(view, blk + "ffn_up.bias", "bias");
+    require_no_tensor(view, blk + "ffn_down.bias", "bias");
   }
 
   const int src_vocab = has_tensor(view, "token_embd.weight") ? view.tensors.at("token_embd.weight").shape[0]
@@ -2016,23 +2132,30 @@ Model public_to_nnllm(const PublicGguf& view, const uint8_t* data, size_t size, 
     ln1.name = dst + "ln1.weight";
     model.tensors.push_back(std::move(ln1));
 
-    Tensor q = load_public_tensor(view, data, size, src + "attn_q.weight", {config.d_model, config.d_model});
+    Tensor q = load_public_tensor(view, data, size, src + "attn_q.weight", {q_dim, config.d_model});
     q.name = dst + "attn.q.weight";
     model.tensors.push_back(std::move(q));
 
-    Tensor k = load_public_tensor(view, data, size, src + "attn_k.weight", {kv_heads * dh, config.d_model});
-    k = repeat_kv_heads(k, config.heads, kv_heads, config.d_model);
+    Tensor k = load_public_tensor(view, data, size, src + "attn_k.weight", {kv_dim, config.d_model});
     k.name = dst + "attn.k.weight";
     model.tensors.push_back(std::move(k));
 
-    Tensor v = load_public_tensor(view, data, size, src + "attn_v.weight", {kv_heads * dh, config.d_model});
-    v = repeat_kv_heads(v, config.heads, kv_heads, config.d_model);
+    Tensor v = load_public_tensor(view, data, size, src + "attn_v.weight", {kv_dim, config.d_model});
     v.name = dst + "attn.v.weight";
     model.tensors.push_back(std::move(v));
 
-    Tensor o = load_public_tensor(view, data, size, src + "attn_output.weight", {config.d_model, config.d_model});
+    Tensor o = load_public_tensor(view, data, size, src + "attn_output.weight", {config.d_model, q_dim});
     o.name = dst + "attn.out.weight";
     model.tensors.push_back(std::move(o));
+
+    if (config.qk_norm) {
+      Tensor qn = load_public_tensor(view, data, size, src + "attn_q_norm.weight", {dh});
+      qn.name = dst + "attn.q_norm.weight";
+      model.tensors.push_back(std::move(qn));
+      Tensor kn = load_public_tensor(view, data, size, src + "attn_k_norm.weight", {dh});
+      kn.name = dst + "attn.k_norm.weight";
+      model.tensors.push_back(std::move(kn));
+    }
 
     Tensor ln2 = load_public_tensor(view, data, size, src + "ffn_norm.weight", {config.d_model});
     ln2.name = dst + "ln2.weight";
@@ -2263,6 +2386,10 @@ int self_test() {
   const auto rope_gguf = dir / "rope.gguf";
   const auto rope_back = dir / "rope-back.bin";
   write_checkpoint(rope_bin, rope_model);
+  {
+    Reader ver(read_file(rope_bin));
+    if (ver.u32() != kCheckpointMagic || ver.u32() != 1u) throw std::runtime_error("self-test rope version");
+  }
   const Model rope_loaded = read_checkpoint(rope_bin);
   if (!rope_loaded.config.rope || rope_loaded.tensors.size() != rope_model.tensors.size()) {
     throw std::runtime_error("self-test rope load");
@@ -2432,6 +2559,134 @@ int self_test() {
   if (!std::filesystem::is_regular_file(dir / "from-out" / "tokens.bin") ||
       !std::filesystem::is_regular_file(dir / "from-out" / "tokens.meta")) {
     throw std::runtime_error("self-test from tokens");
+  }
+
+  Config qwen;
+  qwen.vocab = 260;
+  qwen.d_model = 8;
+  qwen.heads = 4;
+  qwen.layers = 1;
+  qwen.d_ff = 8;
+  qwen.max_seq = 16;
+  qwen.dropout = 0.f;
+  qwen.bias = false;
+  qwen.swiglu = true;
+  qwen.rope = true;
+  qwen.kv_heads = 2;
+  qwen.head_dim = 6;
+  qwen.qk_norm = true;
+  qwen.rope_theta = 1000000.f;
+  qwen.rms_eps = 1e-6f;
+  Model qwen_model;
+  qwen_model.config = qwen;
+  qwen_model.tensors = expected_tensors(qwen);
+  uint32_t qwen_n = 1;
+  for (Tensor& tensor : qwen_model.tensors) {
+    const int64_t numel = product(tensor.shape);
+    tensor.data.assign(static_cast<size_t>(numel), 0.f);
+    if (!tensor.data.empty()) {
+      const uint32_t bits = 0x3f800000u + qwen_n;
+      std::memcpy(&tensor.data[0], &bits, sizeof(bits));
+    }
+    ++qwen_n;
+  }
+  const auto qwen_bin = dir / "qwen.bin";
+  write_checkpoint(qwen_bin, qwen_model);
+  {
+    Reader ver(read_file(qwen_bin));
+    if (ver.u32() != kCheckpointMagic || ver.u32() != 3u) throw std::runtime_error("self-test qwen version");
+  }
+  const Model qwen_loaded = read_checkpoint(qwen_bin);
+  if (qwen_loaded.config.head_dim != 6 || qwen_loaded.config.kv_heads != 2 || !qwen_loaded.config.qk_norm ||
+      qwen_loaded.config.rope_theta != 1000000.f || qwen_loaded.config.rms_eps != 1e-6f || !qwen_loaded.config.rope ||
+      qwen_loaded.tensors.size() != qwen_model.tensors.size()) {
+    throw std::runtime_error("self-test qwen config");
+  }
+  for (size_t i = 0; i < qwen_model.tensors.size(); ++i) {
+    if (qwen_loaded.tensors[i].name != qwen_model.tensors[i].name ||
+        qwen_loaded.tensors[i].shape != qwen_model.tensors[i].shape ||
+        qwen_loaded.tensors[i].data != qwen_model.tensors[i].data) {
+      throw std::runtime_error("self-test qwen " + qwen_model.tensors[i].name);
+    }
+  }
+  write_gguf(dir / "qwen.gguf", qwen_loaded);
+  const Model qwen_from_gguf = read_gguf(dir / "qwen.gguf");
+  if (qwen_from_gguf.config.head_dim != 6 || qwen_from_gguf.config.kv_heads != 2 || !qwen_from_gguf.config.qk_norm ||
+      qwen_from_gguf.config.rope_theta != 1000000.f || qwen_from_gguf.config.rms_eps != 1e-6f) {
+    throw std::runtime_error("self-test qwen gguf");
+  }
+  const auto qwen_llama = dir / "qwen-llama.gguf";
+  write_llama_gguf(qwen_llama, qwen_model, &tok);
+  const GgufView qwen_view = read_gguf_view(qwen_llama);
+  const auto qarch = qwen_view.strings.find("general.architecture");
+  if (qarch == qwen_view.strings.end() || qarch->second != "qwen3") throw std::runtime_error("self-test qwen arch");
+  auto need_qu = [&](const char* key, uint32_t want) {
+    const auto found = qwen_view.u32s.find(key);
+    if (found == qwen_view.u32s.end() || found->second != want) {
+      throw std::runtime_error(std::string("self-test qwen ") + key);
+    }
+  };
+  need_qu("qwen3.attention.head_count", 4);
+  need_qu("qwen3.attention.head_count_kv", 2);
+  need_qu("qwen3.attention.key_length", 6);
+  need_qu("qwen3.attention.value_length", 6);
+  need_qu("qwen3.rope.dimension_count", 6);
+  const auto qbase = qwen_view.f32s.find("qwen3.rope.freq_base");
+  const auto qeps = qwen_view.f32s.find("qwen3.attention.layer_norm_rms_epsilon");
+  if (qbase == qwen_view.f32s.end() || qbase->second != 1000000.f || qeps == qwen_view.f32s.end() ||
+      qeps->second != 1e-6f) {
+    throw std::runtime_error("self-test qwen rope");
+  }
+  auto need_dims = [&](const char* name, std::vector<uint64_t> dims) {
+    const auto found = qwen_view.tensors.find(name);
+    if (found == qwen_view.tensors.end() || found->second.dims != dims) {
+      throw std::runtime_error(std::string("self-test qwen ") + name);
+    }
+  };
+  need_dims("blk.0.attn_q.weight", {8, 24});
+  need_dims("blk.0.attn_k.weight", {8, 12});
+  need_dims("blk.0.attn_v.weight", {8, 12});
+  need_dims("blk.0.attn_output.weight", {24, 8});
+  need_dims("blk.0.attn_q_norm.weight", {6});
+  need_dims("blk.0.attn_k_norm.weight", {6});
+  convert_from_public(qwen_llama, dir / "qwen-from", 16);
+  const Model qwen_back = read_checkpoint(dir / "qwen-from" / "model.bin");
+  if (qwen_back.config.head_dim != 6 || qwen_back.config.kv_heads != 2 || !qwen_back.config.qk_norm ||
+      qwen_back.config.rope_theta != 1000000.f || qwen_back.config.rms_eps != 1e-6f ||
+      qwen_back.tensors.size() != qwen_model.tensors.size()) {
+    throw std::runtime_error("self-test qwen from");
+  }
+  for (size_t i = 0; i < qwen_model.tensors.size(); ++i) {
+    if (qwen_back.tensors[i].name != qwen_model.tensors[i].name ||
+        qwen_back.tensors[i].shape != qwen_model.tensors[i].shape ||
+        qwen_back.tensors[i].data != qwen_model.tensors[i].data) {
+      throw std::runtime_error("self-test qwen from " + qwen_model.tensors[i].name);
+    }
+  }
+
+  Config qwen2 = qwen;
+  qwen2.qk_norm = false;
+  qwen2.head_dim = 0;
+  Model qwen2_model;
+  qwen2_model.config = qwen2;
+  qwen2_model.tensors = expected_tensors(qwen2);
+  for (Tensor& tensor : qwen2_model.tensors) {
+    const int64_t numel = product(tensor.shape);
+    tensor.data.assign(static_cast<size_t>(numel), 0.f);
+  }
+  const auto qwen2_llama = dir / "qwen2-llama.gguf";
+  write_llama_gguf(qwen2_llama, qwen2_model);
+  const GgufView qwen2_view = read_gguf_view(qwen2_llama);
+  const auto q2arch = qwen2_view.strings.find("general.architecture");
+  if (q2arch == qwen2_view.strings.end() || q2arch->second != "qwen2") {
+    throw std::runtime_error("self-test qwen2 arch");
+  }
+  const auto q2k = qwen2_view.tensors.find("blk.0.attn_k.weight");
+  if (q2k == qwen2_view.tensors.end() || q2k->second.dims != std::vector<uint64_t>{8, 4}) {
+    throw std::runtime_error("self-test qwen2 k");
+  }
+  if (qwen2_view.tensors.find("blk.0.attn_q_norm.weight") != qwen2_view.tensors.end()) {
+    throw std::runtime_error("self-test qwen2 norm");
   }
 
   std::vector<float> q8_src(32);
