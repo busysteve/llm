@@ -61,6 +61,7 @@ tests/test_bpe.cpp          tokenizer tests
 tests/test_data.cpp         dataset tests
 tests/test_train.cpp        presets, trainer, and generator tests
 docs/llama-base-architecture.md  Mermaid diagram of llama_base
+docs/qwen-base-architecture.md   Mermaid diagram of qwen_base
 ```
 
 ## Tokenizer
@@ -89,7 +90,7 @@ The on-disk form is little-endian with magic `LPB1`. The byte layout is in [USAG
 | qwen_small | 6 | 512 | 8 | 2 | 128 | 1536 | Qwen3 |
 | qwen_base | 12 | 768 | 12 | 4 | 128 | 2048 | Qwen3 |
 
-A Mermaid diagram of the `llama_base` architecture (with sizes and specs) is in [docs/llama-base-architecture.md](docs/llama-base-architecture.md).
+A Mermaid diagram of the `llama_base` architecture (with sizes and specs) is in [docs/llama-base-architecture.md](docs/llama-base-architecture.md). The `qwen_base` diagram is in [docs/qwen-base-architecture.md](docs/qwen-base-architecture.md).
 
 `llm::adamw_groups` walks `parameters()` in order. Rank-2 tensors whose names do not refer to LayerNorm take the given weight decay. Biases, names containing `ln`, and every other rank-1 tensor take 0. Groups are contiguous runs of that choice, so concatenating them is still `parameters()` order. A NaN or negative `weight_decay` throws `weight_decay`.
 
