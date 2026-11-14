@@ -35,6 +35,17 @@ nn::TransformerConfig qwen_width(int vocab_size, int layers, int d_model, int he
   return config;
 }
 
+// GPT-2 block: learned positions, LayerNorm, GELU, and a bias on every linear.
+// d_ff is 4 * d_model. GELU's first linear writes d_ff, not 2 * d_ff.
+// Embeddings stay untied: nn rejects tie_embeddings.
+nn::TransformerConfig gpt_width(int vocab_size, int layers, int d_model, int heads, int max_seq_len) {
+  nn::TransformerConfig config = make_config(vocab_size, layers, d_model, heads, d_model * 4);
+  config.max_seq_len = max_seq_len;
+  config.bias = true;
+  config.activation = nn::TransformerActivation::Gelu;
+  return config;
+}
+
 bool apply_decay(const nn::NamedParam& param) {
   if (param.value == nullptr || param.value->rank() != 2) return false;
   if (param.name.find("ln") != std::string::npos) return false;
@@ -77,6 +88,18 @@ nn::TransformerConfig qwen_tiny(int vocab_size) { return qwen_width(vocab_size, 
 nn::TransformerConfig qwen_small(int vocab_size) { return qwen_width(vocab_size, 6, 512, 8, 2, 1536); }
 
 nn::TransformerConfig qwen_base(int vocab_size) { return qwen_width(vocab_size, 12, 768, 12, 4, 2048); }
+
+nn::TransformerConfig gpt2_tiny(int vocab_size) { return gpt_width(vocab_size, 4, 256, 4, 1024); }
+
+nn::TransformerConfig gpt2_small(int vocab_size) { return gpt_width(vocab_size, 6, 512, 8, 1024); }
+
+nn::TransformerConfig gpt2_base(int vocab_size) { return gpt_width(vocab_size, 12, 768, 12, 1024); }
+
+nn::TransformerConfig gpt3_tiny(int vocab_size) { return gpt_width(vocab_size, 4, 256, 4, 2048); }
+
+nn::TransformerConfig gpt3_small(int vocab_size) { return gpt_width(vocab_size, 6, 512, 8, 2048); }
+
+nn::TransformerConfig gpt3_base(int vocab_size) { return gpt_width(vocab_size, 12, 768, 12, 2048); }
 
 }  // namespace presets
 

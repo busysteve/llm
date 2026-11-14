@@ -84,9 +84,9 @@ Load `tokenizer.bpe` and `model.bin` together. `chat` does that for a dialogue c
 
 | Flag | Default | Role |
 |---|---|---|
-| `--preset tiny\|small\|base\|llama-tiny\|llama-small\|llama-base\|qwen-tiny\|qwen-small\|qwen-base` | `tiny` | model shape |
+| `--preset tiny\|small\|base\|llama-tiny\|llama-small\|llama-base\|qwen-tiny\|qwen-small\|qwen-base\|gpt2-tiny\|gpt2-small\|gpt2-base\|gpt3-tiny\|gpt3-small\|gpt3-base` | `tiny` | model shape |
 | `--vocab N` | 4096 | BPE size, minimum 259 |
-| `--seq-len N` | 256 | tokens per example, at most 1024 |
+| `--seq-len N` | 256 | tokens per example, at most the preset `max_seq_len` |
 | `--batch N` | 4 | examples per step |
 | `--steps N` | 1000 | AdamW updates |
 | `--accum N` | 1 | micro-batches per update |
@@ -106,7 +106,7 @@ Load `tokenizer.bpe` and `model.bin` together. `chat` does that for a dialogue c
 
 Weight decay stays 0.1. The cosine floor is one tenth of `--lr`. Eval is off unless `--early-stop` is positive. Defaults `--preset tiny`, `--seq-len 256`, and `--batch 4` fit a 12 GB GPU. `small` prefers 24 GB. `base` is a 24 GB model. On a smaller card keep `--seq-len` at 512 or below.
 
-`tiny`, `small`, and `base` use learned absolute positions and LayerNorm. `llama-tiny`, `llama-small`, and `llama-base` are the same widths with RoPE and RMSNorm, which is the block llama.cpp runs. `qwen-tiny`, `qwen-small`, and `qwen-base` are the Qwen3 block: head dim 128, grouped-query attention, QK-norm, RoPE base `1e6`, and RMSNorm epsilon `1e-6`. Train a llama or qwen preset from scratch. A checkpoint that was trained with learned positions does not become either block. The saved `qwen-*` checkpoint is version 4.
+`tiny`, `small`, and `base` use learned absolute positions and LayerNorm. `llama-tiny`, `llama-small`, and `llama-base` are the same widths with RoPE and RMSNorm, which is the block llama.cpp runs. `qwen-tiny`, `qwen-small`, and `qwen-base` are the Qwen3 block: head dim 128, grouped-query attention, QK-norm, RoPE base `1e6`, and RMSNorm epsilon `1e-6`. `gpt2-tiny`, `gpt2-small`, and `gpt2-base` are the GPT-2 block: GELU, linear bias, `d_ff = 4 * d_model`, learned positions, and context 1024. `gpt3-tiny`, `gpt3-small`, and `gpt3-base` are that dense block with context 2048. Train a llama, qwen, or GPT preset from scratch. A checkpoint that was trained with learned positions does not become a llama or qwen block. The saved `qwen-*` checkpoint is version 4. A `gpt2-*` or `gpt3-*` checkpoint is version 2. `gguf llama` rejects it.
 
 ## Early stop
 
@@ -144,12 +144,12 @@ Errors print `train_books: <reason>` on stderr and the process exits 1. Common r
 | `vocab_size` | `--vocab` is below 259, or the corpus runs out of pairs before the vocab is full |
 | `short corpus` | the encoded files have fewer than `--seq-len + 1` tokens |
 | `short valid` | `--early-stop` is positive and the stream cannot be split into two spans of `--seq-len + 1` tokens |
-| `seq_len` | `--seq-len` is above 1024 |
+| `seq_len` | `--seq-len` is above the preset `max_seq_len` (1024, or 2048 for `gpt3-*`) |
 | `early_stop` | `--early-stop` is negative |
 | `min_loss` | `--min-loss` is negative or infinite |
 | `eval_every` | `--early-stop` is positive and `--eval-every` is not in `1 .. --steps` |
 | `valid_fraction` | `--valid-fraction` is not inside `(0, 1)` |
-| `preset` | the name is not `tiny`, `small`, `base`, `llama-tiny`, `llama-small`, `llama-base`, `qwen-tiny`, `qwen-small`, or `qwen-base` |
+| `preset` | the name is not `tiny`, `small`, `base`, `llama-tiny`, `llama-small`, `llama-base`, `qwen-tiny`, `qwen-small`, `qwen-base`, `gpt2-tiny`, `gpt2-small`, `gpt2-base`, `gpt3-tiny`, `gpt3-small`, or `gpt3-base` |
 | a flag name | the flag is unknown, or its value is missing or not a number |
 
 Library details are in [USAGE.md](../USAGE.md). The one-paragraph acceptance run is [train_tiny](train_tiny.md). To keep training that checkpoint on more text, see [finetune](finetune.md).

@@ -87,7 +87,7 @@ Sampling stops on the tokenizer eos id. That id is not appended. If the decoded 
 
 Each call encodes the whole prompt and prefills it. Nothing is kept in the KV cache between turns.
 
-Presets use `max_seq_len` 1024. The encoded prompt plus `--max-new-tokens` has to fit. `chat` drops the oldest completed turn until it does. A line that still does not fit prints `chat: max_seq_len` and leaves the transcript unchanged. In `--once` mode that same case exits 1.
+Most presets use `max_seq_len` 1024. `gpt3-tiny`, `gpt3-small`, and `gpt3-base` use 2048. The encoded prompt plus `--max-new-tokens` has to fit. `chat` drops the oldest completed turn until it does. A line that still does not fit prints `chat: max_seq_len` and leaves the transcript unchanged. In `--once` mode that same case exits 1.
 
 ## Flags
 

@@ -62,10 +62,12 @@ void usage() {
       "generates a continuation.\n"
       "\n"
       "  --preset tiny|small|base|llama-tiny|llama-small|llama-base|\n"
-      "          qwen-tiny|qwen-small|qwen-base\n"
+      "          qwen-tiny|qwen-small|qwen-base|\n"
+      "          gpt2-tiny|gpt2-small|gpt2-base|\n"
+      "          gpt3-tiny|gpt3-small|gpt3-base\n"
       "                             default tiny\n"
       "  --vocab N                  default 4096 (minimum 259)\n"
-      "  --seq-len N                default 256, at most 1024\n"
+      "  --seq-len N                default 256, at most the preset maximum\n"
       "  --batch N                  default 4\n"
       "  --steps N                  default 1000\n"
       "  --accum N                  default 1\n"
@@ -97,7 +99,10 @@ void usage() {
       "base is a 24 GB model; prefer --seq-len 512 or less on a smaller card.\n"
       "llama-* is that width with RoPE and RMSNorm. qwen-* is the Qwen3 block:\n"
       "grouped-query attention, head dim 128, QK-norm, RoPE base 1e6, and\n"
-      "RMSNorm epsilon 1e-6. Train a qwen preset from scratch.\n",
+      "RMSNorm epsilon 1e-6. Train a qwen preset from scratch.\n"
+      "gpt2-* is the GPT-2 block: GELU, linear bias, d_ff = 4 * d_model, and\n"
+      "learned positions, context 1024. gpt3-* is that dense block with context\n"
+      "2048. The GPT-3 paper's sparse attention is not in this library.\n",
       stderr);
 }
 
@@ -272,6 +277,12 @@ nn::TransformerConfig preset_config(const std::string& name, int vocab) {
   if (name == "qwen-tiny") return llm::presets::qwen_tiny(vocab);
   if (name == "qwen-small") return llm::presets::qwen_small(vocab);
   if (name == "qwen-base") return llm::presets::qwen_base(vocab);
+  if (name == "gpt2-tiny") return llm::presets::gpt2_tiny(vocab);
+  if (name == "gpt2-small") return llm::presets::gpt2_small(vocab);
+  if (name == "gpt2-base") return llm::presets::gpt2_base(vocab);
+  if (name == "gpt3-tiny") return llm::presets::gpt3_tiny(vocab);
+  if (name == "gpt3-small") return llm::presets::gpt3_small(vocab);
+  if (name == "gpt3-base") return llm::presets::gpt3_base(vocab);
   throw std::runtime_error("preset");
 }
 

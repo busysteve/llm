@@ -603,6 +603,96 @@ void check_presets() {
     CHECK(again.generate("ab", cfg, rng2) == text);
     std::filesystem::remove_all(dir);
   }
+  check_invalid([] { llm::presets::gpt2_tiny(0); }, "vocab_size");
+  check_invalid([] { llm::presets::gpt3_base(-1); }, "vocab_size");
+  const nn::TransformerConfig gpt2 = llm::presets::gpt2_tiny(16000);
+  CHECK(gpt2.activation == nn::TransformerActivation::Gelu);
+  CHECK(gpt2.positional == nn::PositionalEncoding::LearnedAbsolute);
+  CHECK(gpt2.bias);
+  CHECK(gpt2.tie_embeddings == false);
+  CHECK(gpt2.dropout == 0.f);
+  CHECK(gpt2.max_seq_len == 1024);
+  CHECK(gpt2.num_layers == 4);
+  CHECK(gpt2.d_model == 256);
+  CHECK(gpt2.num_heads == 4);
+  CHECK(gpt2.d_ff == 1024);
+  CHECK(llm::presets::gpt2_small(8).num_layers == 6);
+  CHECK(llm::presets::gpt2_small(8).d_model == 512);
+  CHECK(llm::presets::gpt2_small(8).num_heads == 8);
+  CHECK(llm::presets::gpt2_small(8).d_ff == 2048);
+  CHECK(llm::presets::gpt2_small(8).max_seq_len == 1024);
+  CHECK(llm::presets::gpt2_base(8).num_layers == 12);
+  CHECK(llm::presets::gpt2_base(8).d_model == 768);
+  CHECK(llm::presets::gpt2_base(8).d_ff == 3072);
+  const nn::TransformerConfig gpt3 = llm::presets::gpt3_tiny(16000);
+  CHECK(gpt3.activation == nn::TransformerActivation::Gelu);
+  CHECK(gpt3.positional == nn::PositionalEncoding::LearnedAbsolute);
+  CHECK(gpt3.bias);
+  CHECK(gpt3.max_seq_len == 2048);
+  CHECK(gpt3.num_layers == 4);
+  CHECK(gpt3.d_model == 256);
+  CHECK(gpt3.d_ff == 1024);
+  CHECK(llm::presets::gpt3_small(8).max_seq_len == 2048);
+  CHECK(llm::presets::gpt3_small(8).d_model == 512);
+  CHECK(llm::presets::gpt3_small(8).d_ff == 2048);
+  CHECK(llm::presets::gpt3_base(8).num_layers == 12);
+  CHECK(llm::presets::gpt3_base(8).d_model == 768);
+  CHECK(llm::presets::gpt3_base(8).d_ff == 3072);
+  {
+    nn::Context ctx;
+    nn::Transformer model(ctx, gpt2, 1);
+    CHECK(param_numel(model) == 11629696);
+    bool saw_pos = false;
+    bool saw_fc1_bias = false;
+    for (const nn::NamedParam& param : model.parameters()) {
+      if (param.name == "pos_emb.weight") {
+        saw_pos = true;
+        CHECK((param.value->shape() == std::vector<int>{1024, 256}));
+      }
+      if (param.name == "blocks.0.fc1.weight") {
+        CHECK((param.value->shape() == std::vector<int>{1024, 256}));
+      }
+      if (param.name == "blocks.0.fc1.bias") {
+        saw_fc1_bias = true;
+        CHECK((param.value->shape() == std::vector<int>{1024}));
+      }
+    }
+    CHECK(saw_pos);
+    CHECK(saw_fc1_bias);
+  }
+  {
+    nn::Context ctx;
+    nn::Transformer model(ctx, llm::presets::gpt2_small(16000), 1);
+    CHECK(param_numel(model) == 35839616);
+  }
+  {
+    nn::Context ctx;
+    nn::Transformer model(ctx, llm::presets::gpt2_base(16000), 1);
+    CHECK(param_numel(model) == 110434432);
+  }
+  {
+    nn::Context ctx;
+    nn::Transformer model(ctx, gpt3, 1);
+    CHECK(param_numel(model) == 11891840);
+    bool saw_pos = false;
+    for (const nn::NamedParam& param : model.parameters()) {
+      if (param.name == "pos_emb.weight") {
+        saw_pos = true;
+        CHECK((param.value->shape() == std::vector<int>{2048, 256}));
+      }
+    }
+    CHECK(saw_pos);
+  }
+  {
+    nn::Context ctx;
+    nn::Transformer model(ctx, llm::presets::gpt3_small(16000), 1);
+    CHECK(param_numel(model) == 36363904);
+  }
+  {
+    nn::Context ctx;
+    nn::Transformer model(ctx, llm::presets::gpt3_base(16000), 1);
+    CHECK(param_numel(model) == 111220864);
+  }
 }
 
 }  // namespace

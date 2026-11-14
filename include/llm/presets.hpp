@@ -18,6 +18,12 @@ nn::TransformerConfig llama_base(int vocab_size);
 nn::TransformerConfig qwen_tiny(int vocab_size);
 nn::TransformerConfig qwen_small(int vocab_size);
 nn::TransformerConfig qwen_base(int vocab_size);
+nn::TransformerConfig gpt2_tiny(int vocab_size);
+nn::TransformerConfig gpt2_small(int vocab_size);
+nn::TransformerConfig gpt2_base(int vocab_size);
+nn::TransformerConfig gpt3_tiny(int vocab_size);
+nn::TransformerConfig gpt3_small(int vocab_size);
+nn::TransformerConfig gpt3_base(int vocab_size);
 
 }  // namespace presets
 
