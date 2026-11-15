@@ -198,9 +198,11 @@ int main(int argc, char** argv) {
     const std::unique_ptr<llm::Tokenizer> tok = llm::Tokenizer::load(tok_path);
     nn::Transformer::Loaded loaded =
         nn::Transformer::load(ctx, model_path, nn::LoadMode::Inference);
+    const nn::TransformerConfig& config =
+        std::get<nn::TransformerConfig>(loaded.model.network().config());
+    if (!config.causal) throw std::runtime_error("causal");
     llm::Generator generator(ctx, loaded.model, *tok);
-    const int max_seq_len =
-        std::get<nn::TransformerConfig>(loaded.model.network().config()).max_seq_len;
+    const int max_seq_len = config.max_seq_len;
 
     llm::GenerateConfig cfg;
     cfg.max_new_tokens = opt.max_new_tokens;

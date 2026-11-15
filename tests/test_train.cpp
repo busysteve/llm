@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <limits>
 #include <random>
 #include <stdexcept>
@@ -693,6 +694,95 @@ void check_presets() {
     nn::Transformer model(ctx, llm::presets::gpt3_base(16000), 1);
     CHECK(param_numel(model) == 111220864);
   }
+  check_invalid([] { llm::presets::bert_tiny(0); }, "vocab_size");
+  const nn::TransformerConfig bert = llm::presets::bert_tiny(16000);
+  CHECK(bert.causal == false);
+  CHECK(bert.type_vocab_size == 2);
+  CHECK(bert.activation == nn::TransformerActivation::Gelu);
+  CHECK(bert.positional == nn::PositionalEncoding::LearnedAbsolute);
+  CHECK(bert.bias);
+  CHECK(bert.max_seq_len == 512);
+  CHECK(bert.num_layers == 4);
+  CHECK(bert.d_model == 256);
+  CHECK(bert.d_ff == 1024);
+  CHECK(llm::presets::bert_small(8).num_layers == 6);
+  CHECK(llm::presets::bert_small(8).d_model == 512);
+  CHECK(llm::presets::bert_small(8).d_ff == 2048);
+  CHECK(llm::presets::bert_small(8).max_seq_len == 512);
+  CHECK(llm::presets::bert_base(8).num_layers == 12);
+  CHECK(llm::presets::bert_base(8).d_model == 768);
+  CHECK(llm::presets::bert_base(8).d_ff == 3072);
+  {
+    nn::Context ctx;
+    nn::Transformer model(ctx, bert, 1);
+    CHECK(param_numel(model) == 11499136);
+    bool saw_type = false;
+    for (const nn::NamedParam& param : model.parameters()) {
+      if (param.name == "type_emb.weight") {
+        saw_type = true;
+        CHECK((param.value->shape() == std::vector<int>{2, 256}));
+      }
+      if (param.name == "pos_emb.weight") {
+        CHECK((param.value->shape() == std::vector<int>{512, 256}));
+      }
+    }
+    CHECK(saw_type);
+  }
+  {
+    nn::Context ctx;
+    nn::Transformer model(ctx, llm::presets::bert_small(16000), 1);
+    CHECK(param_numel(model) == 35578496);
+  }
+  {
+    nn::Context ctx;
+    nn::Transformer model(ctx, llm::presets::bert_base(16000), 1);
+    CHECK(param_numel(model) == 110042752);
+  }
+}
+
+void check_masked(nn::Context& ctx) {
+  nn::TransformerConfig config;
+  config.vocab_size = 32;
+  config.d_model = 32;
+  config.num_heads = 4;
+  config.num_layers = 1;
+  config.d_ff = 64;
+  config.max_seq_len = 8;
+  config.bias = true;
+  config.activation = nn::TransformerActivation::Gelu;
+  config.causal = false;
+  config.type_vocab_size = 2;
+  nn::Transformer model(ctx, config, 1);
+  nn::AdamW opt(llm::adamw_groups(model, 0.f), 1e-3f, 0.9f, 0.95f, 1e-8f);
+  std::vector<int32_t> ids(40);
+  for (int i = 0; i < 40; ++i) ids[static_cast<size_t>(i)] = (i % 30) + 1;
+  llm::TextDataset data(std::move(ids), 32);
+  llm::TrainConfig cfg;
+  cfg.learning_rate = 1e-3f;
+  cfg.min_lr = 1e-4f;
+  cfg.weight_decay = 0.f;
+  cfg.batch_size = 2;
+  cfg.seq_len = 8;
+  cfg.max_steps = 1;
+  cfg.warmup_steps = 0;
+  cfg.log_every = 0;
+  cfg.masked_lm = true;
+  cfg.mask_prob = 1.f;
+  cfg.mask_token = 0;
+  std::mt19937 rng(1);
+  llm::Trainer trainer(ctx, model, opt, cfg);
+  CHECK(trainer.fit(data, nullptr, rng) == 1);
+  const auto path = std::filesystem::temp_directory_path() / "llm-bert-mask.bin";
+  model.save(path, nullptr);
+  std::ifstream in(path, std::ios::binary);
+  in.seekg(4);
+  uint32_t version = 0;
+  in.read(reinterpret_cast<char*>(&version), 4);
+  CHECK(version == 5u);
+  std::filesystem::remove(path);
+  llm::TrainConfig bad = cfg;
+  bad.mask_token = -1;
+  check_invalid([&] { llm::Trainer discarded(ctx, model, opt, bad); }, "mask_token");
 }
 
 }  // namespace
@@ -705,6 +795,7 @@ void run_train_tests() {
     check_early_stop(ctx);
     check_min_loss(ctx);
     check_generate(ctx);
+    check_masked(ctx);
   }
   check_presets();
 }

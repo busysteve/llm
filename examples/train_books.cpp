@@ -64,7 +64,8 @@ void usage() {
       "  --preset tiny|small|base|llama-tiny|llama-small|llama-base|\n"
       "          qwen-tiny|qwen-small|qwen-base|\n"
       "          gpt2-tiny|gpt2-small|gpt2-base|\n"
-      "          gpt3-tiny|gpt3-small|gpt3-base\n"
+      "          gpt3-tiny|gpt3-small|gpt3-base|\n"
+      "          bert-tiny|bert-small|bert-base\n"
       "                             default tiny\n"
       "  --vocab N                  default 4096 (minimum 259)\n"
       "  --seq-len N                default 256, at most the preset maximum\n"
@@ -102,7 +103,10 @@ void usage() {
       "RMSNorm epsilon 1e-6. Train a qwen preset from scratch.\n"
       "gpt2-* is the GPT-2 block: GELU, linear bias, d_ff = 4 * d_model, and\n"
       "learned positions, context 1024. gpt3-* is that dense block with context\n"
-      "2048. The GPT-3 paper's sparse attention is not in this library.\n",
+      "2048. The GPT-3 paper's sparse attention is not in this library.\n"
+      "bert-* is that dense block with bidirectional attention, a segment\n"
+      "table of size 2, and context 512. It trains masked tokens. The pad id is\n"
+      "the mask. chat does not sample from a bert checkpoint.\n",
       stderr);
 }
 
@@ -283,6 +287,9 @@ nn::TransformerConfig preset_config(const std::string& name, int vocab) {
   if (name == "gpt3-tiny") return llm::presets::gpt3_tiny(vocab);
   if (name == "gpt3-small") return llm::presets::gpt3_small(vocab);
   if (name == "gpt3-base") return llm::presets::gpt3_base(vocab);
+  if (name == "bert-tiny") return llm::presets::bert_tiny(vocab);
+  if (name == "bert-small") return llm::presets::bert_small(vocab);
+  if (name == "bert-base") return llm::presets::bert_base(vocab);
   throw std::runtime_error("preset");
 }
 
@@ -386,6 +393,10 @@ int main(int argc, char** argv) {
         cfg.eval_batches = 20;
         cfg.early_stop_patience = opt.early_stop;
       }
+      if (!config.causal) {
+        cfg.masked_lm = true;
+        cfg.mask_token = tok->pad_id();
+      }
 
       std::mt19937 rng(static_cast<uint32_t>(opt.seed));
       llm::Trainer trainer(ctx, model, optimizer, cfg);
@@ -393,6 +404,11 @@ int main(int argc, char** argv) {
       model.save(model_path, &optimizer);
     }
     std::fprintf(stderr, "saved %s\n", model_path.string().c_str());
+
+    if (!config.causal) {
+      std::printf("encoder: masked lm, mask token %d\n", tok->pad_id());
+      return 0;
+    }
 
     nn::Context ctx;
     const std::unique_ptr<llm::Tokenizer> loaded_tok = llm::Tokenizer::load(tok_path);

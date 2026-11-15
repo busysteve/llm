@@ -1,6 +1,6 @@
 # How to fine-tune an existing model
 
-`finetune` is the continued-training example in [`finetune.cpp`](finetune.cpp). It loads `tokenizer.bpe` and `model.bin` from a directory written by [`train_books`](train_books.md) or by an earlier `finetune` run, encodes a new file list with that tokenizer, and keeps training. It writes a new directory and prints a continuation. It is a separate program from `llm_tests`.
+`finetune` is the continued-training example in [`finetune.cpp`](finetune.cpp). It loads `tokenizer.bpe` and `model.bin` from a directory written by [`train_books`](train_books.md) or by an earlier `finetune` run, encodes a new file list with that tokenizer, and keeps training. It writes a new directory and prints a continuation. A bidirectional checkpoint, including `bert-*`, keeps training masked tokens and does not print a continuation. It is a separate program from `llm_tests`.
 
 The checkpoint's vocab and model shape stay as they are. `finetune` reads this library's `model.bin` and `tokenizer.bpe`.
 
@@ -43,7 +43,7 @@ Without `--resume`, the run builds a fresh AdamW at `--lr` and `--wd` (default w
 ./build/finetune --from run --files more.txt --out run-ft --resume --lr 1e-4
 ```
 
-Progress on stderr names each file, the token count, the loaded vocab, `max_seq_len`, layers, and `d_model`, then either `fresh AdamW` or `resuming AdamW step N`. Steps print on stdout. The process then drops the training context, loads `--out` with `LoadMode::Inference`, and prints:
+Progress on stderr names each file, the token count, the loaded vocab, `max_seq_len`, layers, and `d_model`, then either `fresh AdamW` or `resuming AdamW step N`. Steps print on stdout. For a causal checkpoint the process then drops the training context, loads `--out` with `LoadMode::Inference`, and prints:
 
 ```
 prompt: The morning after
@@ -51,6 +51,8 @@ continuation: <new text>
 ```
 
 The default prompt is the opening of the first new file: leading whitespace is skipped, then up to 48 Unicode code points, and a newline ends the excerpt early. Generation stops on eos.
+
+A bidirectional checkpoint trains masked tokens with the pad id as the mask. After the save it prints `encoder: masked lm, mask token N` and exits 0. It does not sample, and `chat` will not load `--out`.
 
 With `--steps` of 100 or more, `model.bin` is also written every 100 steps. The final save always runs after the last step.
 

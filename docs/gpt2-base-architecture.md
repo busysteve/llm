@@ -67,4 +67,5 @@ See also:
 - [README.md](../README.md) — preset table and parameter counts
 - [USAGE.md](../USAGE.md) — full programmer notes
 - [gpt3-base-architecture.md](gpt3-base-architecture.md) — the same block with context 2048
+- [bert-base-architecture.md](bert-base-architecture.md) — the same dense block with bidirectional attention and context 512
 - `include/llm/presets.hpp` / `src/presets.cpp` — source of the config

@@ -78,11 +78,11 @@ Names match the checkpoint, in parameter order:
 
 `N` is the block index starting at 0. A learned-absolute file has a position table and a bias on every norm. A RoPE file omits `pos_emb.weight` and every norm bias. A classic file also omits the Qwen keys above, and its Q, K, V, and out matrices stay `(d_model, d_model)`. When `nnllm.bias` is true, each linear name also has a `.bias` whose length is the output size. With SwiGLU, `fc1.weight` holds the gate and the up projection in that one matrix. The float values stay in this library's row-major order. The GGUF dimension list stores the contiguous dimension first, so a weight stored here as `(out, in)` is recorded as dimensions `(in, out)`.
 
-The GGUF does not contain `tokenizer.bpe` or the AdamW moments. `import` writes version 1, or version 3 for a Qwen-style block. `LoadMode::Inference` loads it, and a later `finetune` starts a fresh AdamW. `finetune --resume` needs the original `model.bin`.
+The GGUF does not contain `tokenizer.bpe` or the AdamW moments. `import` writes version 1, version 3 for a Qwen-style block, or version 5 when attention is bidirectional or a segment table is present. `nnllm.causal` is stored only when it is false. `nnllm.type_vocab_size` is stored only when it is positive, so an older file still imports. `LoadMode::Inference` loads it, and a later `finetune` starts a fresh AdamW. `finetune --resume` needs the original `model.bin`.
 
 ## A llama.cpp file
 
-`gguf llama MODEL MODEL.GGUF [TOKENIZER.BPE]` reads a family-6 checkpoint or an `nnllm` GGUF and writes float32. A classic block is architecture `llama`. A Qwen-style block is `qwen3` when QK-norm is on, and `qwen2` otherwise. The hyperparameter prefix matches that architecture. `MODEL` is `model.bin` or the file from `gguf export`. With no third path, a `tokenizer.bpe` in the same directory as `MODEL` is used.
+`gguf llama MODEL MODEL.GGUF [TOKENIZER.BPE]` reads a family-6 checkpoint or an `nnllm` GGUF and writes float32. A classic block is architecture `llama`. A Qwen-style block is `qwen3` when QK-norm is on, and `qwen2` otherwise. The hyperparameter prefix matches that architecture. `MODEL` is `model.bin` or the file from `gguf export`. With no third path, a `tokenizer.bpe` in the same directory as `MODEL` is used. Bidirectional attention and a segment table are rejected with `causal` before the GELU and bias checks. A `bert-*` checkpoint stays in `model.bin` or an nnllm GGUF.
 
 | nnllm tensor | llama.cpp tensor |
 |---|---|
@@ -155,7 +155,7 @@ gguf: llama.cpp applies RoPE and RMSNorm. This checkpoint was trained with learn
 
 ## Check the converter
 
-`gguf self-test` builds a small checkpoint, writes GGUF, reads it back, and checks a float16 round trip. It also writes the llama.cpp file from both the checkpoint and the `nnllm` GGUF, checks the `fc1` split, and checks that GELU and linear bias are rejected. It embeds a 260-id `tokenizer.bpe` with one merge and checks the GPT-2 token list. `from` round-trips that llama.cpp file, and a small Qwen3 file, into a chat directory. The test checks Q8_0 dequant, the GQA repeat helper, and GPT-2 byte remapping. It does not need a GPU.
+`gguf self-test` builds a small checkpoint, writes GGUF, reads it back, and checks a float16 round trip. It also writes the llama.cpp file from both the checkpoint and the `nnllm` GGUF, checks the `fc1` split, and checks that GELU and linear bias are rejected. It writes a tiny bidirectional checkpoint with a segment table, checks that the file is version 5 and that `type_emb.weight` reloads, and checks that `gguf llama` rejects it with `causal`. It embeds a 260-id `tokenizer.bpe` with one merge and checks the GPT-2 token list. `from` round-trips that llama.cpp file, and a small Qwen3 file, into a chat directory. The test checks Q8_0 dequant, the GQA repeat helper, and GPT-2 byte remapping. It does not need a GPU.
 
 ```bash
 ./build/gguf self-test
@@ -168,7 +168,7 @@ Errors print `gguf: <reason>` on stderr and the process exits 1.
 | Reason | Meaning |
 |---|---|
 | `magic` | the file is not a checkpoint or a GGUF |
-| `version` | the checkpoint version is outside 1..4, or the GGUF version is not 3 |
+| `version` | the checkpoint version is outside 1..6, or the GGUF version is not 3 |
 | `family` | the checkpoint is not a transformer |
 | `architecture` | `import` saw a `general.architecture` other than `nnllm` |
 | `quantized` | `import` saw a tensor that is neither float32 nor float16, or `from` saw an unsupported quant type |
@@ -184,6 +184,8 @@ Errors print `gguf: <reason>` on stderr and the process exits 1.
 | `head_count_kv` | KV heads do not divide query heads |
 | `gelu` | `from` did not find `ffn_gate.weight` |
 | `bias` | `from` saw a linear bias, or `gguf llama` was given linear biases |
+| `causal` | `gguf llama` was given bidirectional attention or a segment table |
+| `type_vocab` | a segment-table size is negative |
 | `moe` | `from` saw expert tensors |
 | `qkv` | `from` saw a fused QKV matrix |
 | `context` | `--context` is missing or not a positive integer |

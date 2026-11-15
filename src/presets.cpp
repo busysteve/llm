@@ -101,6 +101,21 @@ nn::TransformerConfig gpt3_small(int vocab_size) { return gpt_width(vocab_size, 
 
 nn::TransformerConfig gpt3_base(int vocab_size) { return gpt_width(vocab_size, 12, 768, 12, 2048); }
 
+// BERT block: the GPT-2 dense stack with bidirectional attention, a segment
+// table of size 2, and context 512. The tokenizer pad id is the mask token.
+nn::TransformerConfig bert_width(int vocab_size, int layers, int d_model, int heads) {
+  nn::TransformerConfig config = gpt_width(vocab_size, layers, d_model, heads, 512);
+  config.causal = false;
+  config.type_vocab_size = 2;
+  return config;
+}
+
+nn::TransformerConfig bert_tiny(int vocab_size) { return bert_width(vocab_size, 4, 256, 4); }
+
+nn::TransformerConfig bert_small(int vocab_size) { return bert_width(vocab_size, 6, 512, 8); }
+
+nn::TransformerConfig bert_base(int vocab_size) { return bert_width(vocab_size, 12, 768, 12); }
+
 }  // namespace presets
 
 std::vector<nn::AdamWGroup> adamw_groups(const nn::Transformer& model, float weight_decay) {

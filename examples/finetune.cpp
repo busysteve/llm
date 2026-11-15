@@ -256,6 +256,7 @@ int main(int argc, char** argv) {
     ids.shrink_to_fit();
     tok->save(out_tok);
 
+    bool encoder = false;
     {
       llm::TextDataset data(bin_path, meta_path);
       nn::Context ctx;
@@ -265,6 +266,7 @@ int main(int argc, char** argv) {
           std::get<nn::TransformerConfig>(loaded.model.network().config());
       if (tok->vocab_size() != config.vocab_size) throw std::runtime_error("vocab_size");
       if (opt.seq_len > config.max_seq_len) throw std::runtime_error("seq_len");
+      encoder = !config.causal;
       std::fprintf(stderr, "loaded vocab=%d max_seq_len=%d layers=%d d_model=%d\n",
                    config.vocab_size, config.max_seq_len, config.num_layers, config.d_model);
 
@@ -294,6 +296,10 @@ int main(int argc, char** argv) {
       cfg.eval_every = 0;
       cfg.ckpt_every = opt.steps >= 100 ? 100 : 0;
       cfg.checkpoint_path = model_path;
+      if (encoder) {
+        cfg.masked_lm = true;
+        cfg.mask_token = tok->pad_id();
+      }
 
       std::mt19937 rng(static_cast<uint32_t>(opt.seed));
       llm::Trainer trainer(ctx, loaded.model, *optimizer, cfg);
@@ -301,6 +307,11 @@ int main(int argc, char** argv) {
       loaded.model.save(model_path, optimizer);
     }
     std::fprintf(stderr, "saved %s\n", model_path.string().c_str());
+
+    if (encoder) {
+      std::printf("encoder: masked lm, mask token %d\n", tok->pad_id());
+      return 0;
+    }
 
     nn::Context ctx;
     const std::unique_ptr<llm::Tokenizer> loaded_tok = llm::Tokenizer::load(out_tok);

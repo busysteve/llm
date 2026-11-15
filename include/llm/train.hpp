@@ -34,6 +34,12 @@ struct TrainConfig {
   // NaN is off. A finite value >= 0 stops when a step's training loss is at
   // or below it and keeps that step.
   float min_loss = std::numeric_limits<float>::quiet_NaN();
+  // Masked language modeling. Labels are the original ids at masked positions
+  // and -100 elsewhere. 80% of chosen positions become mask_token, 10% a
+  // random id, and 10% stay. mask_token must be inside the model vocabulary.
+  bool masked_lm = false;
+  float mask_prob = 0.15f;
+  int mask_token = -1;
   std::filesystem::path checkpoint_path;
 };
 

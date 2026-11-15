@@ -5,8 +5,10 @@
 #include <cmath>
 #include <cstdio>
 #include <limits>
+#include <random>
 #include <stdexcept>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace llm {
@@ -46,6 +48,12 @@ void validate(const TrainConfig& cfg) {
   }
   if (!std::isfinite(cfg.grad_clip_norm) || cfg.grad_clip_norm < 0.f) {
     throw std::invalid_argument("grad_clip_norm");
+  }
+  if (cfg.masked_lm) {
+    if (!(cfg.mask_prob > 0.f) || cfg.mask_prob > 1.f || !std::isfinite(cfg.mask_prob)) {
+      throw std::invalid_argument("mask_prob");
+    }
+    if (cfg.mask_token < 0) throw std::invalid_argument("mask_token");
   }
 }
 
@@ -96,16 +104,40 @@ void restore_best(const BestStep& best, nn::Context& ctx, nn::Transformer& model
   model.train();
 }
 
-float mean_loss(TextDataset& data, nn::Context& ctx, nn::Transformer& model, int batches, int batch_size,
-                int seq_len, std::mt19937& rng) {
+void apply_mask(nn::Context& ctx, Batch& batch, int vocab, int mask_token, float mask_prob,
+                std::mt19937& rng) {
+  if (mask_token >= vocab) throw std::invalid_argument("mask_token");
+  std::vector<int64_t> ids = batch.input_ids.to_host();
+  std::vector<int64_t> labels(ids.size(), -100);
+  std::uniform_real_distribution<float> unit(0.f, 1.f);
+  std::uniform_int_distribution<int> other(0, vocab - 1);
+  for (size_t i = 0; i < ids.size(); ++i) {
+    if (unit(rng) >= mask_prob) continue;
+    labels[i] = ids[i];
+    const float roll = unit(rng);
+    if (roll < 0.8f) ids[i] = mask_token;
+    else if (roll < 0.9f) ids[i] = other(rng);
+  }
+  batch.input_ids.copy_from_host(ids.data(), static_cast<int64_t>(ids.size()));
+  batch.labels.copy_from_host(labels.data(), static_cast<int64_t>(labels.size()));
+  ctx.synchronize();
+}
+
+int model_vocab(const nn::Transformer& model) {
+  return std::get<nn::TransformerConfig>(model.network().config()).vocab_size;
+}
+
+float mean_loss(TextDataset& data, nn::Context& ctx, nn::Transformer& model, const TrainConfig& cfg,
+                std::mt19937& rng) {
   double sum = 0.0;
-  for (int i = 0; i < batches; ++i) {
-    Batch batch = data.next(ctx, batch_size, seq_len, rng);
+  for (int i = 0; i < cfg.eval_batches; ++i) {
+    Batch batch = data.next(ctx, cfg.batch_size, cfg.seq_len, rng);
+    if (cfg.masked_lm) apply_mask(ctx, batch, model_vocab(model), cfg.mask_token, cfg.mask_prob, rng);
     const nn::Tensor& logits = model.forward(batch.input_ids);
     const nn::LossResult loss = nn::sequence_cross_entropy(ctx, logits, batch.labels, -100);
     sum += static_cast<double>(loss.loss);
   }
-  return static_cast<float>(sum / static_cast<double>(batches));
+  return static_cast<float>(sum / static_cast<double>(cfg.eval_batches));
 }
 
 }  // namespace
@@ -154,6 +186,9 @@ int Trainer::fit(TextDataset& train, TextDataset* valid, std::mt19937& rng) {
     float loss_sum = 0.f;
     for (int micro = 0; micro < cfg_.grad_accum_steps; ++micro) {
       Batch batch = train.next(*ctx_, cfg_.batch_size, cfg_.seq_len, rng);
+      if (cfg_.masked_lm) {
+        apply_mask(*ctx_, batch, model_vocab(*model_), cfg_.mask_token, cfg_.mask_prob, rng);
+      }
       const nn::Tensor& logits = model_->forward(batch.input_ids);
       nn::LossResult loss = nn::sequence_cross_entropy(*ctx_, logits, batch.labels, -100);
       if (cfg_.abort_on_non_finite && !std::isfinite(loss.loss)) {
@@ -195,8 +230,7 @@ int Trainer::fit(TextDataset& train, TextDataset* valid, std::mt19937& rng) {
     bool stop = false;
     if (valid != nullptr && cfg_.eval_every > 0 && cfg_.eval_batches > 0 && step % cfg_.eval_every == 0) {
       model_->eval();
-      const float mean_ce = mean_loss(*valid, *ctx_, *model_, cfg_.eval_batches, cfg_.batch_size,
-                                      cfg_.seq_len, rng);
+      const float mean_ce = mean_loss(*valid, *ctx_, *model_, cfg_, rng);
       const float perplexity = std::exp(mean_ce);
       std::printf("step %d eval_ce %.6f perplexity %.6f\n", step, mean_ce, perplexity);
       std::fflush(stdout);

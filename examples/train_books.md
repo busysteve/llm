@@ -1,6 +1,6 @@
 # How to train from a list of books
 
-`train_books` is the file-list example in [`train_books.cpp`](train_books.cpp). It reads a list of text files, trains a byte-level BPE tokenizer and a preset transformer, writes the tokenizer and the checkpoint, then loads both and prints a continuation. `--early-stop` can hold out a suffix of the tokens and stop when that validation loss stops falling. `--min-loss` can stop when a step's training loss reaches a threshold. It is a separate program from `llm_tests`.
+`train_books` is the file-list example in [`train_books.cpp`](train_books.cpp). It reads a list of text files, trains a byte-level BPE tokenizer and a preset transformer, writes the tokenizer and the checkpoint, then loads both and prints a continuation. A `bert-*` preset trains masked tokens and does not print a continuation. `--early-stop` can hold out a suffix of the tokens and stop when that validation loss stops falling. `--min-loss` can stop when a step's training loss reaches a threshold. It is a separate program from `llm_tests`.
 
 Build from the repository root. Requirements are in the [README](../README.md).
 
@@ -54,7 +54,7 @@ step 50 eval_ce <loss> perplexity <exp(loss)>
 early_stop step <last> best_step <best> best_eval_ce <loss>
 ```
 
-When training finishes, stdout ends with:
+When a decoder finishes, stdout ends with:
 
 ```
 prompt: The morning after
@@ -62,6 +62,14 @@ continuation: <new text>
 ```
 
 The default prompt, when `--prompt` is omitted, is the opening of the first file: leading whitespace is skipped, then up to 48 Unicode code points are taken, and a newline ends the excerpt early. Generation stops when eos is sampled. That id is not part of the continuation.
+
+A `bert-tiny`, `bert-small`, or `bert-base` run does not sample. After the save it prints one line and exits 0:
+
+```
+encoder: masked lm, mask token <pad id>
+```
+
+The pad id is the mask. `encode` does not insert it. About 15% of positions are trained: 80% become that id, 10% become a random id, and 10% keep the original token. `chat` will not load the checkpoint.
 
 ## Files written
 
@@ -72,7 +80,7 @@ The default prompt, when `--prompt` is omitted, is the opening of the first file
 | `tokenizer.bpe` | byte-level BPE, magic `LPB1` |
 | `tokens.bin` | token ids, int32 little-endian |
 | `tokens.meta` | vocab size and length for `TextDataset` |
-| `model.bin` | version-2 façade checkpoint, or version 4 for a `qwen-*` preset, including AdamW moments |
+| `model.bin` | version-2 façade checkpoint, version 4 for a `qwen-*` preset, or version 6 for a `bert-*` preset, including AdamW moments |
 
 With `--steps` of 500 or more, `model.bin` is also written every 500 steps. The final save always runs after the last step. `--steps` below 500 writes the checkpoint once, at the end. With `--early-stop`, that final file is the best validation step, including that step's AdamW moments, even when a 500-step write was a later step. When `--min-loss` stops the run, `model.bin` is the step whose training loss reached the threshold, including that step's AdamW moments.
 
@@ -84,7 +92,7 @@ Load `tokenizer.bpe` and `model.bin` together. `chat` does that for a dialogue c
 
 | Flag | Default | Role |
 |---|---|---|
-| `--preset tiny\|small\|base\|llama-tiny\|llama-small\|llama-base\|qwen-tiny\|qwen-small\|qwen-base\|gpt2-tiny\|gpt2-small\|gpt2-base\|gpt3-tiny\|gpt3-small\|gpt3-base` | `tiny` | model shape |
+| `--preset tiny\|small\|base\|llama-tiny\|llama-small\|llama-base\|qwen-tiny\|qwen-small\|qwen-base\|gpt2-tiny\|gpt2-small\|gpt2-base\|gpt3-tiny\|gpt3-small\|gpt3-base\|bert-tiny\|bert-small\|bert-base` | `tiny` | model shape |
 | `--vocab N` | 4096 | BPE size, minimum 259 |
 | `--seq-len N` | 256 | tokens per example, at most the preset `max_seq_len` |
 | `--batch N` | 4 | examples per step |
@@ -106,7 +114,7 @@ Load `tokenizer.bpe` and `model.bin` together. `chat` does that for a dialogue c
 
 Weight decay stays 0.1. The cosine floor is one tenth of `--lr`. Eval is off unless `--early-stop` is positive. Defaults `--preset tiny`, `--seq-len 256`, and `--batch 4` fit a 12 GB GPU. `small` prefers 24 GB. `base` is a 24 GB model. On a smaller card keep `--seq-len` at 512 or below.
 
-`tiny`, `small`, and `base` use learned absolute positions and LayerNorm. `llama-tiny`, `llama-small`, and `llama-base` are the same widths with RoPE and RMSNorm, which is the block llama.cpp runs. `qwen-tiny`, `qwen-small`, and `qwen-base` are the Qwen3 block: head dim 128, grouped-query attention, QK-norm, RoPE base `1e6`, and RMSNorm epsilon `1e-6`. `gpt2-tiny`, `gpt2-small`, and `gpt2-base` are the GPT-2 block: GELU, linear bias, `d_ff = 4 * d_model`, learned positions, and context 1024. `gpt3-tiny`, `gpt3-small`, and `gpt3-base` are that dense block with context 2048. Train a llama, qwen, or GPT preset from scratch. A checkpoint that was trained with learned positions does not become a llama or qwen block. The saved `qwen-*` checkpoint is version 4. A `gpt2-*` or `gpt3-*` checkpoint is version 2. `gguf llama` rejects it.
+`tiny`, `small`, and `base` use learned absolute positions and LayerNorm. `llama-tiny`, `llama-small`, and `llama-base` are the same widths with RoPE and RMSNorm, which is the block llama.cpp runs. `qwen-tiny`, `qwen-small`, and `qwen-base` are the Qwen3 block: head dim 128, grouped-query attention, QK-norm, RoPE base `1e6`, and RMSNorm epsilon `1e-6`. `gpt2-tiny`, `gpt2-small`, and `gpt2-base` are the GPT-2 block: GELU, linear bias, `d_ff = 4 * d_model`, learned positions, and context 1024. `gpt3-tiny`, `gpt3-small`, and `gpt3-base` are that dense block with context 2048. `bert-tiny`, `bert-small`, and `bert-base` are that dense block with bidirectional attention, a segment table of size 2, and context 512. They train masked tokens. The pad id is the mask. Train a llama, qwen, GPT, or BERT preset from scratch. A checkpoint that was trained with learned positions does not become a llama or qwen block. The saved `qwen-*` checkpoint is version 4. A `gpt2-*` or `gpt3-*` checkpoint is version 2. A `bert-*` checkpoint is version 6. `gguf llama` rejects GELU, linear bias, bidirectional attention, and a segment table.
 
 ## Early stop
 
@@ -144,12 +152,12 @@ Errors print `train_books: <reason>` on stderr and the process exits 1. Common r
 | `vocab_size` | `--vocab` is below 259, or the corpus runs out of pairs before the vocab is full |
 | `short corpus` | the encoded files have fewer than `--seq-len + 1` tokens |
 | `short valid` | `--early-stop` is positive and the stream cannot be split into two spans of `--seq-len + 1` tokens |
-| `seq_len` | `--seq-len` is above the preset `max_seq_len` (1024, or 2048 for `gpt3-*`) |
+| `seq_len` | `--seq-len` is above the preset `max_seq_len` (1024, 2048 for `gpt3-*`, or 512 for `bert-*`) |
 | `early_stop` | `--early-stop` is negative |
 | `min_loss` | `--min-loss` is negative or infinite |
 | `eval_every` | `--early-stop` is positive and `--eval-every` is not in `1 .. --steps` |
 | `valid_fraction` | `--valid-fraction` is not inside `(0, 1)` |
-| `preset` | the name is not `tiny`, `small`, `base`, `llama-tiny`, `llama-small`, `llama-base`, `qwen-tiny`, `qwen-small`, `qwen-base`, `gpt2-tiny`, `gpt2-small`, `gpt2-base`, `gpt3-tiny`, `gpt3-small`, or `gpt3-base` |
+| `preset` | the name is not `tiny`, `small`, `base`, `llama-tiny`, `llama-small`, `llama-base`, `qwen-tiny`, `qwen-small`, `qwen-base`, `gpt2-tiny`, `gpt2-small`, `gpt2-base`, `gpt3-tiny`, `gpt3-small`, `gpt3-base`, `bert-tiny`, `bert-small`, or `bert-base` |
 | a flag name | the flag is unknown, or its value is missing or not a number |
 
 Library details are in [USAGE.md](../USAGE.md). The one-paragraph acceptance run is [train_tiny](train_tiny.md). To keep training that checkpoint on more text, see [finetune](finetune.md).

@@ -87,7 +87,7 @@ Sampling stops on the tokenizer eos id. That id is not appended. If the decoded 
 
 Each call encodes the whole prompt and prefills it. Nothing is kept in the KV cache between turns.
 
-Most presets use `max_seq_len` 1024. `gpt3-tiny`, `gpt3-small`, and `gpt3-base` use 2048. The encoded prompt plus `--max-new-tokens` has to fit. `chat` drops the oldest completed turn until it does. A line that still does not fit prints `chat: max_seq_len` and leaves the transcript unchanged. In `--once` mode that same case exits 1.
+Most presets use `max_seq_len` 1024. `gpt3-tiny`, `gpt3-small`, and `gpt3-base` use 2048. `bert-tiny`, `bert-small`, and `bert-base` are encoders. `chat` rejects that checkpoint before it samples. The encoded prompt plus `--max-new-tokens` has to fit. `chat` drops the oldest completed turn until it does. A line that still does not fit prints `chat: max_seq_len` and leaves the transcript unchanged. In `--once` mode that same case exits 1.
 
 ## Flags
 
@@ -112,6 +112,7 @@ Errors print `chat: <reason>` on stderr. In an interactive session the process s
 | `model` | `--model` is missing, or the directory has no `tokenizer.bpe` or no `model.bin` |
 | `prompt` | `--once` was given an empty string |
 | `max_seq_len` | the line plus `--max-new-tokens` is longer than the model allows |
+| `causal` | the checkpoint is bidirectional, including a `bert-*` model |
 | `max_new_tokens`, `temperature`, `top_k`, `top_p` | that flag is out of range |
 
 Training flags stay on `train_books`. See [train_books](train_books.md) and [USAGE.md](../USAGE.md). To keep training a dialogue checkpoint on more exchanges, see [finetune](finetune.md).

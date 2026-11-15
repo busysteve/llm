@@ -75,6 +75,8 @@ struct Config {
   bool qk_norm = false;
   float rope_theta = 10000.f;
   float rms_eps = 1e-5f;
+  bool causal = true;
+  int type_vocab = 0;
 };
 
 int config_head_dim(const Config& config) {
@@ -130,7 +132,7 @@ void usage() {
       "A RoPE checkpoint already uses that block, and the file keeps every\n"
       "tensor. A tokenizer.bpe next to the checkpoint, or a path passed after\n"
       "the output, is written into the file so llama-cli can encode a prompt.\n"
-      "GELU and linear-bias models are rejected.\n"
+      "GELU, linear bias, bidirectional attention, and a segment table are rejected.\n"
       "\n"
       "from reads a public llama.cpp GGUF (architecture llama, qwen2, qwen3,\n"
       "mistral, and the same tensor layout) and writes a chat directory:\n"
@@ -346,6 +348,7 @@ std::vector<Tensor> expected_tensors(const Config& config) {
   const int kv_dim = kv * dh;
   add("tok_emb.weight", {config.vocab, d});
   if (!config.rope) add("pos_emb.weight", {config.max_seq, d});
+  if (config.type_vocab > 0) add("type_emb.weight", {config.type_vocab, d});
   for (int layer = 0; layer < config.layers; ++layer) {
     const std::string prefix = "blocks." + std::to_string(layer) + ".";
     norm(prefix + "ln1");
@@ -385,13 +388,14 @@ void require_config(const Config& config) {
   if (!(config.rms_eps > 0.f) || !std::isfinite(config.rms_eps)) throw std::runtime_error("rms_eps");
   if (!(config.dropout >= 0.f) || !(config.dropout < 1.f)) throw std::runtime_error("dropout");
   if (config.swiglu && config.d_ff > 0x7fffffff / 2) throw std::runtime_error("d_ff");
+  if (config.type_vocab < 0) throw std::runtime_error("type_vocab");
 }
 
 Model read_checkpoint(const std::filesystem::path& path) {
   Reader reader(read_file(path));
   if (reader.u32() != kCheckpointMagic) throw std::runtime_error("magic");
   const uint32_t version = reader.u32();
-  if (version < 1 || version > 4) throw std::runtime_error("version");
+  if (version < 1 || version > 6) throw std::runtime_error("version");
   if (reader.u32() != 6) throw std::runtime_error("family");
   const uint32_t training = reader.u32();
   reader.u64();
@@ -415,7 +419,15 @@ Model read_checkpoint(const std::filesystem::path& path) {
   else throw std::runtime_error("activation");
   if (positional == 2) config.rope = true;
   else if (positional != 1) throw std::runtime_error("positional");
-  if (version >= 3) {
+  if (version >= 5) {
+    config.head_dim = reader.i32();
+    config.kv_heads = reader.i32();
+    config.qk_norm = reader.u32() != 0;
+    config.rope_theta = reader.f32();
+    config.rms_eps = reader.f32();
+    config.causal = reader.u32() != 0;
+    config.type_vocab = reader.i32();
+  } else if (version >= 3) {
     config.head_dim = reader.i32();
     config.kv_heads = reader.i32();
     config.qk_norm = reader.u32() != 0;
@@ -465,7 +477,8 @@ void write_checkpoint(const std::filesystem::path& path, const Model& model) {
   require_config(model.config);
   Bytes out;
   out.u32(kCheckpointMagic);
-  out.u32(config_extended(model.config) ? 3u : 1u);
+  const bool bert = !model.config.causal || model.config.type_vocab != 0;
+  out.u32(bert ? 5u : (config_extended(model.config) ? 3u : 1u));
   out.u32(6);
   out.u32(0);
   out.u64(0);
@@ -483,12 +496,16 @@ void write_checkpoint(const std::filesystem::path& path, const Model& model) {
   out.u32(config.bias ? 1u : 0u);
   out.u32(config.swiglu ? 2u : 1u);
   out.u32(config.rope ? 2u : 1u);
-  if (config_extended(config)) {
+  if (bert || config_extended(config)) {
     out.i32(config.head_dim);
     out.i32(config.kv_heads);
     out.u32(config.qk_norm ? 1u : 0u);
     out.f32(config.rope_theta);
     out.f32(config.rms_eps);
+  }
+  if (bert) {
+    out.u32(config.causal ? 1u : 0u);
+    out.i32(config.type_vocab);
   }
   out.pad8();
   out.u32(static_cast<uint32_t>(model.tensors.size()));
@@ -665,6 +682,8 @@ void write_gguf(const std::filesystem::path& path, const Model& model, bool half
   kv.boolean("nnllm.tie_embeddings", false);
   kv.str("nnllm.activation", config.swiglu ? "swiglu" : "gelu");
   kv.str("nnllm.positional", config.rope ? "rope" : "learned_absolute");
+  if (!config.causal) kv.boolean("nnllm.causal", false);
+  if (config.type_vocab > 0) kv.u32("nnllm.type_vocab_size", static_cast<uint32_t>(config.type_vocab));
   write_gguf_container(path, model.tensors, kv, half);
 }
 
@@ -854,6 +873,7 @@ Tokenizer load_bpe(const std::filesystem::path& path) {
 
 void write_llama_gguf(const std::filesystem::path& path, const Model& model, const Tokenizer* tokenizer = nullptr) {
   require_config(model.config);
+  if (!model.config.causal || model.config.type_vocab != 0) throw std::runtime_error("causal");
   if (!model.config.swiglu) throw std::runtime_error("activation");
   if (model.config.bias) throw std::runtime_error("bias");
   if (tokenizer != nullptr && tokenizer->vocab != model.config.vocab) throw std::runtime_error("vocab");
@@ -1101,6 +1121,11 @@ Model read_gguf(const std::filesystem::path& path) {
   const std::string positional = string_at("nnllm.positional");
   if (positional == "rope") config.rope = true;
   else if (positional != "learned_absolute") throw std::runtime_error("positional");
+  config.causal = true;
+  if (has_key("nnllm.causal")) config.causal = bool_at("nnllm.causal");
+  if (has_key("nnllm.type_vocab_size")) {
+    config.type_vocab = static_cast<int>(u32_at("nnllm.type_vocab_size"));
+  }
   require_config(config);
 
   struct Stored {
@@ -2609,6 +2634,57 @@ int self_test() {
       throw std::runtime_error("self-test qwen " + qwen_model.tensors[i].name);
     }
   }
+  Config bert;
+  bert.vocab = 8;
+  bert.d_model = 4;
+  bert.heads = 2;
+  bert.layers = 1;
+  bert.d_ff = 8;
+  bert.max_seq = 4;
+  bert.dropout = 0.f;
+  bert.bias = true;
+  bert.swiglu = false;
+  bert.rope = false;
+  bert.causal = false;
+  bert.type_vocab = 2;
+  Model bert_model;
+  bert_model.config = bert;
+  bert_model.tensors = expected_tensors(bert);
+  uint32_t bert_n = 1;
+  for (Tensor& tensor : bert_model.tensors) {
+    tensor.data.resize(static_cast<size_t>(product(tensor.shape)));
+    for (float& value : tensor.data) {
+      const uint32_t bits = 0x3f800000u + bert_n;
+      std::memcpy(&value, &bits, sizeof(value));
+      ++bert_n;
+    }
+  }
+  const auto bert_bin = dir / "bert.bin";
+  write_checkpoint(bert_bin, bert_model);
+  {
+    Reader ver(read_file(bert_bin));
+    if (ver.u32() != kCheckpointMagic || ver.u32() != 5u) throw std::runtime_error("self-test bert version");
+  }
+  const Model bert_loaded = read_checkpoint(bert_bin);
+  if (bert_loaded.config.causal || bert_loaded.config.type_vocab != 2 || bert_loaded.config.swiglu ||
+      bert_loaded.config.rope || bert_loaded.tensors.size() != bert_model.tensors.size()) {
+    throw std::runtime_error("self-test bert config");
+  }
+  bool saw_type = false;
+  for (const Tensor& tensor : bert_loaded.tensors) {
+    if (tensor.name == "type_emb.weight") {
+      saw_type = true;
+      if (tensor.shape != std::vector<int>{2, 4}) throw std::runtime_error("self-test bert type");
+    }
+  }
+  if (!saw_type) throw std::runtime_error("self-test bert type");
+  bool llama_rejected = false;
+  try {
+    write_llama_gguf(dir / "bert-llama.gguf", bert_model, nullptr);
+  } catch (const std::runtime_error& error) {
+    llama_rejected = std::string(error.what()) == "causal";
+  }
+  if (!llama_rejected) throw std::runtime_error("self-test bert llama");
   write_gguf(dir / "qwen.gguf", qwen_loaded);
   const Model qwen_from_gguf = read_gguf(dir / "qwen.gguf");
   if (qwen_from_gguf.config.head_dim != 6 || qwen_from_gguf.config.kv_heads != 2 || !qwen_from_gguf.config.qk_norm ||

@@ -24,6 +24,9 @@ nn::TransformerConfig gpt2_base(int vocab_size);
 nn::TransformerConfig gpt3_tiny(int vocab_size);
 nn::TransformerConfig gpt3_small(int vocab_size);
 nn::TransformerConfig gpt3_base(int vocab_size);
+nn::TransformerConfig bert_tiny(int vocab_size);
+nn::TransformerConfig bert_small(int vocab_size);
+nn::TransformerConfig bert_base(int vocab_size);
 
 }  // namespace presets
 
