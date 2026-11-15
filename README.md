@@ -65,6 +65,12 @@ docs/qwen-base-architecture.md   Mermaid diagram of qwen_base
 docs/gpt2-base-architecture.md   Mermaid diagram of gpt2_base
 docs/gpt3-base-architecture.md   Mermaid diagram of gpt3_base
 docs/bert-base-architecture.md   Mermaid diagram of bert_base
+docs/preset-default.md           usage, benefits, and applications for tiny, small, and base
+docs/preset-llama.md             usage, benefits, and applications for llama-*
+docs/preset-qwen.md              usage, benefits, and applications for qwen-*
+docs/preset-gpt2.md              usage, benefits, and applications for gpt2-*
+docs/preset-gpt3.md              usage, benefits, and applications for gpt3-*
+docs/preset-bert.md              usage, benefits, and applications for bert-*
 ```
 
 ## Tokenizer
@@ -102,7 +108,7 @@ The on-disk form is little-endian with magic `LPB1`. The byte layout is in [USAG
 | bert_small | 6 | 512 | 8 | 8 | 64 | 2048 | BERT, context 512 |
 | bert_base | 12 | 768 | 12 | 12 | 64 | 3072 | BERT, context 512 |
 
-A Mermaid diagram of the `llama_base` architecture (with sizes and specs) is in [docs/llama-base-architecture.md](docs/llama-base-architecture.md). The `qwen_base` diagram is in [docs/qwen-base-architecture.md](docs/qwen-base-architecture.md). The `gpt2_base` diagram is in [docs/gpt2-base-architecture.md](docs/gpt2-base-architecture.md). The `gpt3_base` diagram is in [docs/gpt3-base-architecture.md](docs/gpt3-base-architecture.md). The `bert_base` diagram is in [docs/bert-base-architecture.md](docs/bert-base-architecture.md).
+A Mermaid diagram of the `llama_base` architecture (with sizes and specs) is in [docs/llama-base-architecture.md](docs/llama-base-architecture.md). The `qwen_base` diagram is in [docs/qwen-base-architecture.md](docs/qwen-base-architecture.md). The `gpt2_base` diagram is in [docs/gpt2-base-architecture.md](docs/gpt2-base-architecture.md). The `gpt3_base` diagram is in [docs/gpt3-base-architecture.md](docs/gpt3-base-architecture.md). The `bert_base` diagram is in [docs/bert-base-architecture.md](docs/bert-base-architecture.md). Usage, benefits, and applications for each preset type are in [docs/preset-default.md](docs/preset-default.md), [docs/preset-llama.md](docs/preset-llama.md), [docs/preset-qwen.md](docs/preset-qwen.md), [docs/preset-gpt2.md](docs/preset-gpt2.md), [docs/preset-gpt3.md](docs/preset-gpt3.md), and [docs/preset-bert.md](docs/preset-bert.md).
 
 `llm::adamw_groups` walks `parameters()` in order. Rank-2 tensors whose names do not refer to LayerNorm take the given weight decay. Biases, names containing `ln`, and every other rank-1 tensor take 0. Groups are contiguous runs of that choice, so concatenating them is still `parameters()` order. A NaN or negative `weight_decay` throws `weight_decay`.
 

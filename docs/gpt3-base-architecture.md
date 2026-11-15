@@ -69,6 +69,7 @@ The diagram shows the data flow for a forward pass. It is the `gpt2_base` block 
 
 See also:
 
+- [preset-gpt3.md](preset-gpt3.md) — usage, benefits, and applications
 - [README.md](../README.md) — preset table and parameter counts
 - [USAGE.md](../USAGE.md) — full programmer notes
 - [gpt2-base-architecture.md](gpt2-base-architecture.md) — the same block with context 1024

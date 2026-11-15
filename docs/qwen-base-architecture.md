@@ -80,6 +80,7 @@ graph TD
 The diagram shows the data flow for a forward pass. Each of the 12 identical blocks applies pre-norm RMSNorm → attention → residual, then pre-norm RMSNorm → SwiGLU FFN → residual. Inside attention the order is the Q, K, and V linears, a split into heads, RMSNorm on Q and on K, a repeat of each KV head across the three query heads in its group, RoPE on Q and on the repeated K, then the output projection. Positions come from that RoPE, so the checkpoint has no position table. All linear layers are bias-free, and embeddings are not tied to the LM head.
 
 See also:
+- [preset-qwen.md](preset-qwen.md) — usage, benefits, and applications
 - [README.md](../README.md) — preset table and parameter counts
 - [USAGE.md](../USAGE.md) — full programmer notes
 - [llama-base-architecture.md](llama-base-architecture.md) — the same width with square heads and RoPE base 10000

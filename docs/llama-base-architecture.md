@@ -59,6 +59,7 @@ graph TD
 The diagram shows the data flow for a forward pass. Each of the 12 identical blocks applies pre-norm RMSNorm → attention (with RoPE) → residual, then pre-norm RMSNorm → SwiGLU FFN → residual. There is no learned absolute position table (those parameters are omitted compared with the non-llama `base` preset). All linear layers are bias-free, and embeddings are not tied to the LM head.
 
 See also:
+- [preset-llama.md](preset-llama.md) — usage, benefits, and applications
 - [README.md](../README.md) — preset table and parameter counts
 - [USAGE.md](../USAGE.md) — full programmer notes
 - `include/llm/presets.hpp` / `src/presets.cpp` — source of the config

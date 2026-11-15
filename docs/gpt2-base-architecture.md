@@ -64,6 +64,7 @@ The diagram shows the data flow for a forward pass. Token embeddings and learned
 
 See also:
 
+- [preset-gpt2.md](preset-gpt2.md) — usage, benefits, and applications
 - [README.md](../README.md) — preset table and parameter counts
 - [USAGE.md](../USAGE.md) — full programmer notes
 - [gpt3-base-architecture.md](gpt3-base-architecture.md) — the same block with context 2048
