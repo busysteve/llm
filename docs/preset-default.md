@@ -57,7 +57,7 @@ nn::Transformer model(ctx, config, seed);
 ## Applications
 
 - A first training run on a book list, followed by the continuation `train_books` prints.
-- Dialogue when each file is one `User:` / `Assistant:` exchange and `chat` continues the transcript.
+- Dialogue when each file is one `User:` / `Assistant:` exchange and `chat` continues the transcript. [train_chat](../examples/train_chat.md) trains `tiny` on four of those exchanges and samples one reply.
 - More text on the same tokenizer through `finetune`.
 - An `nnllm` GGUF for another loader in this family.
 - A width-matched comparison with `llama-*`, which uses RoPE and RMSNorm at the same depth and width.
@@ -69,5 +69,6 @@ nn::Transformer model(ctx, config, seed);
 - [preset-gpt2.md](preset-gpt2.md) — the GPT-2 block
 - [preset-gpt3.md](preset-gpt3.md) — that dense block at context 2048
 - [preset-bert.md](preset-bert.md) — the bidirectional encoder
+- [train_chat](../examples/train_chat.md) — train `tiny` beside `bert_tiny`, then one reply and one masked token
 - [README.md](../README.md) — preset table and parameter counts
 - [USAGE.md](../USAGE.md) — library notes

@@ -25,13 +25,15 @@ cmake --build build -j --target llm_tests
 ./build/llm_tests
 cmake --build build -j --target train_tiny
 ./build/train_tiny
+cmake --build build -j --target train_chat
+./build/train_chat
 cmake --build build -j --target train_books
 cmake --build build -j --target chat
 cmake --build build -j --target finetune
 cmake --build build -j --target gguf
 ```
 
-`train_tiny` is the acceptance example. It is not part of `llm_tests`. `train_books` trains from a list of text files, writes `tokenizer.bpe` and `model.bin`, then loads those files and generates. `chat` loads that directory and continues a `User:` / `Assistant:` transcript. `finetune` keeps training one of those checkpoints on a new file list. `gguf` converts `model.bin` to an `nnllm` GGUF and back, can write a llama.cpp GGUF from the same checkpoint, and can convert a public llama.cpp GGUF into a `chat` directory. Walkthroughs: [train_tiny](examples/train_tiny.md), [train_books](examples/train_books.md), [chat](examples/chat.md), [finetune](examples/finetune.md), [gguf](examples/gguf.md). Library details are in [USAGE.md](USAGE.md).
+`train_tiny` is the acceptance example. It is not part of `llm_tests`. `train_books` trains from a list of text files, writes `tokenizer.bpe` and `model.bin`, then loads those files and generates. `chat` loads that directory and continues a `User:` / `Assistant:` transcript. `finetune` keeps training one of those checkpoints on a new file list. `gguf` converts `model.bin` to an `nnllm` GGUF and back, can write a llama.cpp GGUF from the same checkpoint, and can convert a public llama.cpp GGUF into a `chat` directory. Walkthroughs: [train_tiny](examples/train_tiny.md), [train_chat](examples/train_chat.md), [train_books](examples/train_books.md), [chat](examples/chat.md), [finetune](examples/finetune.md), [gguf](examples/gguf.md). Library details are in [USAGE.md](USAGE.md).
 
 ## Layout
 
@@ -49,6 +51,8 @@ src/train.cpp               warmup/cosine schedule and the fit loop
 src/generate.cpp            prefill, sample, and decode_step
 examples/train_tiny.cpp     acceptance train and generate
 examples/train_tiny.md      how to run train_tiny
+examples/train_chat.cpp     train tiny for a reply and bert_tiny for one masked token
+examples/train_chat.md      how to run train_chat
 examples/train_books.cpp    train from a list of book files, save, and generate
 examples/train_books.md     how to train from a file list
 examples/chat.cpp           continue a User/Assistant transcript
@@ -116,7 +120,7 @@ Untied parameter counts at vocab 16000 are tiny 11866624 (11.87M), small 3736883
 
 tiny fits in 12 GB. Suggested batches are `(8, 512)` and `(16, 256)`. small is tight in 12 GB at `(4, 512)`; 24 GB is comfortable. base is a 24 GB target, not a 12 GB target at `T=512`. Keep `T <= 1024` for base, and prefer `T <= 512` on a 12 GB GPU. `gpt2_*` is the same memory class as the matching width. `gpt3_*` allows `T` up to 2048; the extra cost is the attention, not the position table. Prefer `T <= 512` for `gpt3_base` on a 12 GB GPU. `bert_*` is the same memory class as the matching `gpt2_*` width, and its context is already 512.
 
-`examples/train_tiny.cpp` trains `presets::tiny` at the byte-level BPE vocab, a few million parameters, so that acceptance run fits easily. That preset stays learned absolute. `train_books --preset llama-tiny` is the RoPE and RMSNorm shape. `train_books --preset qwen-tiny` is the Qwen3 shape. `train_books --preset gpt2-tiny` is the GPT-2 block, and `--preset gpt3-tiny` is that block with context 2048. `train_books --preset bert-tiny` trains masked tokens on the bidirectional block. The pad id is the mask. `chat` does not sample from that checkpoint. A public Qwen2 or Qwen3 GGUF loads through `gguf from` and `chat`. `gguf llama` rejects GELU, linear bias, bidirectional attention, and a segment table, so a gpt2, gpt3, or bert checkpoint stays in `model.bin` or an nnllm GGUF. It is not a llama.cpp file, and `gguf from` does not load a public GPT-2 or BERT GGUF.
+`examples/train_tiny.cpp` trains `presets::tiny` at the byte-level BPE vocab, a few million parameters, so that acceptance run fits easily. That preset stays learned absolute. `train_books --preset llama-tiny` is the RoPE and RMSNorm shape. `train_books --preset qwen-tiny` is the Qwen3 shape. `train_books --preset gpt2-tiny` is the GPT-2 block, and `--preset gpt3-tiny` is that block with context 2048. `train_books --preset bert-tiny` trains masked tokens on the bidirectional block. The pad id is the mask. `chat` does not sample from that checkpoint. `examples/train_chat.cpp` trains `tiny` and `bert_tiny` on one dialogue tokenizer, samples one reply from `tiny`, and scores one masked token on `bert_tiny`. A public Qwen2 or Qwen3 GGUF loads through `gguf from` and `chat`. `gguf llama` rejects GELU, linear bias, bidirectional attention, and a segment table, so a gpt2, gpt3, or bert checkpoint stays in `model.bin` or an nnllm GGUF. It is not a llama.cpp file, and `gguf from` does not load a public GPT-2 or BERT GGUF.
 
 ## Trainer
 

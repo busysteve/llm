@@ -136,6 +136,8 @@ tiny fits in 12 GB. Suggested batches are `(8, 512)` and `(16, 256)`. small is t
 
 `examples/train_tiny.cpp` trains `presets::tiny` at the byte-level BPE vocab, a few million parameters, so that acceptance run fits easily. That preset stays learned absolute. The walkthrough is [examples/train_tiny.md](examples/train_tiny.md).
 
+`examples/train_chat.cpp` trains `presets::tiny` and `presets::bert_tiny` on one byte-level BPE tokenizer and four `User:` / `Assistant:` exchanges. It samples one reply from the tiny model and scores one masked token on the BERT model. Each model has its own weights. The walkthrough is [examples/train_chat.md](examples/train_chat.md).
+
 ## Train from a list of books
 
 `examples/train_books.cpp` is the file-list example. It is not part of `llm_tests`. The walkthrough is [examples/train_books.md](examples/train_books.md).

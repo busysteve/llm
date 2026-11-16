@@ -71,6 +71,7 @@ The diagram shows the data flow for a forward pass. Token embeddings, learned po
 See also:
 
 - [preset-bert.md](preset-bert.md) — usage, benefits, and applications
+- [train_chat](../examples/train_chat.md) — train `tiny` and `bert_tiny`, then one reply and one masked token
 - [README.md](../README.md) — preset table and parameter counts
 - [USAGE.md](../USAGE.md) — full programmer notes
 - [gpt2-base-architecture.md](gpt2-base-architecture.md) — the same dense block as a causal decoder with context 1024
