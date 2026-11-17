@@ -106,7 +106,8 @@ void usage() {
       "2048. The GPT-3 paper's sparse attention is not in this library.\n"
       "bert-* is that dense block with bidirectional attention, a segment\n"
       "table of size 2, and context 512. It trains masked tokens. The pad id is\n"
-      "the mask. chat does not sample from a bert checkpoint.\n",
+      "the mask. This program does not sample from a bert checkpoint. chat\n"
+      "loads it and scores the pad id with forward.\n",
       stderr);
 }
 

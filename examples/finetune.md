@@ -52,7 +52,7 @@ continuation: <new text>
 
 The default prompt is the opening of the first new file: leading whitespace is skipped, then up to 48 Unicode code points, and a newline ends the excerpt early. Generation stops on eos.
 
-A bidirectional checkpoint trains masked tokens with the pad id as the mask. After the save it prints `encoder: masked lm, mask token N` and exits 0. It does not sample, and `chat` will not load `--out`.
+A bidirectional checkpoint trains masked tokens with the pad id as the mask. After the save it prints `encoder: masked lm, mask token N` and exits 0. It does not sample. `chat` loads `--out` and scores the pad id with `forward`.
 
 With `--steps` of 100 or more, `model.bin` is also written every 100 steps. The final save always runs after the last step.
 

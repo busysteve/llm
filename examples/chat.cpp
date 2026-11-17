@@ -51,7 +51,12 @@ void usage() {
       "The prompt is the transcript, then \"User: \", the line, a newline, and\n"
       "\"Assistant:\". Older turns drop off the front while the encoded prompt plus\n"
       "--max-new-tokens is above max_seq_len. A decoded newline and \"User:\" ends\n"
-      "the reply. One leading space is hidden on screen and kept in the transcript.\n",
+      "the reply. One leading space is hidden on screen and kept in the transcript.\n"
+      "\n"
+      "A causal checkpoint prefills the prompt and samples with decode_step.\n"
+      "A bidirectional checkpoint, including bert-*, appends the pad id and\n"
+      "scores that position with forward. The pad id is the mask. Sampling\n"
+      "flags are the same. Eos stops the reply and is left off the string.\n",
       stderr);
 }
 
@@ -200,7 +205,6 @@ int main(int argc, char** argv) {
         nn::Transformer::load(ctx, model_path, nn::LoadMode::Inference);
     const nn::TransformerConfig& config =
         std::get<nn::TransformerConfig>(loaded.model.network().config());
-    if (!config.causal) throw std::runtime_error("causal");
     llm::Generator generator(ctx, loaded.model, *tok);
     const int max_seq_len = config.max_seq_len;
 

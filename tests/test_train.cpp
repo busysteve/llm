@@ -479,6 +479,32 @@ void check_generate(nn::Context& ctx) {
   bad = cfg;
   bad.top_p = 0.f;
   check_invalid([&] { generator.generate("ab", bad, first); }, "top_p");
+
+  {
+    nn::TransformerConfig config = tiny_config(tok->vocab_size());
+    config.causal = false;
+    config.type_vocab_size = 2;
+    nn::Transformer bert(ctx, config, 2);
+    llm::Generator bert_gen(ctx, bert, *tok);
+    llm::GenerateConfig masked = cfg;
+    masked.max_new_tokens = 2;
+    std::mt19937 left_rng(7);
+    std::mt19937 right_rng(7);
+    const std::string left = bert_gen.generate("ab", masked, left_rng);
+    const std::string right = bert_gen.generate("ab", masked, right_rng);
+    CHECK(left == right);
+    const auto dir = std::filesystem::temp_directory_path() / "llm-bert-generate";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    const auto path = dir / "model.bin";
+    bert.save(path, nullptr);
+    nn::Context loaded_ctx;
+    nn::Transformer::Loaded loaded = nn::Transformer::load(loaded_ctx, path, nn::LoadMode::Inference);
+    llm::Generator again(loaded_ctx, loaded.model, *tok);
+    std::mt19937 loaded_rng(7);
+    CHECK(again.generate("ab", masked, loaded_rng) == left);
+    std::filesystem::remove_all(dir);
+  }
 }
 
 void check_presets() {

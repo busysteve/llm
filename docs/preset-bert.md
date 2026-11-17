@@ -2,7 +2,7 @@
 
 `bert-tiny`, `bert-small`, and `bert-base` (`llm::presets::bert_tiny`, `bert_small`, and `bert_base`) are an encoder. The dense block matches GPT-2: learned absolute positions, LayerNorm epsilon `1e-5`, erf GELU, `d_ff = 4 * d_model`, and a bias on every linear. Attention is bidirectional. Context is 512. A segment table has 2 rows. A diagram of `bert_base` is in [bert-base-architecture.md](bert-base-architecture.md).
 
-Train this shape from scratch. The preset does not load published BERT weights. There is no WordPiece tokenizer, no `<mask>` piece, and no next-sentence pooler. `chat` and `Generator` throw `causal` before sampling.
+Train this shape from scratch. The preset does not load published BERT weights. There is no WordPiece tokenizer, no `<mask>` piece, and no next-sentence pooler. `Generator` and `chat` append the pad id and read that position from `forward`. `decode_step` and `prefill` throw `causal`.
 
 ## Sizes
 
@@ -36,7 +36,7 @@ encoder: masked lm, mask token <pad id>
 
 `--prompt` and the sampling flags are unused. `--early-stop` and `--min-loss` still apply. `finetune` continues the masked-token objective and prints the same line.
 
-`forward(tokens)` fills every segment id with 0. `forward(tokens, type_ids)` supplies the ids for a pair of segments. `decode_step` and `prefill` throw `causal`. [train_chat](../examples/train_chat.md) trains this encoder beside a causal `tiny` model, samples one `User:` / `Assistant:` reply from `tiny`, and reads one masked position from `forward`.
+`forward(tokens)` fills every segment id with 0. `forward(tokens, type_ids)` supplies the ids for a pair of segments. `decode_step` and `prefill` throw `causal`. [train_bert_chat](../examples/train_bert_chat.md) trains this encoder on four `User:` / `Assistant:` exchanges and prints one reply. [chat](../examples/chat.md) loads a `bert-*` directory from `train_books` and continues the transcript the same way. [train_chat](../examples/train_chat.md) trains this encoder beside a causal `tiny` model, samples one reply from `tiny`, and reads one masked position from `forward`.
 
 `gguf export` writes an `nnllm` GGUF with `nnllm.causal` false and `nnllm.type_vocab_size` 2. `gguf import` of that file is checkpoint version 5 and drops the AdamW moments. `gguf llama` rejects the file because attention is bidirectional and a segment table is present. `finetune --resume` needs the original `model.bin`.
 
@@ -65,6 +65,8 @@ cfg.seq_len = 256;  // at most config.max_seq_len (512)
 
 - Masked-token training on a text list you have the rights to use, then more of the same through `finetune`.
 - A caller that builds token ids, optionally fills segment ids, and reads logits from `forward`.
+- A short in-process run, `train_bert_chat`, that trains `bert_tiny` on four exchanges and prints one reply.
+- `chat` on a `bert-*` directory from `train_books`. Each new token is the pad id, scored by `forward`.
 - A short in-process run, `train_chat`, that trains `bert_tiny` beside a causal `tiny` model and reads one masked position.
 - An `nnllm` GGUF for a loader that accepts bidirectional attention and a segment table of size 2.
 - A comparison with `gpt2-*` when you want the same dense block as a causal decoder at context 1024.
@@ -74,6 +76,8 @@ cfg.seq_len = 256;  // at most config.max_seq_len (512)
 - [bert-base-architecture.md](bert-base-architecture.md) — diagram and specs for `bert_base`
 - [preset-gpt2.md](preset-gpt2.md) — the same dense block as a causal decoder
 - [preset-gpt3.md](preset-gpt3.md) — that decoder at context 2048
+- [train_bert_chat](../examples/train_bert_chat.md) — train `bert_tiny` on four exchanges, then one reply
+- [chat](../examples/chat.md) — continue a transcript, including a `bert-*` checkpoint
 - [train_chat](../examples/train_chat.md) — train `tiny` and `bert_tiny` on one tokenizer, then one reply and one masked token
 - [train_books](../examples/train_books.md) — the file-list run, including the encoder line
 - [finetune](../examples/finetune.md) — continued masked-token training

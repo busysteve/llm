@@ -70,5 +70,6 @@ nn::Transformer model(ctx, config, seed);
 - [preset-gpt3.md](preset-gpt3.md) — that dense block at context 2048
 - [preset-bert.md](preset-bert.md) — the bidirectional encoder
 - [train_chat](../examples/train_chat.md) — train `tiny` beside `bert_tiny`, then one reply and one masked token
+- [train_bert_chat](../examples/train_bert_chat.md) — train `bert_tiny` on four exchanges, then one reply
 - [README.md](../README.md) — preset table and parameter counts
 - [USAGE.md](../USAGE.md) — library notes

@@ -99,6 +99,6 @@ A failed run prints a reason on stderr and exits 1.
 | `generate failed: ...` | sampling the tiny model threw |
 | `train_chat: ...` | tokenizer training, the dataset, the fit loop, or the masked forward threw |
 
-`generate failed: causal` means sampling was pointed at the encoder. This program constructs `Generator` with the tiny model only.
+This program constructs `Generator` with the tiny model only. The encoder is scored with `forward` in `print_mask`. [train_bert_chat](train_bert_chat.md) is the run that prints a reply from `bert_tiny`.
 
 Library details for the presets, the trainer, and the generator are in [USAGE.md](../USAGE.md). The preset pages are [preset-default](../docs/preset-default.md) and [preset-bert](../docs/preset-bert.md).

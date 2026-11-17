@@ -27,13 +27,15 @@ cmake --build build -j --target train_tiny
 ./build/train_tiny
 cmake --build build -j --target train_chat
 ./build/train_chat
+cmake --build build -j --target train_bert_chat
+./build/train_bert_chat
 cmake --build build -j --target train_books
 cmake --build build -j --target chat
 cmake --build build -j --target finetune
 cmake --build build -j --target gguf
 ```
 
-`train_tiny` is the acceptance example. It is not part of `llm_tests`. `train_books` trains from a list of text files, writes `tokenizer.bpe` and `model.bin`, then loads those files and generates. `chat` loads that directory and continues a `User:` / `Assistant:` transcript. `finetune` keeps training one of those checkpoints on a new file list. `gguf` converts `model.bin` to an `nnllm` GGUF and back, can write a llama.cpp GGUF from the same checkpoint, and can convert a public llama.cpp GGUF into a `chat` directory. Walkthroughs: [train_tiny](examples/train_tiny.md), [train_chat](examples/train_chat.md), [train_books](examples/train_books.md), [chat](examples/chat.md), [finetune](examples/finetune.md), [gguf](examples/gguf.md). Library details are in [USAGE.md](USAGE.md).
+`train_tiny` is the acceptance example. It is not part of `llm_tests`. `train_books` trains from a list of text files, writes `tokenizer.bpe` and `model.bin`, then loads those files and generates. `chat` loads that directory and continues a `User:` / `Assistant:` transcript. `finetune` keeps training one of those checkpoints on a new file list. `gguf` converts `model.bin` to an `nnllm` GGUF and back, can write a llama.cpp GGUF from the same checkpoint, and can convert a public llama.cpp GGUF into a `chat` directory. Walkthroughs: [train_tiny](examples/train_tiny.md), [train_chat](examples/train_chat.md), [train_bert_chat](examples/train_bert_chat.md), [train_books](examples/train_books.md), [chat](examples/chat.md), [finetune](examples/finetune.md), [gguf](examples/gguf.md). Library details are in [USAGE.md](USAGE.md).
 
 ## Layout
 
@@ -48,11 +50,13 @@ src/bpe.cpp                 byte-level BPE, train, and the LPB1 file
 src/data.cpp                token file and next-token batches
 src/presets.cpp             preset configs and adamw_groups
 src/train.cpp               warmup/cosine schedule and the fit loop
-src/generate.cpp            prefill, sample, and decode_step
+src/generate.cpp            prefill, sample, decode_step, and a masked forward for an encoder
 examples/train_tiny.cpp     acceptance train and generate
 examples/train_tiny.md      how to run train_tiny
 examples/train_chat.cpp     train tiny for a reply and bert_tiny for one masked token
 examples/train_chat.md      how to run train_chat
+examples/train_bert_chat.cpp train bert_tiny on dialogue and print one reply
+examples/train_bert_chat.md  how to run train_bert_chat
 examples/train_books.cpp    train from a list of book files, save, and generate
 examples/train_books.md     how to train from a file list
 examples/chat.cpp           continue a User/Assistant transcript
@@ -89,7 +93,7 @@ The on-disk form is little-endian with magic `LPB1`. The byte layout is in [USAG
 
 ## Presets
 
-`llm::presets::tiny`, `small`, and `base` return an `nn::TransformerConfig`. `vocab_size` must be positive. Dropout is 0, bias is off, embeddings are not tied, the activation is SwiGLU, positions are learned absolute, and `max_seq_len` is 1024. `llama_tiny`, `llama_small`, and `llama_base` are the same widths with `positional` set to RoPE, which selects RMSNorm and adjacent-pair RoPE. `qwen_tiny`, `qwen_small`, and `qwen_base` are the Qwen3 block: RoPE base `1e6`, RMSNorm epsilon `1e-6`, head dim 128, grouped-query attention, and a QK-norm of width 128 before RoPE. `gpt2_tiny`, `gpt2_small`, and `gpt2_base` are the GPT-2 block at those depths and widths: learned absolute positions, LayerNorm, GELU, `d_ff = 4 * d_model`, and a bias on every linear. `gpt3_tiny`, `gpt3_small`, and `gpt3_base` are that same dense block with `max_seq_len` 2048. `bert_tiny`, `bert_small`, and `bert_base` are that GPT-2 block with `max_seq_len` 512, bidirectional attention, and a segment table of size 2. Single-sequence training uses segment 0. There is no next-sentence head and no WordPiece tokenizer. `nn` rejects tied embeddings, so the token table and the LM head stay separate. The GPT-3 paper's alternating sparse attention is not in this library. A learned-position checkpoint cannot be turned into a llama or qwen block, and a RoPE checkpoint cannot be turned into a GPT block. A BERT checkpoint does not generate. Train each preset from scratch.
+`llm::presets::tiny`, `small`, and `base` return an `nn::TransformerConfig`. `vocab_size` must be positive. Dropout is 0, bias is off, embeddings are not tied, the activation is SwiGLU, positions are learned absolute, and `max_seq_len` is 1024. `llama_tiny`, `llama_small`, and `llama_base` are the same widths with `positional` set to RoPE, which selects RMSNorm and adjacent-pair RoPE. `qwen_tiny`, `qwen_small`, and `qwen_base` are the Qwen3 block: RoPE base `1e6`, RMSNorm epsilon `1e-6`, head dim 128, grouped-query attention, and a QK-norm of width 128 before RoPE. `gpt2_tiny`, `gpt2_small`, and `gpt2_base` are the GPT-2 block at those depths and widths: learned absolute positions, LayerNorm, GELU, `d_ff = 4 * d_model`, and a bias on every linear. `gpt3_tiny`, `gpt3_small`, and `gpt3_base` are that same dense block with `max_seq_len` 2048. `bert_tiny`, `bert_small`, and `bert_base` are that GPT-2 block with `max_seq_len` 512, bidirectional attention, and a segment table of size 2. Single-sequence training uses segment 0. There is no next-sentence head and no WordPiece tokenizer. `nn` rejects tied embeddings, so the token table and the LM head stay separate. The GPT-3 paper's alternating sparse attention is not in this library. A learned-position checkpoint cannot be turned into a llama or qwen block, and a RoPE checkpoint cannot be turned into a GPT block. A BERT checkpoint generates by appending the pad id and reading that position from `forward`. `decode_step` and `prefill` still throw `causal`. Train each preset from scratch.
 
 | Preset | Layers | `d_model` | Heads | KV heads | Head dim | `d_ff` | Positions |
 |---|---:|---:|---:|---:|---:|---:|---|
@@ -120,7 +124,7 @@ Untied parameter counts at vocab 16000 are tiny 11866624 (11.87M), small 3736883
 
 tiny fits in 12 GB. Suggested batches are `(8, 512)` and `(16, 256)`. small is tight in 12 GB at `(4, 512)`; 24 GB is comfortable. base is a 24 GB target, not a 12 GB target at `T=512`. Keep `T <= 1024` for base, and prefer `T <= 512` on a 12 GB GPU. `gpt2_*` is the same memory class as the matching width. `gpt3_*` allows `T` up to 2048; the extra cost is the attention, not the position table. Prefer `T <= 512` for `gpt3_base` on a 12 GB GPU. `bert_*` is the same memory class as the matching `gpt2_*` width, and its context is already 512.
 
-`examples/train_tiny.cpp` trains `presets::tiny` at the byte-level BPE vocab, a few million parameters, so that acceptance run fits easily. That preset stays learned absolute. `train_books --preset llama-tiny` is the RoPE and RMSNorm shape. `train_books --preset qwen-tiny` is the Qwen3 shape. `train_books --preset gpt2-tiny` is the GPT-2 block, and `--preset gpt3-tiny` is that block with context 2048. `train_books --preset bert-tiny` trains masked tokens on the bidirectional block. The pad id is the mask. `chat` does not sample from that checkpoint. `examples/train_chat.cpp` trains `tiny` and `bert_tiny` on one dialogue tokenizer, samples one reply from `tiny`, and scores one masked token on `bert_tiny`. A public Qwen2 or Qwen3 GGUF loads through `gguf from` and `chat`. `gguf llama` rejects GELU, linear bias, bidirectional attention, and a segment table, so a gpt2, gpt3, or bert checkpoint stays in `model.bin` or an nnllm GGUF. It is not a llama.cpp file, and `gguf from` does not load a public GPT-2 or BERT GGUF.
+`examples/train_tiny.cpp` trains `presets::tiny` at the byte-level BPE vocab, a few million parameters, so that acceptance run fits easily. That preset stays learned absolute. `train_books --preset llama-tiny` is the RoPE and RMSNorm shape. `train_books --preset qwen-tiny` is the Qwen3 shape. `train_books --preset gpt2-tiny` is the GPT-2 block, and `--preset gpt3-tiny` is that block with context 2048. `train_books --preset bert-tiny` trains masked tokens on the bidirectional block. The pad id is the mask. `chat` continues a transcript from that checkpoint by scoring the pad id. `examples/train_bert_chat.cpp` trains `bert_tiny` on four exchanges, saves the pair `chat` loads, and prints one reply. `examples/train_chat.cpp` trains `tiny` and `bert_tiny` on one dialogue tokenizer, samples one reply from `tiny`, and scores one masked token on `bert_tiny`. A public Qwen2 or Qwen3 GGUF loads through `gguf from` and `chat`. `gguf llama` rejects GELU, linear bias, bidirectional attention, and a segment table, so a gpt2, gpt3, or bert checkpoint stays in `model.bin` or an nnllm GGUF. It is not a llama.cpp file, and `gguf from` does not load a public GPT-2 or BERT GGUF.
 
 ## Trainer
 
@@ -128,4 +132,4 @@ tiny fits in 12 GB. Suggested batches are `(8, 512)` and `(16, 256)`. small is t
 
 ## Generator
 
-`Generator::generate` encodes the prompt with no extra bos or eos, prefills the cache, and samples new tokens with `decode_step`. Temperature 0 is greedy. Otherwise logits are divided by temperature, masked to `top_k` (`0` skips top-k), softmaxed, then nucleus-filtered on probabilities (`top_p == 1` skips nucleus), and drawn. An eos id stops the string without being appended. The return value is `decode` of the new ids only.
+`Generator::generate` encodes the prompt with no extra bos or eos. A causal model prefills the cache and samples new tokens with `decode_step`. A bidirectional model appends the tokenizer pad id, which is the mask, and reads that position from `forward`. Segment ids stay 0. Temperature 0 is greedy. Otherwise logits are divided by temperature, masked to `top_k` (`0` skips top-k), softmaxed, then nucleus-filtered on probabilities (`top_p == 1` skips nucleus), and drawn. An eos id stops the string without being appended. The return value is `decode` of the new ids only.

@@ -44,6 +44,16 @@ Paths in the list are resolved from the list's directory.
 
 Two short exchanges and a few steps are enough to prove the loop. They are not enough for a reply that answers the question. A usable transcript model needs many exchanges and a full training run. The same tiny preset memorizes a small corpus rather than learning general conversation.
 
+The same file list trains an encoder. `--seq-len` must be at most 512. `train_books` does not sample after this run. `chat` does. Each new token is the pad id.
+
+```bash
+./build/train_books --files dialogues.txt --out chat-bert \
+  --preset bert-tiny --vocab 1024 --seq-len 256 --batch 4 --steps 1000
+./build/chat --model chat-bert
+```
+
+[train_bert_chat](train_bert_chat.md) is the short in-process run of that objective.
+
 `chat-run/` must contain `tokenizer.bpe` and `model.bin`. The other `train_books` files are not read by `chat`. A public llama.cpp GGUF, including Qwen2 and Qwen3, becomes that directory with `gguf from MODEL.GGUF chat-run`. A model trained with `--preset qwen-tiny`, `qwen-small`, or `qwen-base` loads the same way. See [gguf](gguf.md).
 
 ## Talk
@@ -85,9 +95,9 @@ Completed turns are stored as `User: ...\nAssistant:...\n`. The next prompt is t
 
 Sampling stops on the tokenizer eos id. That id is not appended. If the decoded reply contains a newline followed by `User:`, the turn is cut there so the model cannot start the next user line.
 
-Each call encodes the whole prompt and prefills it. Nothing is kept in the KV cache between turns.
+Each call encodes the whole prompt. A causal model prefills it. A bidirectional model runs `forward` once per new token. Nothing is kept in the KV cache between turns.
 
-Most presets use `max_seq_len` 1024. `gpt3-tiny`, `gpt3-small`, and `gpt3-base` use 2048. `bert-tiny`, `bert-small`, and `bert-base` are encoders. `chat` rejects that checkpoint before it samples. [train_chat](train_chat.md) trains a `tiny` model for the transcript and a `bert_tiny` model for one masked token in the same process. The encoded prompt plus `--max-new-tokens` has to fit. `chat` drops the oldest completed turn until it does. A line that still does not fit prints `chat: max_seq_len` and leaves the transcript unchanged. In `--once` mode that same case exits 1.
+Most presets use `max_seq_len` 1024. `gpt3-tiny`, `gpt3-small`, and `gpt3-base` use 2048. `bert-tiny`, `bert-small`, and `bert-base` are encoders with context 512. A causal checkpoint prefills the prompt and samples with `decode_step`. A bidirectional checkpoint appends the pad id, which is the mask, and `forward` scores that position. Segment ids stay 0. The sampling flags are the same, and eos stops the reply. [train_bert_chat](train_bert_chat.md) trains `bert_tiny` on four exchanges and prints one reply through that path. [train_chat](train_chat.md) trains a `tiny` model for one reply and a `bert_tiny` model for one masked token in the same process. The encoded prompt plus `--max-new-tokens` has to fit. `chat` drops the oldest completed turn until it does. A line that still does not fit prints `chat: max_seq_len` and leaves the transcript unchanged. In `--once` mode that same case exits 1.
 
 ## Flags
 
@@ -112,7 +122,8 @@ Errors print `chat: <reason>` on stderr. In an interactive session the process s
 | `model` | `--model` is missing, or the directory has no `tokenizer.bpe` or no `model.bin` |
 | `prompt` | `--once` was given an empty string |
 | `max_seq_len` | the line plus `--max-new-tokens` is longer than the model allows |
-| `causal` | the checkpoint is bidirectional, including a `bert-*` model |
+| `mask_token` | a bidirectional checkpoint has a pad id outside the model vocabulary |
+| `logits` | `forward` did not return one row per token |
 | `max_new_tokens`, `temperature`, `top_k`, `top_p` | that flag is out of range |
 
 Training flags stay on `train_books`. See [train_books](train_books.md) and [USAGE.md](../USAGE.md). To keep training a dialogue checkpoint on more exchanges, see [finetune](finetune.md).

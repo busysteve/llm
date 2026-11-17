@@ -66,7 +66,7 @@ graph TD
     class Tokens,Embed,Pos,Types,Attn,FC1,Gelu,FC2,LMHead spec
 ```
 
-The diagram shows the data flow for a forward pass. Token embeddings, learned position embeddings, and segment embeddings are added, then each of the 12 identical blocks applies pre-norm LayerNorm → bidirectional attention → residual, then pre-norm LayerNorm → GELU MLP → residual. There is no causal mask, no RoPE, and no RMSNorm. Embeddings are not tied to the LM head. `decode_step` and `prefill` throw `causal`.
+The diagram shows the data flow for a forward pass. Token embeddings, learned position embeddings, and segment embeddings are added, then each of the 12 identical blocks applies pre-norm LayerNorm → bidirectional attention → residual, then pre-norm LayerNorm → GELU MLP → residual. There is no causal mask, no RoPE, and no RMSNorm. Embeddings are not tied to the LM head. `decode_step` and `prefill` throw `causal`. `Generator` appends the pad id and reads that position from `forward`.
 
 See also:
 

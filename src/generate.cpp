@@ -3,6 +3,7 @@
 #include "nn/index_tensor.hpp"
 
 #include <algorithm>
+#include <cstddef>
 #include <cmath>
 #include <limits>
 #include <numeric>
@@ -105,6 +106,41 @@ int pick_id(std::vector<float> logits, const GenerateConfig& cfg, std::mt19937& 
   return sample_id(probs, rng);
 }
 
+// Bidirectional blocks have no cache. Each new token is the pad id, which is
+// the mask this library trains, and forward scores that position.
+std::string generate_masked(nn::Context& ctx, nn::Transformer& model, const Tokenizer& tok,
+                            const std::vector<int32_t>& encoded, const GenerateConfig& cfg,
+                            std::mt19937& rng, const nn::TransformerConfig& model_cfg) {
+  const int vocab = model_cfg.vocab_size;
+  const int32_t mask_id = tok.pad_id();
+  if (mask_id < 0 || mask_id >= vocab) throw std::invalid_argument("mask_token");
+
+  std::vector<int64_t> host(encoded.size());
+  for (size_t i = 0; i < encoded.size(); ++i) host[i] = int64_t{encoded[i]};
+
+  std::vector<int32_t> generated;
+  generated.reserve(static_cast<size_t>(cfg.max_new_tokens));
+  for (int n = 0; n < cfg.max_new_tokens; ++n) {
+    host.push_back(int64_t{mask_id});
+    nn::IndexTensor tokens(ctx, {1, static_cast<int>(host.size())});
+    tokens.copy_from_host(host.data(), tokens.numel());
+    ctx.synchronize();
+    const std::vector<float> all = model.forward(tokens).to_host();
+    if (all.size() != host.size() * static_cast<size_t>(vocab)) {
+      throw std::invalid_argument("logits");
+    }
+    const size_t row = (host.size() - 1) * static_cast<size_t>(vocab);
+    std::vector<float> logits(all.begin() + static_cast<std::ptrdiff_t>(row),
+                              all.begin() + static_cast<std::ptrdiff_t>(row + static_cast<size_t>(vocab)));
+    const int32_t id = static_cast<int32_t>(pick_id(std::move(logits), cfg, rng));
+    host.pop_back();
+    if (cfg.eos_id >= 0 && id == cfg.eos_id) break;
+    generated.push_back(id);
+    host.push_back(int64_t{id});
+  }
+  return tok.decode(generated);
+}
+
 }  // namespace
 
 Generator::Generator(nn::Context& ctx, nn::Transformer& model, const Tokenizer& tok)
@@ -126,6 +162,7 @@ std::string Generator::generate(std::string_view prompt, GenerateConfig cfg, std
   const int t_max = prompt_len + cfg.max_new_tokens;
   const nn::TransformerConfig& model_cfg = std::get<nn::TransformerConfig>(model_->network().config());
   if (t_max > model_cfg.max_seq_len) throw std::invalid_argument("max_seq_len");
+  if (!model_cfg.causal) return generate_masked(*ctx_, *model_, *tok_, encoded, cfg, rng, model_cfg);
 
   std::vector<int64_t> host(encoded.size());
   for (size_t i = 0; i < encoded.size(); ++i) host[i] = int64_t{encoded[i]};
