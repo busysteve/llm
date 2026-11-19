@@ -27,7 +27,7 @@ The whole token array stays in host memory. A corpus shorter than `--seq-len + 1
 
 ## Run
 
-A first run with a smaller vocab spends less time in the tokenizer. Tokenizer training scans the corpus once per merge, so `--vocab 4096` on long books is the slow part. The GPU steps come after that.
+A first run with a smaller vocab spends less time in the tokenizer. Tokenizer training scans the corpus once per merge, in parallel on the CPU, so `--vocab 4096` on long books is the slow part. The GPU steps come after that.
 
 ```bash
 ./build/train_books --files books.txt --out run \

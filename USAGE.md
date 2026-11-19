@@ -1,6 +1,6 @@
 # Usage
 
-Programmer's guide to the tokenizer in namespace `llm`. Headers under `include/llm/` are C++17 and do not include CUDA or OpenCL. Link the CMake target `llm`. It links `nn` publicly, so a program that links `libllm.a` by hand also needs `nn` and the backend libraries that tree was built against (CUDA and cuDNN, or OpenCL).
+Programmer's guide to the tokenizer in namespace `llm`. Headers under `include/llm/` are C++17 and do not include CUDA or OpenCL. Link the CMake target `llm`. It links `nn` and pthread publicly, so a program that links `libllm.a` by hand also needs `nn`, pthread, and the backend libraries that tree was built against (CUDA and cuDNN, or OpenCL).
 
 `train` throws `std::invalid_argument("vocab_size")` when `vocab_size` is below 259, does not fit in `int32`, or the corpus runs out of pairs before that vocab is full. `decode` throws `std::invalid_argument("id")` for an id outside `0 .. vocab_size-1`. `load` throws `std::runtime_error` for a missing file, a bad magic, or a file that does not match the layout below.
 
@@ -35,6 +35,8 @@ text = tok->decode(ids);          // specials contribute no bytes
 | `vocab_size - 1` | eos |
 
 `encode` never writes pad. Bos and eos are written only when `EncodeOptions` asks for them. Merges are applied in learn order, lowest rank first, left to right, and a pair does not overlap itself. The same rules are used while training. Pre-tokenization splits each string into maximal runs of one class before any merge: word bytes (ASCII letters, ASCII digits, and bytes 128..255), whitespace (` `, `\t`, `\n`, `\r`, `\v`, `\f`), or anything else (punctuation and the remaining control bytes). Pairs are not counted across a run, and they are not counted across string boundaries. Concatenating the runs restores the original bytes. The `LPB1` file has no flag for this split. A file trained before it must be trained again; `load` still accepts the old layout, but `encode` now splits.
+
+`train` counts pairs and applies each merge across pieces on `std::thread::hardware_concurrency()` workers. Pass a positive `n_threads` to pick the count; `0` or a negative value uses the hardware count. Pair counts are summed across workers, so the learned merges depend only on the corpus and `vocab_size`. `encode` splits a long string across those workers by piece.
 
 `decode(encode(text))` equals `text` when both flags are off, including for empty strings and for bytes that are not UTF-8. Pad, bos, and eos in the middle of an id list are skipped.
 

@@ -27,8 +27,11 @@ else()
   message(STATUS "llm backend: CUDA (${NN_SOURCE})")
 endif()
 
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+find_package(Threads REQUIRED)
+
 add_library(llm STATIC src/bpe.cpp src/data.cpp src/presets.cpp src/train.cpp src/generate.cpp)
-target_link_libraries(llm PUBLIC nn)
+target_link_libraries(llm PUBLIC nn Threads::Threads)
 target_include_directories(llm PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 add_executable(llm_tests tests/test_bpe.cpp tests/test_data.cpp tests/test_train.cpp)

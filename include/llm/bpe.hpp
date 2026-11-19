@@ -10,7 +10,9 @@ namespace llm {
 
 class BpeTokenizer : public Tokenizer {
  public:
-  static std::unique_ptr<BpeTokenizer> train(const std::vector<std::string>& texts, int vocab_size);
+  // n_threads <= 0 uses std::thread::hardware_concurrency(), at least 1.
+  static std::unique_ptr<BpeTokenizer> train(const std::vector<std::string>& texts, int vocab_size,
+                                             int n_threads = 0);
 
   int vocab_size() const override;
   std::vector<int32_t> encode(std::string_view text, EncodeOptions opt = {}) const override;

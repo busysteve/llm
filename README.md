@@ -2,7 +2,7 @@
 
 A C++17 library for small decoder-only language models and a BERT encoder, built beside [`nn`](../nn). This tree is the tokenizer, the token dataset, transformer presets, the trainer, and the generator.
 
-Public headers live under `include/llm/` and do not include CUDA or OpenCL headers. The `llm` target links `nn`. That library is either the CUDA tree [`nn`](../nn) or the OpenCL tree [`nnCL`](../nnCL).
+Public headers live under `include/llm/` and do not include CUDA or OpenCL headers. The `llm` target links `nn` and pthread. That library is either the CUDA tree [`nn`](../nn) or the OpenCL tree [`nnCL`](../nnCL).
 
 ## Requirements
 
@@ -87,7 +87,7 @@ docs/preset-bert.md              usage, benefits, and applications for bert-*
 
 `encode` splits the string into pieces, then into bytes, applies merges in the order they were learned, and optionally prepends bos and appends eos. A piece is one run of word bytes, one run of whitespace, or one run of punctuation. Word bytes are ASCII letters and digits and every byte at or above 128, so a UTF-8 sequence stays inside one piece. Whitespace is space, tab, and the newline family. Everything else, including punctuation, is its own run. Merges do not cross a piece boundary. `encode` does not insert pad. `decode` turns byte and merge ids back into bytes. Pad, bos, and eos add no bytes, and an unknown id throws. With bos and eos off, `decode(encode(text))` equals `text`.
 
-Training counts adjacent pairs inside each piece, merges the most frequent pair, and repeats until the vocab is full. Equal counts take the smaller `(left, right)` pair, so the same corpus and vocab size train the same merges. A pair that crosses whitespace, punctuation, or two training strings is not a pair. The `LPB1` file does not store a pre-tokenization flag, so a file trained before this split must be trained again.
+Training counts adjacent pairs inside each piece, merges the most frequent pair, and repeats until the vocab is full. Pair counts and each merge rewrite run on all CPU threads. Equal counts take the smaller `(left, right)` pair, so the same corpus and vocab size train the same merges on one thread or many. A pair that crosses whitespace, punctuation, or two training strings is not a pair. The `LPB1` file does not store a pre-tokenization flag, so a file trained before this split must be trained again.
 
 The on-disk form is little-endian with magic `LPB1`. The byte layout is in [USAGE.md](USAGE.md).
 

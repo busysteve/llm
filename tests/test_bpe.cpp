@@ -107,11 +107,17 @@ int main() {
   const std::vector<std::string> corpus = sample_corpus();
   const auto first = llm::BpeTokenizer::train(corpus, 300);
   const auto second = llm::BpeTokenizer::train(corpus, 300);
+  const auto serial = llm::BpeTokenizer::train(corpus, 300, 1);
+  const auto threaded = llm::BpeTokenizer::train(corpus, 300, 8);
   check_vocab(*first, 300);
   check_vocab(*second, 300);
+  check_vocab(*serial, 300);
+  check_vocab(*threaded, 300);
 
   for (const std::string& text : corpus) {
     CHECK(first->encode(text) == second->encode(text));
+    CHECK(serial->encode(text) == threaded->encode(text));
+    CHECK(first->encode(text) == serial->encode(text));
     check_round_trip(*first, text);
   }
   check_round_trip(*first, "unseen xyz");
@@ -183,11 +189,24 @@ int main() {
   std::string utf8 = "caf\xc3\xa9!";
   check_round_trip(*punct, utf8);
 
+  std::string long_text;
+  for (int i = 0; i < 2000; ++i) {
+    long_text += corpus[static_cast<size_t>(i) % corpus.size()];
+    long_text += '\n';
+  }
+  check_round_trip(*first, long_text);
+  CHECK(serial->encode(long_text) == threaded->encode(long_text));
+  CHECK(first->encode(long_text) == serial->encode(long_text));
+
   const std::filesystem::path model = dir / "tok.bpe";
   first->save(model);
   first->save(model);
   second->save(dir / "tok2.bpe");
   CHECK(read_bytes(model) == read_bytes(dir / "tok2.bpe"));
+  serial->save(dir / "serial.bpe");
+  threaded->save(dir / "threaded.bpe");
+  CHECK(read_bytes(dir / "serial.bpe") == read_bytes(dir / "threaded.bpe"));
+  CHECK(read_bytes(model) == read_bytes(dir / "serial.bpe"));
 
   const std::filesystem::path tie_path = dir / "tie.bpe";
   one_merge->save(tie_path);

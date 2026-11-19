@@ -5,12 +5,17 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+#include <condition_variable>
 #include <cstdint>
+#include <exception>
 #include <fstream>
+#include <functional>
 #include <limits>
-#include <map>
+#include <mutex>
 #include <stdexcept>
 #include <string>
+#include <thread>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -59,21 +64,170 @@ std::vector<std::string_view> pieces_of(std::string_view text) {
 }
 
 // Non-overlapping left to right, so a run of the same symbol collapses in pairs.
-std::vector<int32_t> merge_pair(const std::vector<int32_t>& ids, int32_t left, int32_t right,
-                                int32_t merged) {
-  std::vector<int32_t> out;
-  out.reserve(ids.size());
+void merge_pair(std::vector<int32_t>& ids, int32_t left, int32_t right, int32_t merged) {
+  const size_t n = ids.size();
+  if (n < 2) return;
+  size_t w = 0;
   size_t i = 0;
-  while (i < ids.size()) {
-    if (i + 1 < ids.size() && ids[i] == left && ids[i + 1] == right) {
-      out.push_back(merged);
+  while (i < n) {
+    if (i + 1 < n && ids[i] == left && ids[i + 1] == right) {
+      ids[w++] = merged;
       i += 2;
     } else {
-      out.push_back(ids[i]);
-      ++i;
+      ids[w++] = ids[i++];
     }
   }
-  return out;
+  ids.resize(w);
+}
+
+uint64_t pack_pair(int32_t left, int32_t right) {
+  return (static_cast<uint64_t>(static_cast<uint32_t>(left)) << 32) |
+         static_cast<uint32_t>(right);
+}
+
+unsigned choose_thread_count(int requested, size_t work_items) {
+  unsigned n = 1;
+  if (requested > 0) {
+    n = static_cast<unsigned>(requested);
+  } else {
+    n = std::thread::hardware_concurrency();
+    if (n == 0) n = 1;
+  }
+  if (work_items == 0) return 1;
+  if (static_cast<size_t>(n) > work_items) n = static_cast<unsigned>(work_items);
+  return n;
+}
+
+void split_range(unsigned index, unsigned n_threads, size_t n_items, size_t& begin, size_t& end) {
+  begin = n_items * static_cast<size_t>(index) / static_cast<size_t>(n_threads);
+  end = n_items * static_cast<size_t>(index + 1) / static_cast<size_t>(n_threads);
+}
+
+// One reusable worker set. train() issues two jobs per merge, so creating
+// threads inside the loop would dominate a large vocab.
+class RangePool {
+ public:
+  explicit RangePool(unsigned n_threads) : n_threads_(n_threads < 1 ? 1u : n_threads) {
+    if (n_threads_ == 1) return;
+    workers_.reserve(n_threads_ - 1);
+    for (unsigned i = 1; i < n_threads_; ++i) {
+      workers_.emplace_back([this, i] { worker_loop(i); });
+    }
+  }
+
+  RangePool(const RangePool&) = delete;
+  RangePool& operator=(const RangePool&) = delete;
+
+  ~RangePool() {
+    {
+      std::lock_guard<std::mutex> guard(mu_);
+      stop_ = true;
+    }
+    cv_start_.notify_all();
+    for (std::thread& worker : workers_) worker.join();
+  }
+
+  unsigned n_threads() const { return n_threads_; }
+
+  void for_ranges(size_t n_items, const std::function<void(unsigned, size_t, size_t)>& fn) {
+    if (n_items == 0) return;
+    if (n_threads_ == 1 || n_items == 1) {
+      fn(0, 0, n_items);
+      return;
+    }
+
+    {
+      std::lock_guard<std::mutex> guard(mu_);
+      fn_ = &fn;
+      n_items_ = n_items;
+      remaining_ = static_cast<unsigned>(workers_.size());
+      error_ = nullptr;
+      ++epoch_;
+    }
+    cv_start_.notify_all();
+    invoke(0, n_items, fn);
+    std::unique_lock<std::mutex> lock(mu_);
+    cv_done_.wait(lock, [&] { return remaining_ == 0; });
+    fn_ = nullptr;
+    if (error_) {
+      std::exception_ptr error = error_;
+      error_ = nullptr;
+      std::rethrow_exception(error);
+    }
+  }
+
+ private:
+  void invoke(unsigned index, size_t n_items, const std::function<void(unsigned, size_t, size_t)>& fn) {
+    size_t begin = 0;
+    size_t end = 0;
+    split_range(index, n_threads_, n_items, begin, end);
+    if (begin >= end) return;
+    try {
+      fn(index, begin, end);
+    } catch (...) {
+      std::lock_guard<std::mutex> guard(mu_);
+      if (!error_) error_ = std::current_exception();
+    }
+  }
+
+  void worker_loop(unsigned index) {
+    unsigned seen = 0;
+    for (;;) {
+      std::unique_lock<std::mutex> lock(mu_);
+      cv_start_.wait(lock, [&] { return stop_ || epoch_ != seen; });
+      if (stop_ && epoch_ == seen) return;
+      seen = epoch_;
+      const std::function<void(unsigned, size_t, size_t)>* fn = fn_;
+      const size_t n_items = n_items_;
+      lock.unlock();
+      if (fn != nullptr) invoke(index, n_items, *fn);
+      lock.lock();
+      if (--remaining_ == 0) cv_done_.notify_one();
+    }
+  }
+
+  unsigned n_threads_ = 1;
+  std::vector<std::thread> workers_;
+  std::mutex mu_;
+  std::condition_variable cv_start_;
+  std::condition_variable cv_done_;
+  const std::function<void(unsigned, size_t, size_t)>* fn_ = nullptr;
+  size_t n_items_ = 0;
+  unsigned epoch_ = 0;
+  unsigned remaining_ = 0;
+  bool stop_ = false;
+  std::exception_ptr error_;
+};
+
+void run_parallel(unsigned n_threads, size_t n_items,
+                  const std::function<void(unsigned, size_t, size_t)>& fn) {
+  if (n_items == 0) return;
+  unsigned n = n_threads < 1 ? 1u : n_threads;
+  if (static_cast<size_t>(n) > n_items) n = static_cast<unsigned>(n_items);
+  if (n == 1) {
+    fn(0, 0, n_items);
+    return;
+  }
+  std::mutex mu;
+  std::exception_ptr error;
+  auto wrap = [&](unsigned index) {
+    size_t begin = 0;
+    size_t end = 0;
+    split_range(index, n, n_items, begin, end);
+    if (begin >= end) return;
+    try {
+      fn(index, begin, end);
+    } catch (...) {
+      std::lock_guard<std::mutex> guard(mu);
+      if (!error) error = std::current_exception();
+    }
+  };
+  std::vector<std::thread> workers;
+  workers.reserve(n - 1);
+  for (unsigned t = 1; t < n; ++t) workers.emplace_back(wrap, t);
+  wrap(0);
+  for (std::thread& worker : workers) worker.join();
+  if (error) std::rethrow_exception(error);
 }
 
 void append_u32(std::vector<uint8_t>& out, uint32_t value) {
@@ -171,7 +325,8 @@ void BpeTokenizer::build_pieces() {
   }
 }
 
-std::unique_ptr<BpeTokenizer> BpeTokenizer::train(const std::vector<std::string>& texts, int vocab_size) {
+std::unique_ptr<BpeTokenizer> BpeTokenizer::train(const std::vector<std::string>& texts, int vocab_size,
+                                                  int n_threads) {
   require_vocab_size(vocab_size);
   const int n_merges = vocab_size - 259;
 
@@ -180,6 +335,9 @@ std::unique_ptr<BpeTokenizer> BpeTokenizer::train(const std::vector<std::string>
     for (std::string_view piece : pieces_of(text)) words.push_back(bytes_of(piece));
   }
 
+  RangePool pool(choose_thread_count(n_threads, words.size()));
+  std::vector<std::unordered_map<uint64_t, int64_t>> locals(pool.n_threads());
+
   std::vector<Merge> merges;
   merges.reserve(static_cast<size_t>(n_merges));
   for (int i = 0; i < n_merges; ++i) {
@@ -187,30 +345,49 @@ std::unique_ptr<BpeTokenizer> BpeTokenizer::train(const std::vector<std::string>
     // Learned ids occupy 256 .. vocab_size-4. Pad, bos, and eos stay reserved.
     if (new_id > static_cast<int32_t>(vocab_size) - 4) throw std::invalid_argument("vocab_size");
 
+    for (auto& local : locals) local.clear();
     // Count inside each piece. A pair that crosses whitespace, punctuation, or two
-    // training strings is not a pair.
-    std::map<std::pair<int32_t, int32_t>, int64_t> counts;
-    for (const std::vector<int32_t>& word : words) {
-      for (size_t j = 0; j + 1 < word.size(); ++j) {
-        counts[{word[j], word[j + 1]}] += 1;
+    // training strings is not a pair. Workers fill disjoint slices; the maps
+    // are summed before the winner is chosen.
+    pool.for_ranges(words.size(), [&](unsigned worker, size_t begin, size_t end) {
+      auto& counts = locals[worker];
+      for (size_t w = begin; w < end; ++w) {
+        const std::vector<int32_t>& word = words[w];
+        for (size_t j = 0; j + 1 < word.size(); ++j) {
+          counts[pack_pair(word[j], word[j + 1])] += 1;
+        }
       }
+    });
+
+    std::unordered_map<uint64_t, int64_t> counts;
+    for (auto& local : locals) {
+      if (local.empty()) continue;
+      if (counts.empty()) {
+        counts = std::move(local);
+        continue;
+      }
+      for (const auto& [key, count] : local) counts[key] += count;
     }
     if (counts.empty()) throw std::invalid_argument("vocab_size");
 
-    std::pair<int32_t, int32_t> best{0, 0};
+    uint64_t best = 0;
     int64_t best_count = -1;
-    for (const auto& [pair, count] : counts) {
-      // Higher count wins. Equal counts take the smaller (left, right).
-      if (count > best_count || (count == best_count && pair < best)) {
-        best = pair;
+    for (const auto& [key, count] : counts) {
+      // Higher count wins. Equal counts take the smaller packed (left, right).
+      if (count > best_count || (count == best_count && key < best)) {
+        best = key;
         best_count = count;
       }
     }
 
-    merges.push_back(Merge{best.first, best.second});
-    for (std::vector<int32_t>& word : words) {
-      word = merge_pair(word, best.first, best.second, new_id);
-    }
+    const int32_t best_left = static_cast<int32_t>(best >> 32);
+    const int32_t best_right = static_cast<int32_t>(static_cast<uint32_t>(best));
+    merges.push_back(Merge{best_left, best_right});
+    pool.for_ranges(words.size(), [&](unsigned, size_t begin, size_t end) {
+      for (size_t w = begin; w < end; ++w) {
+        merge_pair(words[w], best_left, best_right, new_id);
+      }
+    });
   }
 
   return std::unique_ptr<BpeTokenizer>(new BpeTokenizer(vocab_size, std::move(merges)));
@@ -225,19 +402,33 @@ int32_t BpeTokenizer::eos_id() const { return eos_id_; }
 int32_t BpeTokenizer::pad_id() const { return pad_id_; }
 
 std::vector<int32_t> BpeTokenizer::encode(std::string_view text, EncodeOptions opt) const {
-  std::vector<int32_t> ids;
-  ids.reserve(text.size());
-  // Learn order is lowest rank first. Later merges cannot recreate an earlier pair,
-  // so one pass per merge inside each piece is the usual greedy BPE apply.
-  for (std::string_view piece : pieces_of(text)) {
-    std::vector<int32_t> part = bytes_of(piece);
-    for (size_t i = 0; i < merges_.size(); ++i) {
-      if (part.size() < 2) break;
-      part = merge_pair(part, merges_[i].left, merges_[i].right, static_cast<int32_t>(256 + i));
+  const std::vector<std::string_view> pieces = pieces_of(text);
+  std::vector<std::vector<int32_t>> parts(pieces.size());
+  // A short prompt is cheaper on one thread. A book has enough pieces to split.
+  const unsigned n_threads = pieces.size() < 64 ? 1u : choose_thread_count(0, pieces.size());
+  run_parallel(n_threads, pieces.size(), [&](unsigned, size_t begin, size_t end) {
+    for (size_t p = begin; p < end; ++p) {
+      std::vector<int32_t> part = bytes_of(pieces[p]);
+      // Learn order is lowest rank first. Later merges cannot recreate an earlier pair,
+      // so one pass per merge inside each piece is the usual greedy BPE apply.
+      for (size_t i = 0; i < merges_.size(); ++i) {
+        if (part.size() < 2) break;
+        merge_pair(part, merges_[i].left, merges_[i].right, static_cast<int32_t>(256 + i));
+      }
+      parts[p] = std::move(part);
     }
+  });
+
+  size_t total = 0;
+  for (const std::vector<int32_t>& part : parts) total += part.size();
+  if (opt.add_bos) ++total;
+  if (opt.add_eos) ++total;
+  std::vector<int32_t> ids;
+  ids.reserve(total);
+  if (opt.add_bos) ids.push_back(bos_id_);
+  for (const std::vector<int32_t>& part : parts) {
     ids.insert(ids.end(), part.begin(), part.end());
   }
-  if (opt.add_bos) ids.insert(ids.begin(), bos_id_);
   if (opt.add_eos) ids.push_back(eos_id_);
   return ids;
 }
