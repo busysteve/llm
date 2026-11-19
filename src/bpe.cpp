@@ -33,6 +33,31 @@ std::vector<int32_t> bytes_of(std::string_view text) {
   return ids;
 }
 
+enum class ByteClass { Word, Space, Other };
+
+ByteClass byte_class(unsigned char c) {
+  if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f') return ByteClass::Space;
+  // Bytes at or above 128 stay with letters so a UTF-8 sequence is one piece.
+  if ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c >= 128) {
+    return ByteClass::Word;
+  }
+  return ByteClass::Other;
+}
+
+// Maximal runs of one class. Concatenating them restores the string, including non-UTF-8.
+std::vector<std::string_view> pieces_of(std::string_view text) {
+  std::vector<std::string_view> pieces;
+  size_t i = 0;
+  while (i < text.size()) {
+    const ByteClass kind = byte_class(static_cast<unsigned char>(text[i]));
+    size_t j = i + 1;
+    while (j < text.size() && byte_class(static_cast<unsigned char>(text[j])) == kind) ++j;
+    pieces.push_back(text.substr(i, j - i));
+    i = j;
+  }
+  return pieces;
+}
+
 // Non-overlapping left to right, so a run of the same symbol collapses in pairs.
 std::vector<int32_t> merge_pair(const std::vector<int32_t>& ids, int32_t left, int32_t right,
                                 int32_t merged) {
@@ -151,8 +176,9 @@ std::unique_ptr<BpeTokenizer> BpeTokenizer::train(const std::vector<std::string>
   const int n_merges = vocab_size - 259;
 
   std::vector<std::vector<int32_t>> words;
-  words.reserve(texts.size());
-  for (const std::string& text : texts) words.push_back(bytes_of(text));
+  for (const std::string& text : texts) {
+    for (std::string_view piece : pieces_of(text)) words.push_back(bytes_of(piece));
+  }
 
   std::vector<Merge> merges;
   merges.reserve(static_cast<size_t>(n_merges));
@@ -161,7 +187,8 @@ std::unique_ptr<BpeTokenizer> BpeTokenizer::train(const std::vector<std::string>
     // Learned ids occupy 256 .. vocab_size-4. Pad, bos, and eos stay reserved.
     if (new_id > static_cast<int32_t>(vocab_size) - 4) throw std::invalid_argument("vocab_size");
 
-    // Count inside each string. A pair that crosses two training strings is not a pair.
+    // Count inside each piece. A pair that crosses whitespace, punctuation, or two
+    // training strings is not a pair.
     std::map<std::pair<int32_t, int32_t>, int64_t> counts;
     for (const std::vector<int32_t>& word : words) {
       for (size_t j = 0; j + 1 < word.size(); ++j) {
@@ -198,12 +225,17 @@ int32_t BpeTokenizer::eos_id() const { return eos_id_; }
 int32_t BpeTokenizer::pad_id() const { return pad_id_; }
 
 std::vector<int32_t> BpeTokenizer::encode(std::string_view text, EncodeOptions opt) const {
-  std::vector<int32_t> ids = bytes_of(text);
+  std::vector<int32_t> ids;
+  ids.reserve(text.size());
   // Learn order is lowest rank first. Later merges cannot recreate an earlier pair,
-  // so one pass per merge is the usual greedy BPE apply.
-  for (size_t i = 0; i < merges_.size(); ++i) {
-    if (ids.size() < 2) break;
-    ids = merge_pair(ids, merges_[i].left, merges_[i].right, static_cast<int32_t>(256 + i));
+  // so one pass per merge inside each piece is the usual greedy BPE apply.
+  for (std::string_view piece : pieces_of(text)) {
+    std::vector<int32_t> part = bytes_of(piece);
+    for (size_t i = 0; i < merges_.size(); ++i) {
+      if (part.size() < 2) break;
+      part = merge_pair(part, merges_[i].left, merges_[i].right, static_cast<int32_t>(256 + i));
+    }
+    ids.insert(ids.end(), part.begin(), part.end());
   }
   if (opt.add_bos) ids.insert(ids.begin(), bos_id_);
   if (opt.add_eos) ids.push_back(eos_id_);

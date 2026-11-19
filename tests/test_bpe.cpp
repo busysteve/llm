@@ -165,6 +165,24 @@ int main() {
   CHECK((quad->encode("aaaa") == std::vector<int32_t>{257}));
   CHECK((quad->encode("aaa") == std::vector<int32_t>{256, 97}));
 
+  // Pre-tokenization keeps a merge inside one run. Space and punctuation are their own runs.
+  const auto boundary = llm::BpeTokenizer::train({"a b", "a b", "ab"}, 260);
+  CHECK((boundary->encode("ab") == std::vector<int32_t>{256}));
+  CHECK((boundary->encode("a b") == std::vector<int32_t>{97, 32, 98}));
+  check_round_trip(*boundary, "a b");
+
+  const auto punct = llm::BpeTokenizer::train({"Hi!", "Hi!", "Hi"}, 260);
+  CHECK((punct->encode("Hi") == std::vector<int32_t>{256}));
+  CHECK((punct->encode("Hi!") == std::vector<int32_t>{256, 33}));
+  check_round_trip(*punct, "Hello, world!\n");
+
+  const auto spaces = llm::BpeTokenizer::train({"  ", "  ", "a"}, 260);
+  CHECK((spaces->encode("  ") == std::vector<int32_t>{256}));
+  CHECK((spaces->encode("a ") == std::vector<int32_t>{97, 32}));
+  check_round_trip(*spaces, "a  b\n");
+  std::string utf8 = "caf\xc3\xa9!";
+  check_round_trip(*punct, utf8);
+
   const std::filesystem::path model = dir / "tok.bpe";
   first->save(model);
   first->save(model);
