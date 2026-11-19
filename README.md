@@ -85,9 +85,9 @@ docs/preset-bert.md              usage, benefits, and applications for bert-*
 
 `BpeTokenizer::train` learns a byte-level vocabulary. Ids `0..255` are raw bytes. Learned merges start at `256`. The last three ids are pad, bos, and eos, in that order, so `vocab_size = 256 + n_merges + 3`.
 
-`encode` splits the string into bytes, applies merges in the order they were learned, then optionally prepends bos and appends eos. It does not insert pad. `decode` turns byte and merge ids back into bytes. Pad, bos, and eos add no bytes, and an unknown id throws. With bos and eos off, `decode(encode(text))` equals `text`.
+`encode` splits the string into pieces, then into bytes, applies merges in the order they were learned, and optionally prepends bos and appends eos. A piece is one run of word bytes, one run of whitespace, or one run of punctuation. Word bytes are ASCII letters and digits and every byte at or above 128, so a UTF-8 sequence stays inside one piece. Whitespace is space, tab, and the newline family. Everything else, including punctuation, is its own run. Merges do not cross a piece boundary. `encode` does not insert pad. `decode` turns byte and merge ids back into bytes. Pad, bos, and eos add no bytes, and an unknown id throws. With bos and eos off, `decode(encode(text))` equals `text`.
 
-Training counts adjacent pairs inside each string, merges the most frequent pair, and repeats until the vocab is full. Equal counts take the smaller `(left, right)` pair, so the same corpus and vocab size train the same merges.
+Training counts adjacent pairs inside each piece, merges the most frequent pair, and repeats until the vocab is full. Equal counts take the smaller `(left, right)` pair, so the same corpus and vocab size train the same merges. A pair that crosses whitespace, punctuation, or two training strings is not a pair. The `LPB1` file does not store a pre-tokenization flag, so a file trained before this split must be trained again.
 
 The on-disk form is little-endian with magic `LPB1`. The byte layout is in [USAGE.md](USAGE.md).
 

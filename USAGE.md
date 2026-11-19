@@ -34,7 +34,7 @@ text = tok->decode(ids);          // specials contribute no bytes
 | `vocab_size - 2` | bos |
 | `vocab_size - 1` | eos |
 
-`encode` never writes pad. Bos and eos are written only when `EncodeOptions` asks for them. Merges are applied in learn order, lowest rank first, left to right, and a pair does not overlap itself. The same rules are used while training, on the current segmentation of each string. Pairs are not counted across string boundaries.
+`encode` never writes pad. Bos and eos are written only when `EncodeOptions` asks for them. Merges are applied in learn order, lowest rank first, left to right, and a pair does not overlap itself. The same rules are used while training. Pre-tokenization splits each string into maximal runs of one class before any merge: word bytes (ASCII letters, ASCII digits, and bytes 128..255), whitespace (` `, `\t`, `\n`, `\r`, `\v`, `\f`), or anything else (punctuation and the remaining control bytes). Pairs are not counted across a run, and they are not counted across string boundaries. Concatenating the runs restores the original bytes. The `LPB1` file has no flag for this split. A file trained before it must be trained again; `load` still accepts the old layout, but `encode` now splits.
 
 `decode(encode(text))` equals `text` when both flags are off, including for empty strings and for bytes that are not UTF-8. Pad, bos, and eos in the middle of an id list are skipped.
 
