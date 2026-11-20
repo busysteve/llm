@@ -1,6 +1,6 @@
 # How to converse with a trained model
 
-`chat` is the dialogue example in [`chat.cpp`](chat.cpp). It loads `tokenizer.bpe` and `model.bin` from a directory written by [`train_books`](train_books.md) or [`gguf from`](gguf.md) and continues a `User:` / `Assistant:` transcript. It does not train. It is a separate program from `llm_tests`.
+`chat` is the dialogue example in [`chat.cpp`](chat.cpp). It loads `tokenizer.bpe` and `model.bin` from a directory written by [`train_books`](train_books.md) or [`gguf from`](gguf.md) and continues a `User:` / `Assistant:` transcript. `--plain` continues the line as a prompt with those tags left off, which matches a book checkpoint. It does not train. It is a separate program from `llm_tests`.
 
 Build from the repository root. Requirements are in the [README](../README.md).
 
@@ -89,11 +89,37 @@ An empty line is ignored. One leading space on the reply is hidden after `model>
 model> <reply>
 ```
 
+## A book checkpoint
+
+A model trained on prose has no `User:` / `Assistant:` lines. `--plain` feeds the transcript then the line you typed, and prints the continuation as generated.
+
+```bash
+./build/chat --model run --plain
+```
+
+```
+you> The morning after
+model> <continuation>
+you> /quit
+```
+
+`--once` works with `--plain`.
+
+```bash
+./build/chat --model run --plain --once "The morning after"
+```
+
+```
+model> <continuation>
+```
+
 ## How a turn is built
 
 Completed turns are stored as `User: ...\nAssistant:...\n`. The next prompt is that transcript, then `User: `, the line you typed, a newline, and `Assistant:`. The model generates the reply, including the space after the colon.
 
 Sampling stops on the tokenizer eos id. That id is not appended. If the decoded reply contains a newline followed by `User:`, the turn is cut there so the model cannot start the next user line.
+
+With `--plain`, a completed turn is the line, the reply, and a newline. The next prompt is that transcript then the line. A decoded newline and `User:` does not end the reply. One leading space stays on screen.
 
 Each call encodes the whole prompt. A causal model prefills it. A bidirectional model runs `forward` once per new token. Nothing is kept in the KV cache between turns.
 
@@ -112,6 +138,7 @@ Most presets use `max_seq_len` 1024. `gpt3-tiny`, `gpt3-small`, and `gpt3-base` 
 | `--top-p FLOAT` | 0.9 | nucleus threshold |
 | `--seed N` | 1 | sampling rng |
 | `--once TEXT` | | one reply, then exit |
+| `--plain` | | prompt is the line, with no `User:` / `Assistant:` tags |
 
 ## When it fails
 

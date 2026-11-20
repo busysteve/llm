@@ -182,7 +182,9 @@ cmake --build build -j --target chat
 
 `chat` prints `you>`, reads a line, and builds a prompt from the transcript plus `User: `, the line, a newline, and `Assistant:`. The space after the colon is part of the reply the model generates. `model>` prints that reply with one leading space removed. The transcript keeps the space. A decoded `\nUser:` ends the turn for both the screen and the transcript. `/reset` clears the transcript. `/quit` or end of input exits. `--once TEXT` prints one reply and exits.
 
-Most presets use `max_seq_len` 1024. `gpt3-*` uses 2048. The encoded prompt plus `--max-new-tokens` has to fit. `chat` drops the oldest `User:` / `Assistant:` turn until it does. A line that still does not fit prints `max_seq_len` and leaves the transcript as it was. A causal reply prefills the whole prompt. A bidirectional checkpoint, including `bert-*`, appends the pad id and scores that position with `forward`. There is no cache carried from one turn to the next.
+`--plain` leaves those tags off. The prompt is the transcript then the line, which matches a book checkpoint. The reply is printed as generated. A decoded `\nUser:` does not end it.
+
+Most presets use `max_seq_len` 1024. `gpt3-*` uses 2048. The encoded prompt plus `--max-new-tokens` has to fit. `chat` drops the oldest turn until it does. A line that still does not fit prints `max_seq_len` and leaves the transcript as it was. A causal reply prefills the whole prompt. A bidirectional checkpoint, including `bert-*`, appends the pad id and scores that position with `forward`. There is no cache carried from one turn to the next.
 
 Defaults are `--max-new-tokens 128`, `--temperature 0.8`, `--top-k 40`, `--top-p 0.9`, and `--seed 1`. `--temperature 0` is greedy. `--help` prints the flags.
 

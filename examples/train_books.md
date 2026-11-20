@@ -84,7 +84,7 @@ The pad id is the mask. `encode` does not insert it. About 15% of positions are 
 
 With `--steps` of 500 or more, `model.bin` is also written every 500 steps. The final save always runs after the last step. `--steps` below 500 writes the checkpoint once, at the end. With `--early-stop`, that final file is the best validation step, including that step's AdamW moments, even when a 500-step write was a later step. When `--min-loss` stops the run, `model.bin` is the step whose training loss reached the threshold, including that step's AdamW moments.
 
-Load `tokenizer.bpe` and `model.bin` together. `chat` does that for a dialogue corpus. See [chat](chat.md).
+Load `tokenizer.bpe` and `model.bin` together. `chat` does that for a dialogue corpus. `--plain` feeds the line as the prompt with no `User:` / `Assistant:` tags, which matches a book continuation. See [chat](chat.md).
 
 ## Flags
 
