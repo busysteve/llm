@@ -50,6 +50,7 @@ struct Options {
   float top_p = 0.9f;
   int seed = 1;
   bool resume = false;
+  bool reuse_tokens = false;
   std::string prompt;
 };
 
@@ -93,7 +94,8 @@ void usage() {
       "SIGINT or SIGTERM finishes the current update, writes model.bin, and\n"
       "exits without sampling. --resume continues that checkpoint. Weights,\n"
       "AdamW moments, and the learning-rate step are kept. --steps is the\n"
-      "total update count from the start of the run.\n"
+      "total update count from the start of the run. --reuse-tokens starts a\n"
+      "new model on the tokenizer and token file already in --out.\n"
       "\n"
       "  --preset tiny|small|base|llama-tiny|llama-small|llama-base|\n"
       "          qwen-tiny|qwen-small|qwen-base|\n"
@@ -128,6 +130,9 @@ void usage() {
       "  --seed N                   default 1\n"
       "  --resume                   continue --out. Requires tokenizer.bpe,\n"
       "                             tokens.bin, tokens.meta, and model.bin.\n"
+      "  --reuse-tokens             restart training on the tokens in --out.\n"
+      "                             Requires tokenizer.bpe, tokens.bin, and\n"
+      "                             tokens.meta. Does not load model.bin.\n"
       "\n"
       "Each book is one tokenizer string, then encoded with an eos token appended.\n"
       "Tokenizer training scans the corpus once per merge, so a large vocab on\n"
@@ -203,6 +208,7 @@ Options parse(int argc, char** argv) {
     else if (flag == "--top-p") opt.top_p = need_float(i, argc, argv);
     else if (flag == "--seed") opt.seed = need_int(i, argc, argv);
     else if (flag == "--resume") opt.resume = true;
+    else if (flag == "--reuse-tokens") opt.reuse_tokens = true;
     else throw std::runtime_error(argv[i]);
   }
   if (help) {
@@ -223,6 +229,7 @@ Options parse(int argc, char** argv) {
       (opt.eval_every < 1 || opt.eval_every > opt.steps)) {
     throw std::runtime_error("eval_every");
   }
+  if (opt.resume && opt.reuse_tokens) throw std::runtime_error("reuse-tokens");
   if (opt.files.empty() || opt.out.empty()) {
     usage();
     throw std::runtime_error("files");
@@ -353,9 +360,13 @@ int main(int argc, char** argv) {
     const std::filesystem::path model_path = opt.out / "model.bin";
     const std::filesystem::path bin_path = opt.out / "tokens.bin";
     const std::filesystem::path meta_path = opt.out / "tokens.meta";
+    const bool keep_tokens = opt.resume || opt.reuse_tokens;
     if (opt.resume && (!is_file(tok_path) || !is_file(model_path) || !is_file(bin_path) ||
                        !is_file(meta_path))) {
       throw std::runtime_error("resume");
+    }
+    if (opt.reuse_tokens && (!is_file(tok_path) || !is_file(bin_path) || !is_file(meta_path))) {
+      throw std::runtime_error("reuse-tokens");
     }
     std::filesystem::create_directories(opt.out);
 
@@ -363,7 +374,7 @@ int main(int argc, char** argv) {
     std::string prompt;
     std::vector<int32_t> ids;
     std::optional<llm::TextDataset> resume_tokens;
-    if (opt.resume) {
+    if (keep_tokens) {
       tok = llm::Tokenizer::load(tok_path);
       if (tok->vocab_size() != opt.vocab) throw std::runtime_error("vocab_size");
       resume_tokens.emplace(bin_path, meta_path);
@@ -372,7 +383,8 @@ int main(int argc, char** argv) {
         throw std::runtime_error("short corpus");
       }
       prompt = opt.prompt.empty() ? opening_of(read_book(paths.front())) : opt.prompt;
-      std::fprintf(stderr, "loaded %zu tokens\n", resume_tokens->ids().size());
+      std::fprintf(stderr, opt.resume ? "loaded %zu tokens\n" : "reusing %zu tokens\n",
+                   resume_tokens->ids().size());
     } else {
       std::vector<std::string> books;
       books.reserve(paths.size());
@@ -410,7 +422,7 @@ int main(int argc, char** argv) {
     std::vector<int32_t> valid_ids;
     if (opt.early_stop > 0) {
       if (opt.seq_len < 1) throw std::runtime_error("seq_len");
-      const std::vector<int32_t>& source = opt.resume ? resume_tokens->ids() : ids;
+      const std::vector<int32_t>& source = keep_tokens ? resume_tokens->ids() : ids;
       Holdout held = holdout_suffix(source, opt.seq_len, opt.valid_fraction);
       std::fprintf(stderr, "holdout train=%zu valid=%zu early_stop=%d eval_every=%d\n",
                    held.train.size(), held.valid.size(), opt.early_stop, opt.eval_every);
@@ -419,7 +431,7 @@ int main(int argc, char** argv) {
       resume_tokens.reset();
     }
 
-    if (!opt.resume) {
+    if (!keep_tokens) {
       llm::write_token_file(bin_path, meta_path, ids, static_cast<int32_t>(tok->vocab_size()));
       tok->save(tok_path);
       std::fprintf(stderr, "saved %s\n", tok_path.string().c_str());

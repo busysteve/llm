@@ -1,6 +1,6 @@
 # How to train from a list of books
 
-`train_books` is the file-list example in [`train_books.cpp`](train_books.cpp). It reads a list of text files, trains a byte-level BPE tokenizer and a preset transformer, writes the tokenizer and the checkpoint, then loads both and prints a continuation. A `bert-*` preset trains masked tokens and does not print a continuation. `--early-stop` can hold out a suffix of the tokens and stop when that validation loss stops falling. `--min-loss` can stop when a step's training loss reaches a threshold. SIGINT or SIGTERM saves the current step, and `--resume` continues that same run. It is a separate program from `llm_tests`.
+`train_books` is the file-list example in [`train_books.cpp`](train_books.cpp). It reads a list of text files, trains a byte-level BPE tokenizer and a preset transformer, writes the tokenizer and the checkpoint, then loads both and prints a continuation. A `bert-*` preset trains masked tokens and does not print a continuation. `--early-stop` can hold out a suffix of the tokens and stop when that validation loss stops falling. `--min-loss` can stop when a step's training loss reaches a threshold. SIGINT or SIGTERM saves the current step, `--resume` continues that same run, and `--reuse-tokens` starts a new model on the saved tokens. It is a separate program from `llm_tests`.
 
 Build from the repository root. Requirements are in the [README](../README.md).
 
@@ -41,7 +41,7 @@ Progress is printed on stderr: each file and its size, the vocab and byte count,
 YYYY-MM-DD hh:mm:ss.sss step 10 loss <loss> lr <lr> grad_norm <norm>
 ```
 
-When a signal stops the run, stdout prints `YYYY-MM-DD hh:mm:ss.sss stop step <step>` and the process exits before the continuation. When `--resume` continues a checkpoint, stderr prints `resuming step <N>` and the next stdout step is `N + 1`. When that checkpoint has already reached `--steps`, stderr prints `resume step <N> reached steps <steps>` and no further update runs.
+When a signal stops the run, stdout prints `YYYY-MM-DD hh:mm:ss.sss stop step <step>` and the process exits before the continuation. When `--resume` continues a checkpoint, stderr prints `resuming step <N>` and the next stdout step is `N + 1`. When that checkpoint has already reached `--steps`, stderr prints `resume step <N> reached steps <steps>` and no further update runs. When `--reuse-tokens` restarts on the saved stream, stderr prints `reusing <N> tokens` and the next stdout step is `1`.
 
 When `--min-loss` trips, stdout also prints:
 
@@ -112,8 +112,9 @@ Load `tokenizer.bpe` and `model.bin` together. `chat` does that for a dialogue c
 | `--temperature FLOAT` | 0.8 | `0` is greedy |
 | `--top-k N` | 40 | `0` disables top-k |
 | `--top-p FLOAT` | 0.9 | nucleus threshold |
-| `--seed N` | 1 | model init and batch order. `--resume` keeps the checkpoint weights and draws windows from this seed again |
+| `--seed N` | 1 | model init and batch order. `--resume` keeps the checkpoint weights and draws windows from this seed again. `--reuse-tokens` initializes a new model from this seed |
 | `--resume` | off | continue `--out` from its checkpoint. `--steps` is the total update count |
+| `--reuse-tokens` | off | train a new model on the tokenizer and token file already in `--out` |
 
 Weight decay stays 0.1. The cosine floor is one tenth of `--lr`. Eval is off unless `--early-stop` is positive. Defaults `--preset tiny`, `--seq-len 256`, and `--batch 4` fit a 12 GB GPU. `small` prefers 24 GB. `base` is a 24 GB model. On a smaller card keep `--seq-len` at 512 or below.
 
@@ -153,7 +154,7 @@ SIGINT or SIGTERM finishes the AdamW update already running, writes `model.bin`,
 
 `--steps` counts every update from the start of the run, including updates already in the checkpoint. The next update is that AdamW step plus one. Its learning rate is the warmup and cosine value for that step under this `--warmup`, `--lr`, and `--steps`. The schedule does not start over at step 1. A checkpoint whose step is already at least `--steps` is left as it is. stderr prints `resume step <N> reached steps <steps>`, and a causal run still prints a continuation. A larger `--steps` trains through the new total. Changing `--steps`, `--warmup`, or `--lr` changes the rate of the updates that remain. The AdamW moments stay as saved.
 
-Batch windows are drawn again from `--seed`. They are not the next draws from the interrupted process. `--early-stop` patience starts again. If the previous process ended on `--early-stop`, `model.bin` is that best step, and resume continues from it. A run without `--resume` replaces the tokenizer and the token file.
+Batch windows are drawn again from `--seed`. They are not the next draws from the interrupted process. `--early-stop` patience starts again. If the previous process ended on `--early-stop`, `model.bin` is that best step, and resume continues from it. A run without `--resume` or `--reuse-tokens` replaces the tokenizer and the token file.
 
 ```bash
 ./build/train_books --files books.txt --out run \
@@ -166,6 +167,16 @@ Batch windows are drawn again from `--seed`. They are not the next draws from th
 
 [`finetune`](finetune.md) `--resume` keeps moments for a new file list and starts that run's schedule at step 1.
 
+## Restart on saved tokens
+
+`--reuse-tokens` reads `tokenizer.bpe`, `tokens.bin`, and `tokens.meta` from `--out` and trains a new model. It does not load `model.bin`. The finished run replaces `model.bin`. The tokenizer is not trained again, and `--files` is not encoded again. `--files` is still required. When `--prompt` is omitted, the continuation prompt is the opening of the first file. `--vocab` has to match the tokenizer. `--preset` chooses the new model. The learning-rate schedule starts at step 1 under this command's `--lr`, `--warmup`, and `--steps`. `--seed` initializes that model and draws the batch windows. stderr prints `reusing <N> tokens`. Combining `--reuse-tokens` with `--resume` fails with `reuse-tokens`.
+
+```bash
+./build/train_books --files books.txt --out run \
+  --preset tiny --vocab 1024 --seq-len 256 --batch 4 --steps 1000 \
+  --reuse-tokens
+```
+
 ## When it fails
 
 Errors print `train_books: <reason>` on stderr and the process exits 1. Common reasons:
@@ -173,7 +184,7 @@ Errors print `train_books: <reason>` on stderr and the process exits 1. Common r
 | Reason | Meaning |
 |---|---|
 | `files` | the list is missing, empty, or names a path that is not a file |
-| `vocab_size` | `--vocab` is below 259, the corpus runs out of pairs before the vocab is full, or `--resume` and `--vocab`, the token file, or the checkpoint disagrees with the tokenizer |
+| `vocab_size` | `--vocab` is below 259, the corpus runs out of pairs before the vocab is full, or `--resume` or `--reuse-tokens` and `--vocab`, the token file, or the checkpoint disagrees with the tokenizer |
 | `short corpus` | the encoded files have fewer than `--seq-len + 1` tokens |
 | `short valid` | `--early-stop` is positive and the stream cannot be split into two spans of `--seq-len + 1` tokens |
 | `seq_len` | `--seq-len` is above the preset `max_seq_len` (1024, 2048 for `gpt3-*`, or 512 for `bert-*`) |
@@ -183,6 +194,7 @@ Errors print `train_books: <reason>` on stderr and the process exits 1. Common r
 | `valid_fraction` | `--valid-fraction` is not inside `(0, 1)` |
 | `preset` | the name is not `tiny`, `small`, `base`, `llama-tiny`, `llama-small`, `llama-base`, `qwen-tiny`, `qwen-small`, `qwen-base`, `gpt2-tiny`, `gpt2-small`, `gpt2-base`, `gpt3-tiny`, `gpt3-small`, `gpt3-base`, `bert-tiny`, `bert-small`, or `bert-base`, or `--resume` and that preset does not match the checkpoint |
 | `resume` | `--resume` is set and `--out` is missing `tokenizer.bpe`, `tokens.bin`, `tokens.meta`, or `model.bin` |
+| `reuse-tokens` | `--reuse-tokens` is combined with `--resume`, or `--out` is missing `tokenizer.bpe`, `tokens.bin`, or `tokens.meta` |
 | `adamw` | `--resume` found a checkpoint whose optimizer is not AdamW |
 | `optimizer block missing` | `--resume` found a checkpoint with no optimizer |
 | a flag name | the flag is unknown, or its value is missing or not a number |

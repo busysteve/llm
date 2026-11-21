@@ -76,9 +76,24 @@ bool loss_at(const std::string& log, int step, float& loss) {
   std::string line;
   bool found = false;
   while (std::getline(in, line)) {
+    const char* text = line.c_str();
+    int year = 0;
+    int month = 0;
+    int day = 0;
+    int hour = 0;
+    int minute = 0;
+    int second = 0;
+    int millis = 0;
+    int consumed = 0;
+    // Fit lines start with YYYY-MM-DD hh:mm:ss.sss. A line with no stamp still parses.
+    if (std::sscanf(text, "%d-%d-%d %d:%d:%d.%d %n", &year, &month, &day, &hour, &minute, &second,
+                    &millis, &consumed) == 7 &&
+        consumed > 0) {
+      text += consumed;
+    }
     int got = 0;
     float value = 0.f;
-    if (std::sscanf(line.c_str(), "step %d loss %f", &got, &value) == 2 && got == step) {
+    if (std::sscanf(text, "step %d loss %f", &got, &value) == 2 && got == step) {
       loss = value;
       found = true;
     }
