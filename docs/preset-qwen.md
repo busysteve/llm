@@ -19,7 +19,7 @@ Q is `num_heads * 128` wide, so the query projection is twice `d_model`. K and V
 ## Usage
 
 ```bash
-./build.sh opencl   # or: ./build.sh cuda
+./build.sh amd       # or: ./build.sh opencl, ./build.sh cuda
 cmake --build build -j --target train_books
 
 ./build/train_books --files books.txt --out run \

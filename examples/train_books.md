@@ -1,11 +1,11 @@
 # How to train from a list of books
 
-`train_books` is the file-list example in [`train_books.cpp`](train_books.cpp). It reads a list of text files, trains a byte-level BPE tokenizer and a preset transformer, writes the tokenizer and the checkpoint, then loads both and prints a continuation. A `bert-*` preset trains masked tokens and does not print a continuation. `--early-stop` can hold out a suffix of the tokens and stop when that validation loss stops falling. `--min-loss` can stop when a step's training loss reaches a threshold. It is a separate program from `llm_tests`.
+`train_books` is the file-list example in [`train_books.cpp`](train_books.cpp). It reads a list of text files, trains a byte-level BPE tokenizer and a preset transformer, writes the tokenizer and the checkpoint, then loads both and prints a continuation. A `bert-*` preset trains masked tokens and does not print a continuation. `--early-stop` can hold out a suffix of the tokens and stop when that validation loss stops falling. `--min-loss` can stop when a step's training loss reaches a threshold. SIGINT or SIGTERM saves the current step, and `--resume` continues that same run. It is a separate program from `llm_tests`.
 
 Build from the repository root. Requirements are in the [README](../README.md).
 
 ```bash
-./build.sh opencl   # or: ./build.sh cuda
+./build.sh amd       # or: ./build.sh opencl, ./build.sh cuda
 cmake --build build -j --target train_books
 ```
 
@@ -35,23 +35,25 @@ A first run with a smaller vocab spends less time in the tokenizer. Tokenizer tr
   --prompt "The morning after"
 ```
 
-Progress is printed on stderr: each file and its size, the vocab and byte count, the token count, and the paths that were saved. With `--early-stop` the stderr line `holdout train=<n> valid=<n> early_stop=<n> eval_every=<n>` follows the token count. Training steps are printed on stdout:
+Progress is printed on stderr: each file and its size, the vocab and byte count, the token count, and the paths that were saved. With `--early-stop` the stderr line `holdout train=<n> valid=<n> early_stop=<n> eval_every=<n>` follows the token count. Training steps are printed on stdout. Each of those lines starts with the local time:
 
 ```
-step 10 loss <loss> lr <lr> grad_norm <norm>
+YYYY-MM-DD hh:mm:ss.sss step 10 loss <loss> lr <lr> grad_norm <norm>
 ```
+
+When a signal stops the run, stdout prints `YYYY-MM-DD hh:mm:ss.sss stop step <step>` and the process exits before the continuation. When `--resume` continues a checkpoint, stderr prints `resuming step <N>` and the next stdout step is `N + 1`. When that checkpoint has already reached `--steps`, stderr prints `resume step <N> reached steps <steps>` and no further update runs.
 
 When `--min-loss` trips, stdout also prints:
 
 ```
-min_loss step <step> loss <loss>
+YYYY-MM-DD hh:mm:ss.sss min_loss step <step> loss <loss>
 ```
 
 `<step>` is the update that reached the threshold, and `<loss>` is that step's training loss. With `--early-stop`, validation lines are printed on the same stream:
 
 ```
-step 50 eval_ce <loss> perplexity <exp(loss)>
-early_stop step <last> best_step <best> best_eval_ce <loss>
+YYYY-MM-DD hh:mm:ss.sss step 50 eval_ce <loss> perplexity <exp(loss)>
+YYYY-MM-DD hh:mm:ss.sss early_stop step <last> best_step <best> best_eval_ce <loss>
 ```
 
 When a decoder finishes, stdout ends with:
@@ -82,7 +84,7 @@ The pad id is the mask. `encode` does not insert it. About 15% of positions are 
 | `tokens.meta` | vocab size and length for `TextDataset` |
 | `model.bin` | version-2 façade checkpoint, version 4 for a `qwen-*` preset, or version 6 for a `bert-*` preset, including AdamW moments |
 
-With `--steps` of 500 or more, `model.bin` is also written every 500 steps. The final save always runs after the last step. `--steps` below 500 writes the checkpoint once, at the end. With `--early-stop`, that final file is the best validation step, including that step's AdamW moments, even when a 500-step write was a later step. When `--min-loss` stops the run, `model.bin` is the step whose training loss reached the threshold, including that step's AdamW moments.
+With `--steps` of 500 or more, `model.bin` is also written every 500 steps. The final save always runs after the last step. `--steps` below 500 writes the checkpoint once, at the end, and also when a signal stops an earlier step. With `--early-stop`, that final file is the best validation step, including that step's AdamW moments, even when a 500-step write was a later step. When `--min-loss` stops the run, `model.bin` is the step whose training loss reached the threshold, including that step's AdamW moments. A signal writes the update that just finished, including its AdamW moments, and does not copy back an earlier validation best.
 
 Load `tokenizer.bpe` and `model.bin` together. `chat` does that for a dialogue corpus. `--plain` feeds the line as the prompt with no `User:` / `Assistant:` tags, which matches a book continuation. See [chat](chat.md).
 
@@ -110,7 +112,8 @@ Load `tokenizer.bpe` and `model.bin` together. `chat` does that for a dialogue c
 | `--temperature FLOAT` | 0.8 | `0` is greedy |
 | `--top-k N` | 40 | `0` disables top-k |
 | `--top-p FLOAT` | 0.9 | nucleus threshold |
-| `--seed N` | 1 | model init and batch order |
+| `--seed N` | 1 | model init and batch order. `--resume` keeps the checkpoint weights and draws windows from this seed again |
+| `--resume` | off | continue `--out` from its checkpoint. `--steps` is the total update count |
 
 Weight decay stays 0.1. The cosine floor is one tenth of `--lr`. Eval is off unless `--early-stop` is positive. Defaults `--preset tiny`, `--seq-len 256`, and `--batch 4` fit a 12 GB GPU. `small` prefers 24 GB. `base` is a 24 GB model. On a smaller card keep `--seq-len` at 512 or below.
 
@@ -142,6 +145,27 @@ The whole token stream stays in the training set. The weights, AdamW moments, an
   --min-loss 2.5
 ```
 
+## Stop and resume
+
+SIGINT or SIGTERM finishes the AdamW update already running, writes `model.bin`, prints `YYYY-MM-DD hh:mm:ss.sss stop step <step>`, and exits 0. It does not sample a continuation. A second signal aborts the process. The handler only sets a flag. The flag is checked after the update, not inside a GPU call.
+
+`--resume` reads `tokenizer.bpe`, `tokens.bin`, `tokens.meta`, and `model.bin` from `--out`. The tokenizer is not trained again, and `--files` is not encoded again. `--files` is still required. When `--prompt` is omitted, the continuation prompt is the opening of the first file. `--preset` and `--vocab` have to match the checkpoint and the tokenizer. The saved token stream stays the training stream, including the holdout split when `--early-stop` is set.
+
+`--steps` counts every update from the start of the run, including updates already in the checkpoint. The next update is that AdamW step plus one. Its learning rate is the warmup and cosine value for that step under this `--warmup`, `--lr`, and `--steps`. The schedule does not start over at step 1. A checkpoint whose step is already at least `--steps` is left as it is. stderr prints `resume step <N> reached steps <steps>`, and a causal run still prints a continuation. A larger `--steps` trains through the new total. Changing `--steps`, `--warmup`, or `--lr` changes the rate of the updates that remain. The AdamW moments stay as saved.
+
+Batch windows are drawn again from `--seed`. They are not the next draws from the interrupted process. `--early-stop` patience starts again. If the previous process ended on `--early-stop`, `model.bin` is that best step, and resume continues from it. A run without `--resume` replaces the tokenizer and the token file.
+
+```bash
+./build/train_books --files books.txt --out run \
+  --preset tiny --vocab 1024 --seq-len 256 --batch 4 --steps 1000
+# interrupt with Ctrl-C, then:
+./build/train_books --files books.txt --out run \
+  --preset tiny --vocab 1024 --seq-len 256 --batch 4 --steps 1000 \
+  --resume
+```
+
+[`finetune`](finetune.md) `--resume` keeps moments for a new file list and starts that run's schedule at step 1.
+
 ## When it fails
 
 Errors print `train_books: <reason>` on stderr and the process exits 1. Common reasons:
@@ -149,7 +173,7 @@ Errors print `train_books: <reason>` on stderr and the process exits 1. Common r
 | Reason | Meaning |
 |---|---|
 | `files` | the list is missing, empty, or names a path that is not a file |
-| `vocab_size` | `--vocab` is below 259, or the corpus runs out of pairs before the vocab is full |
+| `vocab_size` | `--vocab` is below 259, the corpus runs out of pairs before the vocab is full, or `--resume` and `--vocab`, the token file, or the checkpoint disagrees with the tokenizer |
 | `short corpus` | the encoded files have fewer than `--seq-len + 1` tokens |
 | `short valid` | `--early-stop` is positive and the stream cannot be split into two spans of `--seq-len + 1` tokens |
 | `seq_len` | `--seq-len` is above the preset `max_seq_len` (1024, 2048 for `gpt3-*`, or 512 for `bert-*`) |
@@ -157,7 +181,10 @@ Errors print `train_books: <reason>` on stderr and the process exits 1. Common r
 | `min_loss` | `--min-loss` is negative or infinite |
 | `eval_every` | `--early-stop` is positive and `--eval-every` is not in `1 .. --steps` |
 | `valid_fraction` | `--valid-fraction` is not inside `(0, 1)` |
-| `preset` | the name is not `tiny`, `small`, `base`, `llama-tiny`, `llama-small`, `llama-base`, `qwen-tiny`, `qwen-small`, `qwen-base`, `gpt2-tiny`, `gpt2-small`, `gpt2-base`, `gpt3-tiny`, `gpt3-small`, `gpt3-base`, `bert-tiny`, `bert-small`, or `bert-base` |
+| `preset` | the name is not `tiny`, `small`, `base`, `llama-tiny`, `llama-small`, `llama-base`, `qwen-tiny`, `qwen-small`, `qwen-base`, `gpt2-tiny`, `gpt2-small`, `gpt2-base`, `gpt3-tiny`, `gpt3-small`, `gpt3-base`, `bert-tiny`, `bert-small`, or `bert-base`, or `--resume` and that preset does not match the checkpoint |
+| `resume` | `--resume` is set and `--out` is missing `tokenizer.bpe`, `tokens.bin`, `tokens.meta`, or `model.bin` |
+| `adamw` | `--resume` found a checkpoint whose optimizer is not AdamW |
+| `optimizer block missing` | `--resume` found a checkpoint with no optimizer |
 | a flag name | the flag is unknown, or its value is missing or not a number |
 
-Library details are in [USAGE.md](../USAGE.md). The one-paragraph acceptance run is [train_tiny](train_tiny.md). To keep training that checkpoint on more text, see [finetune](finetune.md).
+Library details are in [USAGE.md](../USAGE.md). The one-paragraph acceptance run is [train_tiny](train_tiny.md). `--resume` continues this run. To keep training the checkpoint on more text, see [finetune](finetune.md).

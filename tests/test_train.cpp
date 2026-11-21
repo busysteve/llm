@@ -5,6 +5,7 @@
 #include "llm/train.hpp"
 
 #include <cmath>
+#include <csignal>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -811,6 +812,97 @@ void check_masked(nn::Context& ctx) {
   check_invalid([&] { llm::Trainer discarded(ctx, model, opt, bad); }, "mask_token");
 }
 
+void check_resume(nn::Context& ctx) {
+  const std::filesystem::path dir = std::filesystem::temp_directory_path() / "llm-resume-test";
+  std::filesystem::remove_all(dir);
+  std::filesystem::create_directories(dir);
+  const std::filesystem::path bin = dir / "tokens.bin";
+  const std::filesystem::path meta = dir / "tokens.meta";
+  const std::filesystem::path ckpt = dir / "model.bin";
+
+  constexpr int32_t kVocab = 32;
+  std::vector<int32_t> ids(64);
+  for (size_t i = 0; i < ids.size(); ++i) ids[i] = static_cast<int32_t>(i % static_cast<size_t>(kVocab));
+  llm::write_token_file(bin, meta, ids, kVocab);
+  llm::TextDataset data(bin, meta);
+  CHECK(data.ids().size() == ids.size());
+  CHECK(data.ids()[3] == ids[3]);
+
+  auto make_cfg = [&](int start, int steps) {
+    llm::TrainConfig cfg;
+    cfg.learning_rate = 1e-2f;
+    cfg.min_lr = 1e-3f;
+    cfg.weight_decay = 0.1f;
+    cfg.batch_size = 2;
+    cfg.seq_len = 4;
+    cfg.max_steps = steps;
+    cfg.start_step = start;
+    cfg.grad_accum_steps = 1;
+    cfg.warmup_steps = 1;
+    cfg.log_every = 0;
+    cfg.eval_every = 0;
+    cfg.ckpt_every = 0;
+    cfg.checkpoint_path = ckpt;
+    return cfg;
+  };
+
+  nn::Transformer model(ctx, tiny_config(kVocab), 1);
+  nn::AdamW opt(llm::adamw_groups(model, 0.1f), 1e-2f, 0.9f, 0.95f, 1e-8f);
+  llm::TrainConfig bad = make_cfg(0, 4);
+  check_invalid([&] { llm::Trainer trainer(ctx, model, opt, bad); }, "start_step");
+  bad = make_cfg(5, 4);
+  check_invalid([&] { llm::Trainer trainer(ctx, model, opt, bad); }, "start_step");
+
+  // The flag is already set, so the first update is saved and the loop returns.
+  volatile std::sig_atomic_t flag = 1;
+  llm::TrainConfig cfg = make_cfg(1, 4);
+  cfg.stop_flag = &flag;
+  llm::Trainer trainer(ctx, model, opt, cfg);
+  std::mt19937 rng(1);
+  CHECK(trainer.fit(data, nullptr, rng) == 1);
+  CHECK(opt.step_count() == 1);
+  CHECK(opt.learning_rate() == llm::learning_rate_at(cfg, 1));
+  const std::vector<std::vector<float>> stopped_params = take_params(model);
+  const std::vector<std::vector<float>> stopped_m = take_tensors(opt.m());
+  const std::vector<std::vector<float>> stopped_v = take_tensors(opt.v());
+
+  {
+    nn::Context loaded_ctx;
+    nn::Transformer::Loaded loaded = nn::Transformer::load(loaded_ctx, ckpt, nn::LoadMode::Resume);
+    CHECK(loaded.adamw.has_value());
+    CHECK(loaded.adamw->step_count() == 1);
+    CHECK(loaded.adamw->learning_rate() == llm::learning_rate_at(cfg, 1));
+    check_same_params(stopped_params, loaded.model);
+    check_same_tensors(stopped_m, loaded.adamw->m());
+    check_same_tensors(stopped_v, loaded.adamw->v());
+  }
+
+  flag = 0;
+  cfg = make_cfg(2, 4);
+  cfg.stop_flag = &flag;
+  llm::Trainer trainer2(ctx, model, opt, cfg);
+  CHECK(trainer2.fit(data, nullptr, rng) == 4);
+  CHECK(opt.step_count() == 4);
+  CHECK(opt.learning_rate() == cfg.min_lr);
+
+  // Same seed, same windows, same schedule: a stop after step 1 then steps 2..4
+  // matches one uninterrupted run of 4 steps.
+  nn::Transformer full(ctx, tiny_config(kVocab), 1);
+  nn::AdamW full_opt(llm::adamw_groups(full, 0.1f), 1e-2f, 0.9f, 0.95f, 1e-8f);
+  llm::TrainConfig full_cfg = make_cfg(1, 4);
+  full_cfg.checkpoint_path.clear();
+  llm::Trainer full_trainer(ctx, full, full_opt, full_cfg);
+  std::mt19937 full_rng(1);
+  CHECK(full_trainer.fit(data, nullptr, full_rng) == 4);
+  CHECK(full_opt.step_count() == 4);
+  CHECK(full_opt.learning_rate() == full_cfg.min_lr);
+  check_same_params(take_params(full), model);
+  check_same_tensors(take_tensors(full_opt.m()), opt.m());
+  check_same_tensors(take_tensors(full_opt.v()), opt.v());
+
+  std::filesystem::remove_all(dir);
+}
+
 }  // namespace
 
 void run_train_tests() {
@@ -820,6 +912,7 @@ void run_train_tests() {
     check_fit(ctx);
     check_early_stop(ctx);
     check_min_loss(ctx);
+    check_resume(ctx);
     check_generate(ctx);
     check_masked(ctx);
   }

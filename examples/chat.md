@@ -5,7 +5,7 @@
 Build from the repository root. Requirements are in the [README](../README.md).
 
 ```bash
-./build.sh opencl   # or: ./build.sh cuda
+./build.sh amd       # or: ./build.sh opencl, ./build.sh cuda
 cmake --build build -j --target train_books
 cmake --build build -j --target chat
 ```

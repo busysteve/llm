@@ -2,7 +2,7 @@
 
 A C++17 library for small decoder-only language models and a BERT encoder, built beside [`nn`](../nn). This tree is the tokenizer, the token dataset, transformer presets, the trainer, and the generator.
 
-Public headers live under `include/llm/` and do not include CUDA or OpenCL headers. The `llm` target links `nn` and pthread. That library is either the CUDA tree [`nn`](../nn) or the OpenCL tree [`nnCL`](../nnCL).
+Public headers live under `include/llm/` and do not include CUDA, HIP, or OpenCL headers. The `llm` target links `nn` and pthread. That library is the CUDA tree [`nn`](../nn), the OpenCL tree [`nnCL`](../nnCL), or the ROCm tree [`nnROCm`](../nnROCm).
 
 ## Requirements
 
@@ -10,11 +10,13 @@ Public headers live under `include/llm/` and do not include CUDA or OpenCL heade
 - One backend checkout next to this tree:
   - CUDA: `../nn`, plus the CUDA Toolkit and cuDNN that `nn` needs. `CMAKE_CUDA_ARCHITECTURES` defaults to `86`. If the default GCC is newer than 15, `./build.sh` uses `g++-15`.
   - OpenCL: `../nnCL`, plus an OpenCL ICD and a GPU. Do not set `RUSTICL_ENABLE`.
+  - ROCm: `../nnROCm`, plus hipBLAS and rocBLAS. `CMAKE_HIP_ARCHITECTURES` defaults to `gfx1152`. The HIP compiler is `amdclang++`, not `hipcc`.
 
-`./build.sh cuda` configures against `../nn`. `./build.sh opencl` configures against `../nnCL`. With no argument, `NN_SOURCE` is used when it is set; otherwise OpenCL is chosen when `../nnCL` is present and `nvcc` is not. `add_subdirectory(... EXCLUDE_FROM_ALL)` builds `nn` only as a dependency of `llm`, so that project's tests are not part of `all`.
+`./build.sh cuda` configures against `../nn`. `./build.sh opencl` configures against `../nnCL`. `./build.sh amd` configures against `../nnROCm`. With no argument, `NN_SOURCE` is used when it is set; otherwise OpenCL is chosen when `../nnCL` is present and `nvcc` is not. A build directory configured for a different sibling is cleared first. `add_subdirectory(... EXCLUDE_FROM_ALL)` builds `nn` only as a dependency of `llm`, so that project's tests are not part of `all`.
 
 ```bash
-./build.sh opencl
+./build.sh amd
+# or: ./build.sh opencl
 # or: ./build.sh cuda
 ```
 
@@ -35,7 +37,7 @@ cmake --build build -j --target finetune
 cmake --build build -j --target gguf
 ```
 
-`train_tiny` is the acceptance example. It is not part of `llm_tests`. `train_books` trains from a list of text files, writes `tokenizer.bpe` and `model.bin`, then loads those files and generates. `chat` loads that directory and continues a `User:` / `Assistant:` transcript, or with `--plain` continues the line as a prompt. `finetune` keeps training one of those checkpoints on a new file list. `gguf` converts `model.bin` to an `nnllm` GGUF and back, can write a llama.cpp GGUF from the same checkpoint, and can convert a public llama.cpp GGUF into a `chat` directory. Walkthroughs: [train_tiny](examples/train_tiny.md), [train_chat](examples/train_chat.md), [train_bert_chat](examples/train_bert_chat.md), [train_books](examples/train_books.md), [chat](examples/chat.md), [finetune](examples/finetune.md), [gguf](examples/gguf.md). Library details are in [USAGE.md](USAGE.md).
+`train_tiny` is the acceptance example. It is not part of `llm_tests`. `train_books` trains from a list of text files, writes `tokenizer.bpe` and `model.bin`, then loads those files and generates. SIGINT saves that checkpoint, and `--resume` continues the same run. `chat` loads that directory and continues a `User:` / `Assistant:` transcript, or with `--plain` continues the line as a prompt. `finetune` keeps training one of those checkpoints on a new file list. `gguf` converts `model.bin` to an `nnllm` GGUF and back, can write a llama.cpp GGUF from the same checkpoint, and can convert a public llama.cpp GGUF into a `chat` directory. Walkthroughs: [train_tiny](examples/train_tiny.md), [train_chat](examples/train_chat.md), [train_bert_chat](examples/train_bert_chat.md), [train_books](examples/train_books.md), [chat](examples/chat.md), [finetune](examples/finetune.md), [gguf](examples/gguf.md). Library details are in [USAGE.md](USAGE.md).
 
 ## Layout
 

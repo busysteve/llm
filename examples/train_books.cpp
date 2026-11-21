@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <csignal>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -20,6 +21,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include <random>
@@ -47,7 +49,34 @@ struct Options {
   int top_k = 40;
   float top_p = 0.9f;
   int seed = 1;
+  bool resume = false;
   std::string prompt;
+};
+
+volatile std::sig_atomic_t g_stop = 0;
+
+void on_stop(int sig) {
+  if (g_stop != 0) {
+    std::signal(sig, SIG_DFL);
+    std::raise(sig);
+    return;
+  }
+  g_stop = 1;
+}
+
+// Installs the stop handler for one training call. A second signal aborts.
+struct StopGuard {
+  StopGuard() {
+    g_stop = 0;
+    std::signal(SIGINT, on_stop);
+    std::signal(SIGTERM, on_stop);
+  }
+  ~StopGuard() {
+    std::signal(SIGINT, SIG_DFL);
+    std::signal(SIGTERM, SIG_DFL);
+  }
+  StopGuard(const StopGuard&) = delete;
+  StopGuard& operator=(const StopGuard&) = delete;
 };
 
 void usage() {
@@ -60,6 +89,11 @@ void usage() {
       "Trains a byte-level BPE tokenizer on those files, trains a preset\n"
       "transformer, writes tokenizer.bpe and model.bin, then loads both and\n"
       "generates a continuation.\n"
+      "\n"
+      "SIGINT or SIGTERM finishes the current update, writes model.bin, and\n"
+      "exits without sampling. --resume continues that checkpoint. Weights,\n"
+      "AdamW moments, and the learning-rate step are kept. --steps is the\n"
+      "total update count from the start of the run.\n"
       "\n"
       "  --preset tiny|small|base|llama-tiny|llama-small|llama-base|\n"
       "          qwen-tiny|qwen-small|qwen-base|\n"
@@ -92,6 +126,8 @@ void usage() {
       "  --top-k N                  default 40 (0 disables)\n"
       "  --top-p FLOAT              default 0.9\n"
       "  --seed N                   default 1\n"
+      "  --resume                   continue --out. Requires tokenizer.bpe,\n"
+      "                             tokens.bin, tokens.meta, and model.bin.\n"
       "\n"
       "Each book is one tokenizer string, then encoded with an eos token appended.\n"
       "Tokenizer training scans the corpus once per merge, so a large vocab on\n"
@@ -166,6 +202,7 @@ Options parse(int argc, char** argv) {
     else if (flag == "--top-k") opt.top_k = need_int(i, argc, argv);
     else if (flag == "--top-p") opt.top_p = need_float(i, argc, argv);
     else if (flag == "--seed") opt.seed = need_int(i, argc, argv);
+    else if (flag == "--resume") opt.resume = true;
     else throw std::runtime_error(argv[i]);
   }
   if (help) {
@@ -294,6 +331,17 @@ nn::TransformerConfig preset_config(const std::string& name, int vocab) {
   throw std::runtime_error("preset");
 }
 
+bool same_config(const nn::TransformerConfig& a, const nn::TransformerConfig& b) {
+  return a.vocab_size == b.vocab_size && a.d_model == b.d_model && a.num_heads == b.num_heads &&
+         a.num_layers == b.num_layers && a.d_ff == b.d_ff && a.max_seq_len == b.max_seq_len &&
+         a.dropout == b.dropout && a.tie_embeddings == b.tie_embeddings && a.bias == b.bias &&
+         a.activation == b.activation && a.positional == b.positional && a.head_dim == b.head_dim &&
+         a.num_kv_heads == b.num_kv_heads && a.qk_norm == b.qk_norm && a.rope_theta == b.rope_theta &&
+         a.rms_eps == b.rms_eps && a.causal == b.causal && a.type_vocab_size == b.type_vocab_size;
+}
+
+bool is_file(const std::filesystem::path& path) { return std::filesystem::is_regular_file(path); }
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -301,59 +349,86 @@ int main(int argc, char** argv) {
     const Options opt = parse(argc, argv);
     const std::vector<std::filesystem::path> paths = read_list(opt.files);
 
-    std::vector<std::string> books;
-    books.reserve(paths.size());
-    int64_t bytes = 0;
-    for (const std::filesystem::path& path : paths) {
-      books.push_back(read_book(path));
-      bytes += static_cast<int64_t>(books.back().size());
-      std::fprintf(stderr, "read %s (%zu bytes)\n", path.string().c_str(), books.back().size());
+    const std::filesystem::path tok_path = opt.out / "tokenizer.bpe";
+    const std::filesystem::path model_path = opt.out / "model.bin";
+    const std::filesystem::path bin_path = opt.out / "tokens.bin";
+    const std::filesystem::path meta_path = opt.out / "tokens.meta";
+    if (opt.resume && (!is_file(tok_path) || !is_file(model_path) || !is_file(bin_path) ||
+                       !is_file(meta_path))) {
+      throw std::runtime_error("resume");
     }
-    const std::string prompt = opt.prompt.empty() ? opening_of(books.front()) : opt.prompt;
+    std::filesystem::create_directories(opt.out);
 
-    std::fprintf(stderr, "training tokenizer vocab=%d on %zu books, %lld bytes\n", opt.vocab,
-                 books.size(), static_cast<long long>(bytes));
-    const std::unique_ptr<llm::BpeTokenizer> tok = llm::BpeTokenizer::train(books, opt.vocab);
-
-    llm::EncodeOptions encode_opt;
-    encode_opt.add_eos = true;
+    std::unique_ptr<llm::Tokenizer> tok;
+    std::string prompt;
     std::vector<int32_t> ids;
-    for (const std::string& book : books) {
-      const std::vector<int32_t> part = tok->encode(book, encode_opt);
-      ids.insert(ids.end(), part.begin(), part.end());
-    }
-    books.clear();
-    books.shrink_to_fit();
-    std::fprintf(stderr, "encoded %zu tokens\n", ids.size());
-    if (static_cast<int64_t>(ids.size()) < static_cast<int64_t>(opt.seq_len) + 1) {
-      throw std::runtime_error("short corpus");
+    std::optional<llm::TextDataset> resume_tokens;
+    if (opt.resume) {
+      tok = llm::Tokenizer::load(tok_path);
+      if (tok->vocab_size() != opt.vocab) throw std::runtime_error("vocab_size");
+      resume_tokens.emplace(bin_path, meta_path);
+      if (resume_tokens->vocab_size() != tok->vocab_size()) throw std::runtime_error("vocab_size");
+      if (resume_tokens->numel() < static_cast<int64_t>(opt.seq_len) + 1) {
+        throw std::runtime_error("short corpus");
+      }
+      prompt = opt.prompt.empty() ? opening_of(read_book(paths.front())) : opt.prompt;
+      std::fprintf(stderr, "loaded %zu tokens\n", resume_tokens->ids().size());
+    } else {
+      std::vector<std::string> books;
+      books.reserve(paths.size());
+      int64_t bytes = 0;
+      for (const std::filesystem::path& path : paths) {
+        books.push_back(read_book(path));
+        bytes += static_cast<int64_t>(books.back().size());
+        std::fprintf(stderr, "read %s (%zu bytes)\n", path.string().c_str(), books.back().size());
+      }
+      prompt = opt.prompt.empty() ? opening_of(books.front()) : opt.prompt;
+
+      std::fprintf(stderr, "training tokenizer vocab=%d on %zu books, %lld bytes\n", opt.vocab,
+                   books.size(), static_cast<long long>(bytes));
+      tok = llm::BpeTokenizer::train(books, opt.vocab);
+
+      llm::EncodeOptions encode_opt;
+      encode_opt.add_eos = true;
+      for (const std::string& book : books) {
+        const std::vector<int32_t> part = tok->encode(book, encode_opt);
+        ids.insert(ids.end(), part.begin(), part.end());
+      }
+      books.clear();
+      books.shrink_to_fit();
+      std::fprintf(stderr, "encoded %zu tokens\n", ids.size());
+      if (static_cast<int64_t>(ids.size()) < static_cast<int64_t>(opt.seq_len) + 1) {
+        throw std::runtime_error("short corpus");
+      }
     }
 
     const nn::TransformerConfig config = preset_config(opt.preset, tok->vocab_size());
     if (opt.seq_len > config.max_seq_len) throw std::runtime_error("seq_len");
+    const bool encoder = !config.causal;
 
     std::vector<int32_t> train_ids;
     std::vector<int32_t> valid_ids;
     if (opt.early_stop > 0) {
       if (opt.seq_len < 1) throw std::runtime_error("seq_len");
-      Holdout held = holdout_suffix(ids, opt.seq_len, opt.valid_fraction);
+      const std::vector<int32_t>& source = opt.resume ? resume_tokens->ids() : ids;
+      Holdout held = holdout_suffix(source, opt.seq_len, opt.valid_fraction);
       std::fprintf(stderr, "holdout train=%zu valid=%zu early_stop=%d eval_every=%d\n",
                    held.train.size(), held.valid.size(), opt.early_stop, opt.eval_every);
       train_ids = std::move(held.train);
       valid_ids = std::move(held.valid);
+      resume_tokens.reset();
     }
 
-    std::filesystem::create_directories(opt.out);
-    const std::filesystem::path tok_path = opt.out / "tokenizer.bpe";
-    const std::filesystem::path model_path = opt.out / "model.bin";
-    const std::filesystem::path bin_path = opt.out / "tokens.bin";
-    const std::filesystem::path meta_path = opt.out / "tokens.meta";
-    llm::write_token_file(bin_path, meta_path, ids, static_cast<int32_t>(tok->vocab_size()));
+    if (!opt.resume) {
+      llm::write_token_file(bin_path, meta_path, ids, static_cast<int32_t>(tok->vocab_size()));
+      tok->save(tok_path);
+      std::fprintf(stderr, "saved %s\n", tok_path.string().c_str());
+    }
     ids.clear();
     ids.shrink_to_fit();
-    tok->save(tok_path);
-    std::fprintf(stderr, "saved %s\n", tok_path.string().c_str());
 
+    bool stopped = false;
+    bool saved_model = false;
     {
       // Release the training context before the inference load allocates another model.
       std::optional<llm::TextDataset> train_mem;
@@ -367,46 +442,90 @@ int main(int argc, char** argv) {
         valid_mem.emplace(std::move(valid_ids), vocab);
         train_data = &*train_mem;
         valid_data = &*valid_mem;
+      } else if (resume_tokens) {
+        file_data.emplace(std::move(*resume_tokens));
+        resume_tokens.reset();
+        train_data = &*file_data;
       } else {
         file_data.emplace(bin_path, meta_path);
         train_data = &*file_data;
       }
+
       nn::Context ctx;
-      nn::Transformer model(ctx, config, static_cast<uint32_t>(opt.seed));
-      nn::AdamW optimizer(llm::adamw_groups(model, 0.1f), opt.lr, 0.9f, 0.95f, 1e-8f);
-
-      llm::TrainConfig cfg;
-      cfg.learning_rate = opt.lr;
-      cfg.min_lr = opt.lr * 0.1f;
-      cfg.weight_decay = 0.1f;
-      cfg.batch_size = opt.batch;
-      cfg.seq_len = opt.seq_len;
-      cfg.max_steps = opt.steps;
-      cfg.grad_accum_steps = opt.accum;
-      cfg.warmup_steps = opt.warmup;
-      cfg.log_every = opt.log_every;
-      cfg.eval_every = 0;
-      cfg.ckpt_every = opt.steps >= 500 ? 500 : 0;
-      cfg.checkpoint_path = model_path;
-      cfg.min_loss = opt.min_loss;
-      if (opt.early_stop > 0) {
-        cfg.eval_every = opt.eval_every;
-        cfg.eval_batches = 20;
-        cfg.early_stop_patience = opt.early_stop;
-      }
-      if (!config.causal) {
-        cfg.masked_lm = true;
-        cfg.mask_token = tok->pad_id();
+      std::optional<nn::Transformer> fresh;
+      std::optional<nn::Transformer::Loaded> loaded;
+      nn::Transformer* model = nullptr;
+      std::optional<nn::AdamW> fresh_opt;
+      nn::AdamW* optimizer = nullptr;
+      uint64_t done = 0;
+      if (opt.resume) {
+        loaded.emplace(nn::Transformer::load(ctx, model_path, nn::LoadMode::Resume));
+        model = &loaded->model;
+        const nn::TransformerConfig& got = std::get<nn::TransformerConfig>(model->network().config());
+        if (got.vocab_size != tok->vocab_size()) throw std::runtime_error("vocab_size");
+        if (!same_config(got, config)) throw std::runtime_error("preset");
+        if (!loaded->adamw) throw std::runtime_error("adamw");
+        optimizer = &*loaded->adamw;
+        done = optimizer->step_count();
+      } else {
+        fresh.emplace(ctx, config, static_cast<uint32_t>(opt.seed));
+        model = &*fresh;
+        fresh_opt.emplace(llm::adamw_groups(*model, 0.1f), opt.lr, 0.9f, 0.95f, 1e-8f);
+        optimizer = &*fresh_opt;
       }
 
-      std::mt19937 rng(static_cast<uint32_t>(opt.seed));
-      llm::Trainer trainer(ctx, model, optimizer, cfg);
-      trainer.fit(*train_data, valid_data, rng);
-      model.save(model_path, &optimizer);
+      // --steps is the total schedule length. A finished checkpoint is left as it is.
+      const bool train_more = !opt.resume || done < static_cast<uint64_t>(opt.steps);
+      if (train_more) {
+        if (done > static_cast<uint64_t>(std::numeric_limits<int>::max()) - 1) {
+          throw std::runtime_error("resume");
+        }
+        if (opt.resume) {
+          std::fprintf(stderr, "resuming step %llu\n", static_cast<unsigned long long>(done));
+        }
+        llm::TrainConfig cfg;
+        cfg.learning_rate = opt.lr;
+        cfg.min_lr = opt.lr * 0.1f;
+        cfg.weight_decay = 0.1f;
+        cfg.batch_size = opt.batch;
+        cfg.seq_len = opt.seq_len;
+        cfg.max_steps = opt.steps;
+        cfg.start_step = static_cast<int>(done) + 1;
+        cfg.grad_accum_steps = opt.accum;
+        cfg.warmup_steps = opt.warmup;
+        cfg.log_every = opt.log_every;
+        cfg.eval_every = 0;
+        cfg.ckpt_every = opt.steps >= 500 ? 500 : 0;
+        cfg.checkpoint_path = model_path;
+        cfg.min_loss = opt.min_loss;
+        cfg.stop_flag = &g_stop;
+        if (opt.early_stop > 0) {
+          cfg.eval_every = opt.eval_every;
+          cfg.eval_batches = 20;
+          cfg.early_stop_patience = opt.early_stop;
+        }
+        if (encoder) {
+          cfg.masked_lm = true;
+          cfg.mask_token = tok->pad_id();
+        }
+
+        StopGuard guard;
+        std::mt19937 rng(static_cast<uint32_t>(opt.seed));
+        llm::Trainer trainer(ctx, *model, *optimizer, cfg);
+        trainer.fit(*train_data, valid_data, rng);
+        // A signal already saved this step inside fit. Skip the second write.
+        if (g_stop == 0) model->save(model_path, optimizer);
+        stopped = g_stop != 0;
+        saved_model = true;
+      } else {
+        std::fprintf(stderr, "resume step %llu reached steps %d\n",
+                     static_cast<unsigned long long>(done), opt.steps);
+      }
     }
-    std::fprintf(stderr, "saved %s\n", model_path.string().c_str());
+    if (saved_model) std::fprintf(stderr, "saved %s\n", model_path.string().c_str());
+    if (stopped) return 0;
 
-    if (!config.causal) {
+    if (encoder) {
       std::printf("encoder: masked lm, mask token %d\n", tok->pad_id());
       return 0;
     }

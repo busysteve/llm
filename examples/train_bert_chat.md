@@ -5,12 +5,12 @@
 Build from the repository root. Requirements are in the [README](../README.md).
 
 ```bash
-./build.sh opencl   # or: ./build.sh cuda
+./build.sh amd       # or: ./build.sh opencl, ./build.sh cuda
 cmake --build build -j --target train_bert_chat
 ./build/train_bert_chat
 ```
 
-For the CUDA backend, `CMAKE_CUDA_ARCHITECTURES` defaults to `86`. Set it to the GPU you have before `./build.sh cuda`.
+For the CUDA backend, `CMAKE_CUDA_ARCHITECTURES` defaults to `86`. Set it to the GPU you have before `./build.sh cuda`. For ROCm, `CMAKE_HIP_ARCHITECTURES` defaults to `gfx1152`. Set it before `./build.sh amd`.
 
 ## What it trains on
 

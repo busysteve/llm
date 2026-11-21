@@ -19,7 +19,7 @@ SwiGLU's first linear writes `2 * d_ff`. Dropout is 0. Embeddings are untied. Bi
 ## Usage
 
 ```bash
-./build.sh opencl   # or: ./build.sh cuda
+./build.sh amd       # or: ./build.sh opencl, ./build.sh cuda
 cmake --build build -j --target train_books
 
 ./build/train_books --files books.txt --out run \

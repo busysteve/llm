@@ -2,8 +2,11 @@
 
 #include "nn/loss.hpp"
 
+#include <cstdarg>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <ctime>
 #include <limits>
 #include <random>
 #include <stdexcept>
@@ -15,6 +18,27 @@ namespace llm {
 namespace {
 
 constexpr float kPi = 3.14159265358979323846f;
+
+// Local time, then the training line. Format: YYYY-MM-DD hh:mm:ss.sss
+void log_line(const char* fmt, ...) {
+  const auto now = std::chrono::system_clock::now().time_since_epoch();
+  const auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(now);
+  const std::time_t seconds = static_cast<std::time_t>(millis.count() / 1000);
+  int ms = static_cast<int>(millis.count() % 1000);
+  if (ms < 0) ms += 1000;
+  std::tm local{};
+  if (localtime_r(&seconds, &local) == nullptr) {
+    std::fprintf(stdout, "0000-00-00 00:00:00.000 ");
+  } else {
+    std::fprintf(stdout, "%04d-%02d-%02d %02d:%02d:%02d.%03d ", local.tm_year + 1900,
+                 local.tm_mon + 1, local.tm_mday, local.tm_hour, local.tm_min, local.tm_sec, ms);
+  }
+  va_list args;
+  va_start(args, fmt);
+  std::vfprintf(stdout, fmt, args);
+  va_end(args);
+  std::fflush(stdout);
+}
 
 void require_positive(int value, const char* name) {
   if (value <= 0) throw std::invalid_argument(name);
@@ -32,6 +56,8 @@ void validate(const TrainConfig& cfg) {
   require_positive(cfg.batch_size, "batch_size");
   require_positive(cfg.seq_len, "seq_len");
   require_positive(cfg.max_steps, "max_steps");
+  require_positive(cfg.start_step, "start_step");
+  if (cfg.start_step > cfg.max_steps) throw std::invalid_argument("start_step");
   require_positive(cfg.grad_accum_steps, "grad_accum_steps");
   require_non_negative(cfg.warmup_steps, "warmup_steps");
   require_non_negative(cfg.log_every, "log_every");
@@ -177,7 +203,7 @@ int Trainer::fit(TextDataset& train, TextDataset* valid, std::mt19937& rng) {
   bool hit_min_loss = false;
   float stop_loss = 0.f;
 
-  for (int step = 1; step <= cfg_.max_steps; ++step) {
+  for (int step = cfg_.start_step; step <= cfg_.max_steps; ++step) {
     const float lr = learning_rate_at(cfg_, step);
     opt_->set_learning_rate(lr);
     model_->train();
@@ -214,8 +240,16 @@ int Trainer::fit(TextDataset& train, TextDataset* valid, std::mt19937& rng) {
     opt_->step();
 
     if (cfg_.log_every > 0 && step % cfg_.log_every == 0) {
-      std::printf("step %d loss %.6f lr %.8g grad_norm %.6f\n", step, loss_value, lr, grad_norm);
-      std::fflush(stdout);
+      log_line("step %d loss %.6f lr %.8g grad_norm %.6f\n", step, loss_value, lr, grad_norm);
+    }
+
+    // A signal handler only sets the flag. The save runs here, after the step.
+    if (cfg_.stop_flag != nullptr && *cfg_.stop_flag != 0) {
+      model_->zero_grad();
+      model_->train();
+      if (!cfg_.checkpoint_path.empty()) model_->save(cfg_.checkpoint_path, opt_);
+      log_line("stop step %d\n", step);
+      return step;
     }
 
     // The logged loss is this step's mean, measured before the update.
@@ -232,8 +266,7 @@ int Trainer::fit(TextDataset& train, TextDataset* valid, std::mt19937& rng) {
       model_->eval();
       const float mean_ce = mean_loss(*valid, *ctx_, *model_, cfg_, rng);
       const float perplexity = std::exp(mean_ce);
-      std::printf("step %d eval_ce %.6f perplexity %.6f\n", step, mean_ce, perplexity);
-      std::fflush(stdout);
+      log_line("step %d eval_ce %.6f perplexity %.6f\n", step, mean_ce, perplexity);
       model_->train();
 
       if (cfg_.early_stop_patience > 0) {
@@ -267,8 +300,7 @@ int Trainer::fit(TextDataset& train, TextDataset* valid, std::mt19937& rng) {
     model_->zero_grad();
     model_->train();
     if (!cfg_.checkpoint_path.empty()) model_->save(cfg_.checkpoint_path, opt_);
-    std::printf("min_loss step %d loss %.6f\n", last_step, stop_loss);
-    std::fflush(stdout);
+    log_line("min_loss step %d loss %.6f\n", last_step, stop_loss);
     return last_step;
   }
 
@@ -276,9 +308,8 @@ int Trainer::fit(TextDataset& train, TextDataset* valid, std::mt19937& rng) {
     // Moments are restored with the weights so a resumed AdamW matches that step.
     restore_best(best, *ctx_, *model_, *opt_);
     if (!cfg_.checkpoint_path.empty()) model_->save(cfg_.checkpoint_path, opt_);
-    std::printf("early_stop step %d best_step %d best_eval_ce %.6f\n", last_step, best.step,
-                best.eval_ce);
-    std::fflush(stdout);
+    log_line("early_stop step %d best_step %d best_eval_ce %.6f\n", last_step, best.step,
+             best.eval_ce);
   }
   return last_step;
 }

@@ -4,6 +4,7 @@
 #include "nn/optim.hpp"
 #include "nn/transformer.hpp"
 
+#include <csignal>
 #include <filesystem>
 #include <limits>
 #include <random>
@@ -18,6 +19,9 @@ struct TrainConfig {
   int batch_size = 8;
   int seq_len = 512;
   int max_steps = 10000;
+  // First step fit runs. 1-based, and at most max_steps. A resumed run sets
+  // this to the checkpoint AdamW step plus one so the schedule continues.
+  int start_step = 1;
   int grad_accum_steps = 1;
   int warmup_steps = 100;
   float min_lr = 3e-5f;
@@ -41,6 +45,9 @@ struct TrainConfig {
   float mask_prob = 0.15f;
   int mask_token = -1;
   std::filesystem::path checkpoint_path;
+  // Polled after each optimizer step. A nonzero value saves checkpoint_path
+  // and returns that step. A signal handler may set the flag.
+  volatile std::sig_atomic_t* stop_flag = nullptr;
 };
 
 // step is 1-based. This is the schedule fit uses.
@@ -49,7 +56,8 @@ float learning_rate_at(const TrainConfig& cfg, int step);
 class Trainer {
  public:
   Trainer(nn::Context& ctx, nn::Transformer& model, nn::AdamW& opt, TrainConfig cfg);
-  // Last step that ran. Less than max_steps when patience or min_loss stops early.
+  // Last step that ran. Less than max_steps when patience, min_loss, or the
+  // stop flag ends the run before the last scheduled step.
   int fit(TextDataset& train, TextDataset* valid, std::mt19937& rng);
 
  private:

@@ -22,6 +22,7 @@ class TextDataset {
   TextDataset(std::vector<int32_t> ids, int32_t vocab_size);
   int64_t numel() const;
   int32_t vocab_size() const;
+  const std::vector<int32_t>& ids() const { return ids_; }
   Batch next(nn::Context& ctx, int batch_size, int seq_len, std::mt19937& rng);
 
  private:

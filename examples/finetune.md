@@ -7,7 +7,7 @@ The checkpoint's vocab and model shape stay as they are. `finetune` reads this l
 Build from the repository root. Requirements are in the [README](../README.md).
 
 ```bash
-./build.sh opencl   # or: ./build.sh cuda
+./build.sh amd       # or: ./build.sh opencl, ./build.sh cuda
 cmake --build build -j --target finetune
 ```
 
@@ -35,7 +35,7 @@ Use text you have the rights to train on.
   --prompt "The morning after"
 ```
 
-The default peak learning rate is `1e-4`. Warmup defaults to 0. The cosine floor is one tenth of `--lr`. The schedule starts at step 1 of this run. With `--warmup 0` that first step is already on the cosine, and step `--steps` is the floor. The schedule does not continue from the checkpoint's optimizer step.
+The default peak learning rate is `1e-4`. Warmup defaults to 0. The cosine floor is one tenth of `--lr`. The schedule starts at step 1 of this run. With `--warmup 0` that first step is already on the cosine, and step `--steps` is the floor. The schedule does not continue from the checkpoint's optimizer step. `train_books --resume` is the command that continues a `train_books` schedule from the checkpoint step.
 
 Without `--resume`, the run builds a fresh AdamW at `--lr` and `--wd` (default weight decay `0.1`). With `--resume`, AdamW moments and the optimizer step stored in the checkpoint are kept, and `--wd` is ignored. The learning-rate flags still apply.
 
@@ -43,7 +43,7 @@ Without `--resume`, the run builds a fresh AdamW at `--lr` and `--wd` (default w
 ./build/finetune --from run --files more.txt --out run-ft --resume --lr 1e-4
 ```
 
-Progress on stderr names each file, the token count, the loaded vocab, `max_seq_len`, layers, and `d_model`, then either `fresh AdamW` or `resuming AdamW step N`. Steps print on stdout. For a causal checkpoint the process then drops the training context, loads `--out` with `LoadMode::Inference`, and prints:
+Progress on stderr names each file, the token count, the loaded vocab, `max_seq_len`, layers, and `d_model`, then either `fresh AdamW` or `resuming AdamW step N`. Steps print on stdout. Each line starts with the local time `YYYY-MM-DD hh:mm:ss.sss`. For a causal checkpoint the process then drops the training context, loads `--out` with `LoadMode::Inference`, and prints:
 
 ```
 prompt: The morning after
