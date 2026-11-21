@@ -2,7 +2,7 @@
 
 A C++17 library for small decoder-only language models and a BERT encoder, built beside [`nnCUDA`](../nnCUDA). This tree is the tokenizer, the token dataset, transformer presets, the trainer, and the generator.
 
-Public headers live under `include/llm/` and do not include CUDA, HIP, or OpenCL headers. The `llm` target links `nn` and pthread. That library is the CUDA tree [`nnCUDA`](../nnCUDA), the OpenCL tree [`nnCL`](../nnCL), or the ROCm tree [`nnROCm`](../nnROCm).
+Public headers live under `include/llm/` and do not include CUDA, HIP, OpenCL, or SYCL headers. The `llm` target links `nn` and pthread. That library is the CUDA tree [`nnCUDA`](../nnCUDA), the OpenCL tree [`nnCL`](../nnCL), the ROCm tree [`nnROCm`](../nnROCm), or the Intel Arc tree [`nnArc`](../nnArc).
 
 ## Requirements
 
@@ -11,13 +11,15 @@ Public headers live under `include/llm/` and do not include CUDA, HIP, or OpenCL
   - CUDA: `../nnCUDA`, plus the CUDA Toolkit and cuDNN that `nn` needs. `CMAKE_CUDA_ARCHITECTURES` defaults to `86`. If the default GCC is newer than 15, `./build.sh` uses `g++-15`.
   - OpenCL: `../nnCL`, plus an OpenCL ICD and a GPU. Do not set `RUSTICL_ENABLE`.
   - ROCm: `../nnROCm`, plus hipBLAS and rocBLAS. `CMAKE_HIP_ARCHITECTURES` defaults to `gfx1152`. The HIP compiler is `amdclang++`, not `hipcc`.
+  - Arc: `../nnArc`, plus Intel oneAPI DPC++ (`icpx`) and oneMKL SYCL BLAS. Kernels are JIT SPIR-V. There is no architecture flag. `./build.sh arc` exits if `icpx` is missing.
 
-`./build.sh cuda` configures against `../nnCUDA`. `./build.sh opencl` configures against `../nnCL`. `./build.sh amd` configures against `../nnROCm`. With no argument, `NN_SOURCE` is used when it is set; otherwise OpenCL is chosen when `../nnCL` is present and `nvcc` is not. A build directory configured for a different sibling is cleared first. `add_subdirectory(... EXCLUDE_FROM_ALL)` builds `nn` only as a dependency of `llm`, so that project's tests are not part of `all`.
+`./build.sh cuda` configures against `../nnCUDA`. `./build.sh opencl` configures against `../nnCL`. `./build.sh amd` configures against `../nnROCm`. `./build.sh arc` configures against `../nnArc`. With no argument, `NN_SOURCE` is used when it is set; otherwise OpenCL is chosen when `../nnCL` is present and `nvcc` is not. A build directory configured for a different sibling is cleared first. `add_subdirectory(... EXCLUDE_FROM_ALL)` builds `nn` only as a dependency of `llm`, so that project's tests are not part of `all`.
 
 ```bash
 ./build.sh amd
 # or: ./build.sh opencl
 # or: ./build.sh cuda
+# or: ./build.sh arc
 ```
 
 The script configures `build/`, then builds and runs `llm_tests` and `train_tiny`, and builds `train_books`, `chat`, and `gguf`. To build one target after configuring:

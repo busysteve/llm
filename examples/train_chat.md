@@ -5,12 +5,12 @@
 Build from the repository root. Requirements are in the [README](../README.md).
 
 ```bash
-./build.sh amd       # or: ./build.sh opencl, ./build.sh cuda
+./build.sh amd       # or: ./build.sh opencl, ./build.sh cuda, ./build.sh arc
 cmake --build build -j --target train_chat
 ./build/train_chat
 ```
 
-For the CUDA backend, `CMAKE_CUDA_ARCHITECTURES` defaults to `86`. Set it to the GPU you have before `./build.sh cuda`. For ROCm, `CMAKE_HIP_ARCHITECTURES` defaults to `gfx1152`. Set it before `./build.sh amd`.
+For the CUDA backend, `CMAKE_CUDA_ARCHITECTURES` defaults to `86`. Set it to the GPU you have before `./build.sh cuda`. For ROCm, `CMAKE_HIP_ARCHITECTURES` defaults to `gfx1152`. Set it before `./build.sh amd`. For Arc, `./build.sh arc` uses `icpx` and JIT SPIR-V. There is no architecture flag.
 
 ## What it trains on
 

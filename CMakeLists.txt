@@ -6,19 +6,24 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Sibling checkout of CUDA nnCUDA (../nnCUDA), OpenCL nnCL (../nnCL), or ROCm nnROCm (../nnROCm).
-# ./build.sh cuda|opencl|amd sets this. The selected tree's own tests stay out of `all`.
-set(NN_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/../nnCUDA" CACHE PATH "path to CUDA nnCUDA, OpenCL nnCL, or ROCm nnROCm")
+# Sibling checkout of CUDA nnCUDA (../nnCUDA), OpenCL nnCL (../nnCL),
+# ROCm nnROCm (../nnROCm), or Arc nnArc (../nnArc).
+# ./build.sh cuda|opencl|amd|arc sets this. The selected tree's own tests stay out of `all`.
+set(NN_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/../nnCUDA" CACHE PATH "path to CUDA nnCUDA, OpenCL nnCL, ROCm nnROCm, or Arc nnArc")
 if(NOT EXISTS "${NN_SOURCE}/CMakeLists.txt")
   message(FATAL_ERROR "NN_SOURCE has no CMakeLists.txt: ${NN_SOURCE}")
 endif()
-# nnCL ships src/kernels.cl. nnROCm ships HIP kernels. The CUDA tree has neither.
+# nnCL ships src/kernels.cl. nnROCm ships elementwise.hip. nnArc ships elementwise.cpp.
+# The CUDA tree has none of those.
 set(NN_IS_OPENCL FALSE)
 set(NN_IS_ROCM FALSE)
+set(NN_IS_ARC FALSE)
 if(EXISTS "${NN_SOURCE}/src/kernels.cl")
   set(NN_IS_OPENCL TRUE)
 elseif(EXISTS "${NN_SOURCE}/src/elementwise.hip")
   set(NN_IS_ROCM TRUE)
+elseif(EXISTS "${NN_SOURCE}/src/elementwise.cpp")
+  set(NN_IS_ARC TRUE)
 endif()
 if(NN_IS_ROCM)
   if(NOT DEFINED CMAKE_HIP_COMPILER)
@@ -30,7 +35,7 @@ if(NN_IS_ROCM)
   # Enable HIP in this directory so executables can link nnROCm device code.
   # The nested project() call does not publish CMAKE_HIP_LINK_EXECUTABLE here.
   enable_language(HIP)
-elseif(NOT NN_IS_OPENCL AND NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+elseif(NOT NN_IS_OPENCL AND NOT NN_IS_ARC AND NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
   set(CMAKE_CUDA_ARCHITECTURES 86)
 endif()
 add_subdirectory(${NN_SOURCE} nn_build EXCLUDE_FROM_ALL)
@@ -38,6 +43,8 @@ if(NN_IS_OPENCL)
   message(STATUS "llm backend: OpenCL (${NN_SOURCE})")
 elseif(NN_IS_ROCM)
   message(STATUS "llm backend: ROCm (${NN_SOURCE})")
+elseif(NN_IS_ARC)
+  message(STATUS "llm backend: Arc (${NN_SOURCE})")
 else()
   message(STATUS "llm backend: CUDA (${NN_SOURCE})")
 endif()
@@ -51,8 +58,8 @@ target_include_directories(llm PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 add_executable(llm_tests tests/test_bpe.cpp tests/test_data.cpp tests/test_train.cpp)
 target_link_libraries(llm_tests PRIVATE llm)
-# CUDA IndexTensor is read with cudaMemcpy. OpenCL and ROCm use IndexTensor::to_host().
-if(NOT NN_IS_OPENCL AND NOT NN_IS_ROCM)
+# CUDA IndexTensor is read with cudaMemcpy. OpenCL, ROCm, and Arc use IndexTensor::to_host().
+if(NOT NN_IS_OPENCL AND NOT NN_IS_ROCM AND NOT NN_IS_ARC)
   target_compile_definitions(llm_tests PRIVATE LLM_NN_CUDA)
 endif()
 
@@ -77,10 +84,16 @@ target_link_libraries(finetune PRIVATE llm)
 add_executable(gguf examples/gguf.cpp)
 
 # nnROCm device code is linked by the HIP compiler. Host objects stay C++.
-# gguf does not link nn.
+# nnArc device code is linked with -fsycl. gguf does not link nn.
 if(NN_IS_ROCM)
   set_target_properties(llm_tests train_tiny train_chat train_bert_chat train_books chat finetune
     PROPERTIES LINKER_LANGUAGE HIP)
+endif()
+if(NN_IS_ARC)
+  foreach(llm_bin llm_tests train_tiny train_chat train_bert_chat train_books chat finetune)
+    target_compile_options(${llm_bin} PRIVATE -fsycl)
+    target_link_options(${llm_bin} PRIVATE -fsycl)
+  endforeach()
 endif()
 
 enable_testing()

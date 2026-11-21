@@ -17,7 +17,7 @@ Head dim is 64. KV heads match the query heads. SwiGLU's first linear writes `2 
 ## Usage
 
 ```bash
-./build.sh amd       # or: ./build.sh opencl, ./build.sh cuda
+./build.sh amd       # or: ./build.sh opencl, ./build.sh cuda, ./build.sh arc
 cmake --build build -j --target train_books
 
 ./build/train_books --files books.txt --out run \
