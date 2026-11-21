@@ -6,9 +6,9 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Sibling checkout of CUDA nn (../nn), OpenCL nnCL (../nnCL), or ROCm nnROCm (../nnROCm).
+# Sibling checkout of CUDA nnCUDA (../nnCUDA), OpenCL nnCL (../nnCL), or ROCm nnROCm (../nnROCm).
 # ./build.sh cuda|opencl|amd sets this. The selected tree's own tests stay out of `all`.
-set(NN_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/../nn" CACHE PATH "path to CUDA nn, OpenCL nnCL, or ROCm nnROCm")
+set(NN_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/../nnCUDA" CACHE PATH "path to CUDA nnCUDA, OpenCL nnCL, or ROCm nnROCm")
 if(NOT EXISTS "${NN_SOURCE}/CMakeLists.txt")
   message(FATAL_ERROR "NN_SOURCE has no CMakeLists.txt: ${NN_SOURCE}")
 endif()

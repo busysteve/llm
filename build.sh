@@ -1,6 +1,6 @@
 #!/bin/sh
 # Configure and build llm against one backend:
-#   ./build.sh cuda     sibling ../nn      (CUDA nn, architecture 86 unless CMAKE_CUDA_ARCHITECTURES is set)
+#   ./build.sh cuda     sibling ../nnCUDA  (CUDA nn, architecture 86 unless CMAKE_CUDA_ARCHITECTURES is set)
 #   ./build.sh opencl   sibling ../nnCL    (OpenCL)
 #   ./build.sh amd      sibling ../nnROCm  (ROCm, architecture gfx1152 unless CMAKE_HIP_ARCHITECTURES is set)
 # With no argument, NN_SOURCE is used when set. Otherwise OpenCL is chosen when
@@ -18,8 +18,8 @@ usage() {
 }
 
 case "$backend" in
-  cuda|nn)
-    nn_source="$(CDPATH= cd ../nn && pwd)"
+  cuda|nn|nncuda|nnCUDA)
+    nn_source="$(CDPATH= cd ../nnCUDA && pwd)"
     ;;
   opencl|nncl|nnCL)
     nn_source="$(CDPATH= cd ../nnCL && pwd)"
@@ -32,7 +32,7 @@ case "$backend" in
       if [ -f ../nnCL/src/kernels.cl ] && ! command -v nvcc >/dev/null 2>&1; then
         nn_source="$(CDPATH= cd ../nnCL && pwd)"
       else
-        nn_source="$(CDPATH= cd ../nn && pwd)"
+        nn_source="$(CDPATH= cd ../nnCUDA && pwd)"
       fi
     fi
     ;;

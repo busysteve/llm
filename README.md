@@ -1,18 +1,18 @@
 # llm
 
-A C++17 library for small decoder-only language models and a BERT encoder, built beside [`nn`](../nn). This tree is the tokenizer, the token dataset, transformer presets, the trainer, and the generator.
+A C++17 library for small decoder-only language models and a BERT encoder, built beside [`nnCUDA`](../nnCUDA). This tree is the tokenizer, the token dataset, transformer presets, the trainer, and the generator.
 
-Public headers live under `include/llm/` and do not include CUDA, HIP, or OpenCL headers. The `llm` target links `nn` and pthread. That library is the CUDA tree [`nn`](../nn), the OpenCL tree [`nnCL`](../nnCL), or the ROCm tree [`nnROCm`](../nnROCm).
+Public headers live under `include/llm/` and do not include CUDA, HIP, or OpenCL headers. The `llm` target links `nn` and pthread. That library is the CUDA tree [`nnCUDA`](../nnCUDA), the OpenCL tree [`nnCL`](../nnCL), or the ROCm tree [`nnROCm`](../nnROCm).
 
 ## Requirements
 
 - C++17 and CMake 3.24 or newer
 - One backend checkout next to this tree:
-  - CUDA: `../nn`, plus the CUDA Toolkit and cuDNN that `nn` needs. `CMAKE_CUDA_ARCHITECTURES` defaults to `86`. If the default GCC is newer than 15, `./build.sh` uses `g++-15`.
+  - CUDA: `../nnCUDA`, plus the CUDA Toolkit and cuDNN that `nn` needs. `CMAKE_CUDA_ARCHITECTURES` defaults to `86`. If the default GCC is newer than 15, `./build.sh` uses `g++-15`.
   - OpenCL: `../nnCL`, plus an OpenCL ICD and a GPU. Do not set `RUSTICL_ENABLE`.
   - ROCm: `../nnROCm`, plus hipBLAS and rocBLAS. `CMAKE_HIP_ARCHITECTURES` defaults to `gfx1152`. The HIP compiler is `amdclang++`, not `hipcc`.
 
-`./build.sh cuda` configures against `../nn`. `./build.sh opencl` configures against `../nnCL`. `./build.sh amd` configures against `../nnROCm`. With no argument, `NN_SOURCE` is used when it is set; otherwise OpenCL is chosen when `../nnCL` is present and `nvcc` is not. A build directory configured for a different sibling is cleared first. `add_subdirectory(... EXCLUDE_FROM_ALL)` builds `nn` only as a dependency of `llm`, so that project's tests are not part of `all`.
+`./build.sh cuda` configures against `../nnCUDA`. `./build.sh opencl` configures against `../nnCL`. `./build.sh amd` configures against `../nnROCm`. With no argument, `NN_SOURCE` is used when it is set; otherwise OpenCL is chosen when `../nnCL` is present and `nvcc` is not. A build directory configured for a different sibling is cleared first. `add_subdirectory(... EXCLUDE_FROM_ALL)` builds `nn` only as a dependency of `llm`, so that project's tests are not part of `all`.
 
 ```bash
 ./build.sh amd
