@@ -56,7 +56,16 @@ struct Options {
   bool tokenize_only = false;
   bool from_stdin = false;
   std::string prompt;
+  std::optional<int> layers;
+  std::optional<int> d_model;
+  std::optional<int> heads;
+  std::optional<int> d_ff;
+  std::optional<int> max_seq;
+  std::optional<int> kv_heads;
+  std::optional<int> head_dim;
 };
+
+nn::TransformerConfig model_config(const Options& opt);
 
 volatile std::sig_atomic_t g_stop = 0;
 
@@ -122,8 +131,17 @@ void usage() {
       "          bert-tiny|bert-small|bert-base|bert-base-medium|bert-base-large|\n"
       "          bert-medium|bert-large\n"
       "                             default tiny\n"
+      "  --layers N                 override the preset layer count\n"
+      "  --d-model N                override the preset model width\n"
+      "  --heads N                  override the preset query-head count\n"
+      "  --d-ff N                   override the preset feed-forward width\n"
+      "  --max-seq N                override the preset context cap\n"
+      "  --kv-heads N               override KV heads. 0 uses one KV head\n"
+      "                             per query head\n"
+      "  --head-dim N               override the head width. 0 uses\n"
+      "                             d_model / heads\n"
       "  --vocab N                  default 4096 (minimum 259)\n"
-      "  --seq-len N                default 256, at most the preset maximum\n"
+      "  --seq-len N                default 256, at most the context cap\n"
       "  --batch N                  default 4\n"
       "  --steps N                  default 1000\n"
       "  --accum N                  default 1\n"
@@ -172,6 +190,9 @@ void usage() {
       "base-medium is 18 layers at the base width. base-large is 20 layers\n"
       "at the base width. medium is 24 layers at width 1024. large is 36\n"
       "layers at width 1280.\n"
+      "--layers, --d-model, --heads, --d-ff, --max-seq, --kv-heads, and\n"
+      "--head-dim replace those fields of the selected preset. An omitted\n"
+      "flag keeps the preset value. Resume repeats the same size flags.\n"
       "llama-* is that width with RoPE and RMSNorm. qwen-* is the Qwen3 block:\n"
       "grouped-query attention, head dim 128, QK-norm, RoPE base 1e6, and\n"
       "RMSNorm epsilon 1e-6. Train a qwen preset from scratch.\n"
@@ -219,6 +240,13 @@ Options parse(int argc, char** argv) {
     else if (flag == "--dir") opt.dir = need(i, argc, argv);
     else if (flag == "--out") opt.out = need(i, argc, argv);
     else if (flag == "--preset") opt.preset = need(i, argc, argv);
+    else if (flag == "--layers") opt.layers = need_int(i, argc, argv);
+    else if (flag == "--d-model") opt.d_model = need_int(i, argc, argv);
+    else if (flag == "--heads") opt.heads = need_int(i, argc, argv);
+    else if (flag == "--d-ff") opt.d_ff = need_int(i, argc, argv);
+    else if (flag == "--max-seq") opt.max_seq = need_int(i, argc, argv);
+    else if (flag == "--kv-heads") opt.kv_heads = need_int(i, argc, argv);
+    else if (flag == "--head-dim") opt.head_dim = need_int(i, argc, argv);
     else if (flag == "--vocab") opt.vocab = need_int(i, argc, argv);
     else if (flag == "--seq-len") opt.seq_len = need_int(i, argc, argv);
     else if (flag == "--batch") opt.batch = need_int(i, argc, argv);
@@ -276,6 +304,7 @@ Options parse(int argc, char** argv) {
     throw std::runtime_error("stdin");
   }
   if (!opt.dir.empty() && !opt.files.empty()) throw std::runtime_error("dir");
+  (void)model_config(opt);
   if (opt.out.empty() || (opt.files.empty() && opt.dir.empty() && !opt.from_stdin)) {
     usage();
     throw std::runtime_error("files");
@@ -446,6 +475,37 @@ nn::TransformerConfig preset_config(const std::string& name, int vocab) {
   throw std::runtime_error("preset");
 }
 
+void require_min(const std::optional<int>& value, int min, const char* name) {
+  if (value.has_value() && *value < min) throw std::runtime_error(name);
+}
+
+bool spec_set(const Options& opt) {
+  return opt.layers.has_value() || opt.d_model.has_value() || opt.heads.has_value() ||
+         opt.d_ff.has_value() || opt.max_seq.has_value() || opt.kv_heads.has_value() ||
+         opt.head_dim.has_value();
+}
+
+nn::TransformerConfig model_config(const Options& opt) {
+  require_min(opt.layers, 1, "layers");
+  require_min(opt.d_model, 1, "d-model");
+  require_min(opt.heads, 1, "heads");
+  require_min(opt.d_ff, 1, "d-ff");
+  require_min(opt.max_seq, 1, "max-seq");
+  require_min(opt.kv_heads, 0, "kv-heads");
+  require_min(opt.head_dim, 0, "head-dim");
+  nn::TransformerConfig config = preset_config(opt.preset, opt.vocab);
+  if (opt.layers) config.num_layers = *opt.layers;
+  if (opt.d_model) config.d_model = *opt.d_model;
+  if (opt.heads) config.num_heads = *opt.heads;
+  if (opt.d_ff) config.d_ff = *opt.d_ff;
+  if (opt.max_seq) config.max_seq_len = *opt.max_seq;
+  if (opt.kv_heads) config.num_kv_heads = *opt.kv_heads;
+  if (opt.head_dim) config.head_dim = *opt.head_dim;
+  nn::validate(config);
+  if (opt.seq_len > config.max_seq_len) throw std::runtime_error("seq_len");
+  return config;
+}
+
 bool same_config(const nn::TransformerConfig& a, const nn::TransformerConfig& b) {
   return a.vocab_size == b.vocab_size && a.d_model == b.d_model && a.num_heads == b.num_heads &&
          a.num_layers == b.num_layers && a.d_ff == b.d_ff && a.max_seq_len == b.max_seq_len &&
@@ -528,8 +588,7 @@ int main(int argc, char** argv) {
       }
     }
 
-    const nn::TransformerConfig config = preset_config(opt.preset, tok->vocab_size());
-    if (opt.seq_len > config.max_seq_len) throw std::runtime_error("seq_len");
+    const nn::TransformerConfig config = model_config(opt);
     const bool encoder = !config.causal;
 
     // Tokens are on the host. Exit before the training context allocates a model.
@@ -614,6 +673,13 @@ int main(int argc, char** argv) {
       const bool restart_lr = opt.resume && opt.lr_new;
       const bool train_more = !opt.resume || restart_lr || done < static_cast<uint64_t>(opt.steps);
       if (train_more) {
+        if (spec_set(opt)) {
+          std::fprintf(stderr,
+                       "spec layers=%d d_model=%d heads=%d kv_heads=%d head_dim=%d d_ff=%d "
+                       "max_seq=%d\n",
+                       config.num_layers, config.d_model, config.num_heads, config.num_kv_heads,
+                       config.head_dim, config.d_ff, config.max_seq_len);
+        }
         if (!restart_lr && done > static_cast<uint64_t>(std::numeric_limits<int>::max()) - 1) {
           throw std::runtime_error("resume");
         }

@@ -120,9 +120,16 @@ Load `tokenizer.bpe` and `model.bin` together. `chat` does that for a dialogue c
 
 | Flag | Default | Role |
 |---|---|---|
-| `--preset tiny\|small\|base\|base-medium\|base-large\|medium\|large\|llama-tiny\|llama-small\|llama-base\|llama-base-medium\|llama-base-large\|llama-medium\|llama-large\|qwen-tiny\|qwen-small\|qwen-base\|qwen-base-medium\|qwen-base-large\|qwen-medium\|qwen-large\|gpt2-tiny\|gpt2-small\|gpt2-base\|gpt2-base-medium\|gpt2-base-large\|gpt2-medium\|gpt2-large\|gpt3-tiny\|gpt3-small\|gpt3-base\|gpt3-base-medium\|gpt3-base-large\|gpt3-medium\|gpt3-large\|bert-tiny\|bert-small\|bert-base\|bert-base-medium\|bert-base-large\|bert-medium\|bert-large` | `tiny` | model shape |
+| `--preset tiny\|small\|base\|base-medium\|base-large\|medium\|large\|llama-tiny\|llama-small\|llama-base\|llama-base-medium\|llama-base-large\|llama-medium\|llama-large\|qwen-tiny\|qwen-small\|qwen-base\|qwen-base-medium\|qwen-base-large\|qwen-medium\|qwen-large\|gpt2-tiny\|gpt2-small\|gpt2-base\|gpt2-base-medium\|gpt2-base-large\|gpt2-medium\|gpt2-large\|gpt3-tiny\|gpt3-small\|gpt3-base\|gpt3-base-medium\|gpt3-base-large\|gpt3-medium\|gpt3-large\|bert-tiny\|bert-small\|bert-base\|bert-base-medium\|bert-base-large\|bert-medium\|bert-large` | `tiny` | block and starting shape |
+| `--layers N` | preset | layer count |
+| `--d-model N` | preset | model width |
+| `--heads N` | preset | query-head count |
+| `--d-ff N` | preset | feed-forward width |
+| `--max-seq N` | preset | context cap stored in the checkpoint |
+| `--kv-heads N` | preset | KV heads. `0` uses one KV head per query head |
+| `--head-dim N` | preset | head width. `0` uses `d_model / heads` |
 | `--vocab N` | 4096 | BPE size, minimum 259 |
-| `--seq-len N` | 256 | tokens per example, at most the preset `max_seq_len` |
+| `--seq-len N` | 256 | tokens per example, at most the context cap |
 | `--batch N` | 4 | examples per step |
 | `--steps N` | 1000 | AdamW updates |
 | `--accum N` | 1 | micro-batches per update |
@@ -149,6 +156,30 @@ Load `tokenizer.bpe` and `model.bin` together. `chat` does that for a dialogue c
 Weight decay stays 0.1. The cosine floor is one tenth of `--lr`. Eval is off unless `--early-stop` is positive. Defaults `--preset tiny`, `--seq-len 256`, and `--batch 4` fit a 12 GB GPU. `small` prefers 24 GB. `base` is a 24 GB model. On a smaller card keep `--seq-len` at 512 or below. `base-medium` is 18 layers at the base width, and `base-large` is 20 layers at the base width. `medium` is 24 layers at width 1024, and `large` is 36 layers at width 1280.
 
 `tiny`, `small`, `base`, `base-medium`, `base-large`, `medium`, and `large` use learned absolute positions and LayerNorm. `base-medium` is 18 layers at the base width. `base-large` is 20 layers at the base width. `medium` is 24 layers at width 1024. `large` is 36 layers at width 1280. `llama-tiny`, `llama-small`, `llama-base`, `llama-base-medium`, `llama-base-large`, `llama-medium`, and `llama-large` are the same widths with RoPE and RMSNorm, which is the block llama.cpp runs. `qwen-tiny`, `qwen-small`, `qwen-base`, `qwen-base-medium`, `qwen-base-large`, `qwen-medium`, and `qwen-large` are the Qwen3 block: head dim 128, grouped-query attention, QK-norm, RoPE base `1e6`, and RMSNorm epsilon `1e-6`. `gpt2-tiny`, `gpt2-small`, `gpt2-base`, `gpt2-base-medium`, `gpt2-base-large`, `gpt2-medium`, and `gpt2-large` are the GPT-2 block: GELU, linear bias, `d_ff = 4 * d_model`, learned positions, and context 1024. `gpt3-tiny`, `gpt3-small`, `gpt3-base`, `gpt3-base-medium`, `gpt3-base-large`, `gpt3-medium`, and `gpt3-large` are that dense block with context 2048. `bert-tiny`, `bert-small`, `bert-base`, `bert-base-medium`, `bert-base-large`, `bert-medium`, and `bert-large` are that dense block with bidirectional attention, a segment table of size 2, and context 512. They train masked tokens. The pad id is the mask. Train a llama, qwen, GPT, or BERT preset from scratch. A checkpoint that was trained with learned positions does not become a llama or qwen block. The saved `qwen-*` checkpoint is version 4. A `gpt2-*` or `gpt3-*` checkpoint is version 2. A `bert-*` checkpoint is version 6. `gguf llama` rejects GELU, linear bias, bidirectional attention, and a segment table. Usage, benefits, and applications for each preset type are in [preset-default](../docs/preset-default.md), [preset-llama](../docs/preset-llama.md), [preset-qwen](../docs/preset-qwen.md), [preset-gpt2](../docs/preset-gpt2.md), [preset-gpt3](../docs/preset-gpt3.md), and [preset-bert](../docs/preset-bert.md). [train_chat](train_chat.md) trains `tiny` and `bert-tiny` on four exchanges, then prints one reply and one masked token. [train_bert_chat](train_bert_chat.md) trains `bert_tiny` on those exchanges and prints one reply.
+
+## Custom shape
+
+`--preset` selects the block and the starting sizes. `--layers`, `--d-model`, `--heads`, `--d-ff`, `--max-seq`, `--kv-heads`, and `--head-dim` replace individual fields. An omitted flag keeps the preset value. `--d-model 512` on `tiny` leaves 4 heads and `d_ff` 768.
+
+`--max-seq` is the context cap stored in the checkpoint. `--seq-len` is the training window and must be at most that cap. On a learned-position preset, `--max-seq` sets the position-table rows. On `llama-*` and `qwen-*` it adds no parameters. Attention memory grows with the square of `--seq-len`.
+
+On `qwen-*`, `--head-dim` sets the Q, K, V, and QK-norm width. `--kv-heads` sets the grouped-query width. QK-norm, RoPE base `1e6`, and RMSNorm epsilon `1e-6` stay with the preset. `--kv-heads 0` stores one KV head per query head. `--head-dim 0` stores `d_model / num_heads`.
+
+Activation, bias, RoPE or learned positions, QK-norm, causal attention, and the segment table stay with `--preset`. Resume repeats the same `--preset` and the same size flags. A different depth, width, or context fails with `preset`. `--reuse-tokens` trains the new shape on the tokenizer and token file already in `--out`.
+
+When any size flag is set, stderr prints one line before training:
+
+```
+spec layers=8 d_model=256 heads=4 kv_heads=0 head_dim=0 d_ff=768 max_seq=2048
+```
+
+`chat` reads the cap from the checkpoint.
+
+```bash
+./build/train_data --files books.txt --out run \
+  --preset tiny --layers 8 --max-seq 2048 --seq-len 512 \
+  --vocab 1024 --batch 4 --steps 1000
+```
 
 ## Early stop
 
@@ -180,7 +211,7 @@ The whole token stream stays in the training set. The weights, AdamW moments, an
 
 SIGINT or SIGTERM finishes the AdamW update already running, writes `model.bin`, prints `YYYY-MM-DD hh:mm:ss.sss stop step <step>`, and exits 0. It does not sample a continuation. A second signal aborts the process. The handler only sets a flag. The flag is checked after the update, not inside a GPU call.
 
-`--resume` reads `tokenizer.bpe`, `tokens.bin`, `tokens.meta`, and `model.bin` from `--out`. The tokenizer is not trained again, and `--files` or `--dir` is not encoded again. `--files` or `--dir` is still required. When `--prompt` is omitted, the continuation prompt is the opening of the first file. `--preset` and `--vocab` have to match the checkpoint and the tokenizer. The saved token stream stays the training stream, including the holdout split when `--early-stop` is set.
+`--resume` reads `tokenizer.bpe`, `tokens.bin`, `tokens.meta`, and `model.bin` from `--out`. The tokenizer is not trained again, and `--files` or `--dir` is not encoded again. `--files` or `--dir` is still required. When `--prompt` is omitted, the continuation prompt is the opening of the first file. `--preset`, the size flags, and `--vocab` have to match the checkpoint and the tokenizer. An omitted size flag keeps that preset's value, so a custom checkpoint is resumed with the same overrides. The saved token stream stays the training stream, including the holdout split when `--early-stop` is set.
 
 `--steps` counts every update from the start of the run, including updates already in the checkpoint. The next update is that AdamW step plus one. Its learning rate is the warmup and cosine value for that step under this `--warmup`, `--lr`, and `--steps`. The schedule does not start over at step 1. A checkpoint whose step is already at least `--steps` is left as it is. stderr prints `resume step <N> reached steps <steps>`, and a causal run still prints a continuation. A larger `--steps` trains through the new total. Changing `--steps`, `--warmup`, or `--lr` changes the rate of the updates that remain. The AdamW moments stay as saved.
 
@@ -227,7 +258,7 @@ The encoded stream still has to hold at least `--seq-len + 1` tokens, and `--seq
 
 ## Restart on saved tokens
 
-`--reuse-tokens` reads `tokenizer.bpe`, `tokens.bin`, and `tokens.meta` from `--out` and trains a new model. It does not load `model.bin`. The finished run replaces `model.bin`. The tokenizer is not trained again, and `--files` or `--dir` is not encoded again. `--files` or `--dir` is still required. When `--prompt` is omitted, the continuation prompt is the opening of the first file. `--vocab` has to match the tokenizer. `--preset` chooses the new model. The learning-rate schedule starts at step 1 under this command's `--lr`, `--warmup`, and `--steps`. `--seed` initializes that model and draws the batch windows. stderr prints `reusing <N> tokens`. Combining `--reuse-tokens` with `--resume` fails with `reuse-tokens`.
+`--reuse-tokens` reads `tokenizer.bpe`, `tokens.bin`, and `tokens.meta` from `--out` and trains a new model. It does not load `model.bin`. The finished run replaces `model.bin`. The tokenizer is not trained again, and `--files` or `--dir` is not encoded again. `--files` or `--dir` is still required. When `--prompt` is omitted, the continuation prompt is the opening of the first file. `--vocab` has to match the tokenizer. `--preset` and the size flags choose the new model. The learning-rate schedule starts at step 1 under this command's `--lr`, `--warmup`, and `--steps`. `--seed` initializes that model and draws the batch windows. stderr prints `reusing <N> tokens`. Combining `--reuse-tokens` with `--resume` fails with `reuse-tokens`.
 
 ```bash
 ./build/train_data --files books.txt --out run \
@@ -246,12 +277,24 @@ Errors print `train_data: <reason>` on stderr and the process exits 1. Common re
 | `vocab_size` | `--vocab` is below 259, the corpus runs out of pairs before the vocab is full, or `--resume` or `--reuse-tokens` and `--vocab`, the token file, or the checkpoint disagrees with the tokenizer |
 | `short corpus` | the encoded files have fewer than `--seq-len + 1` tokens |
 | `short valid` | `--early-stop` is positive and the stream cannot be split into two spans of `--seq-len + 1` tokens |
-| `seq_len` | `--seq-len` is above the preset `max_seq_len` (1024, 2048 for `gpt3-*`, or 512 for `bert-*`) |
+| `layers` | `--layers` is below 1 |
+| `d-model` | `--d-model` is below 1 |
+| `heads` | `--heads` is below 1 |
+| `d-ff` | `--d-ff` is below 1 |
+| `max-seq` | `--max-seq` is below 1 |
+| `kv-heads` | `--kv-heads` is below 0 |
+| `head-dim` | `--head-dim` is below 0 |
+| `num_heads` | `d_model` is not divisible by the query heads while head dim is 0 |
+| `num_kv_heads` | the KV heads do not divide the query heads |
+| `head_dim` | the head width is illegal |
+| `use_rope` | a RoPE preset (`llama-*` or `qwen-*`) has an odd head dim |
+| `d_ff` | the feed-forward width is illegal for this block |
+| `seq_len` | `--seq-len` is above the context cap (`--max-seq`, or the preset cap: 1024, 2048 for `gpt3-*`, or 512 for `bert-*`) |
 | `early_stop` | `--early-stop` is negative |
 | `min_loss` | `--min-loss` is negative or infinite |
 | `eval_every` | `--early-stop` is positive and `--eval-every` is not in `1 .. --steps` |
 | `valid_fraction` | `--valid-fraction` is not inside `(0, 1)` |
-| `preset` | the name is not one of the preset names in the flag table, or `--resume` and that preset does not match the checkpoint |
+| `preset` | the name is not one of the preset names in the flag table, or `--resume` and the preset plus size flags do not match the checkpoint |
 | `resume` | `--resume` is set and `--out` is missing `tokenizer.bpe`, `tokens.bin`, `tokens.meta`, or `model.bin` |
 | `lr-new` | `--lr-new` is set without `--resume` |
 | `reuse-tokens` | `--reuse-tokens` is combined with `--resume`, or `--out` is missing `tokenizer.bpe`, `tokens.bin`, or `tokens.meta` |

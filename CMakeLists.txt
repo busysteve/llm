@@ -66,6 +66,9 @@ endif()
 add_executable(train_tiny examples/train_tiny.cpp)
 target_link_libraries(train_tiny PRIVATE llm)
 
+add_executable(train_bench examples/train_bench.cpp)
+target_link_libraries(train_bench PRIVATE llm)
+
 add_executable(train_chat examples/train_chat.cpp)
 target_link_libraries(train_chat PRIVATE llm)
 
@@ -86,11 +89,11 @@ add_executable(gguf examples/gguf.cpp)
 # nnROCm device code is linked by the HIP compiler. Host objects stay C++.
 # nnArc device code is linked with -fsycl. gguf does not link nn.
 if(NN_IS_ROCM)
-  set_target_properties(llm_tests train_tiny train_chat train_bert_chat train_data chat finetune
+  set_target_properties(llm_tests train_tiny train_bench train_chat train_bert_chat train_data chat finetune
     PROPERTIES LINKER_LANGUAGE HIP)
 endif()
 if(NN_IS_ARC)
-  foreach(llm_bin llm_tests train_tiny train_chat train_bert_chat train_data chat finetune)
+  foreach(llm_bin llm_tests train_tiny train_bench train_chat train_bert_chat train_data chat finetune)
     target_compile_options(${llm_bin} PRIVATE -fsycl)
     target_link_options(${llm_bin} PRIVATE -fsycl)
   endforeach()
