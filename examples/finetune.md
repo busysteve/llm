@@ -1,6 +1,6 @@
 # How to fine-tune an existing model
 
-`finetune` is the continued-training example in [`finetune.cpp`](finetune.cpp). It loads `tokenizer.bpe` and `model.bin` from a directory written by [`train_books`](train_books.md) or by an earlier `finetune` run, encodes a new file list with that tokenizer, and keeps training. It writes a new directory and prints a continuation. A bidirectional checkpoint, including `bert-*`, keeps training masked tokens and does not print a continuation. It is a separate program from `llm_tests`.
+`finetune` is the continued-training example in [`finetune.cpp`](finetune.cpp). It loads `tokenizer.bpe` and `model.bin` from a directory written by [`train_data`](train_data.md) or by an earlier `finetune` run, encodes a new file list with that tokenizer, and keeps training. It writes a new directory and prints a continuation. A bidirectional checkpoint, including `bert-*`, keeps training masked tokens and does not print a continuation. It is a separate program from `llm_tests`.
 
 The checkpoint's vocab and model shape stay as they are. `finetune` reads this library's `model.bin` and `tokenizer.bpe`.
 
@@ -13,7 +13,7 @@ cmake --build build -j --target finetune
 
 ## Prepare the new text
 
-The list has the same shape as a `train_books` list. Blank lines are ignored. A line whose first character is `#` is ignored. A relative path is resolved from the directory that contains the list.
+The list has the same shape as a `train_data` list. Blank lines are ignored. A line whose first character is `#` is ignored. A relative path is resolved from the directory that contains the list.
 
 ```
 # more text for the harbor model
@@ -27,7 +27,7 @@ Use text you have the rights to train on.
 
 ## Run
 
-`--from` is read only. `--out` has to be a different directory. The new directory receives `tokenizer.bpe`, `tokens.bin`, `tokens.meta`, and `model.bin`, so [`chat`](chat.md) can load `--out` the same way it loads a `train_books` directory.
+`--from` is read only. `--out` has to be a different directory. The new directory receives `tokenizer.bpe`, `tokens.bin`, `tokens.meta`, and `model.bin`, so [`chat`](chat.md) can load `--out` the same way it loads a `train_data` directory.
 
 ```bash
 ./build/finetune --from run --files more.txt --out run-ft \
@@ -35,7 +35,7 @@ Use text you have the rights to train on.
   --prompt "The morning after"
 ```
 
-The default peak learning rate is `1e-4`. Warmup defaults to 0. The cosine floor is one tenth of `--lr`. The schedule starts at step 1 of this run. With `--warmup 0` that first step is already on the cosine, and step `--steps` is the floor. The schedule does not continue from the checkpoint's optimizer step. `train_books --resume` is the command that continues a `train_books` schedule from the checkpoint step.
+The default peak learning rate is `1e-4`. Warmup defaults to 0. The cosine floor is one tenth of `--lr`. The schedule starts at step 1 of this run. With `--warmup 0` that first step is already on the cosine, and step `--steps` is the floor. The schedule does not continue from the checkpoint's optimizer step. `train_data --resume` is the command that continues a `train_data` schedule from the checkpoint step.
 
 Without `--resume`, the run builds a fresh AdamW at `--lr` and `--wd` (default weight decay `0.1`). With `--resume`, AdamW moments and the optimizer step stored in the checkpoint are kept, and `--wd` is ignored. The learning-rate flags still apply.
 
@@ -81,7 +81,7 @@ With `--steps` of 100 or more, `model.bin` is also written every 100 steps. The 
 | `--top-p FLOAT` | 0.9 | nucleus threshold |
 | `--seed N` | 1 | batch order and sampling |
 
-`--seq-len 256` and `--batch 4` match the `train_books` tiny preset defaults. A `small` or `base` checkpoint still prefers the GPU sizes in [train_books](train_books.md).
+`--seq-len 256` and `--batch 4` match the `train_data` tiny preset defaults. A `small` or `base` checkpoint still prefers the GPU sizes in [train_data](train_data.md).
 
 ## When it fails
 

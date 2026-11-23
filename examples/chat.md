@@ -1,18 +1,18 @@
 # How to converse with a trained model
 
-`chat` is the dialogue example in [`chat.cpp`](chat.cpp). It loads `tokenizer.bpe` and `model.bin` from a directory written by [`train_books`](train_books.md) or [`gguf from`](gguf.md) and continues a `User:` / `Assistant:` transcript. `--plain` continues the line as a prompt with those tags left off, which matches a book checkpoint. It does not train. It is a separate program from `llm_tests`.
+`chat` is the dialogue example in [`chat.cpp`](chat.cpp). It loads `tokenizer.bpe` and `model.bin` from a directory written by [`train_data`](train_data.md) or [`gguf from`](gguf.md) and continues a `User:` / `Assistant:` transcript. `--plain` continues the line as a prompt with those tags left off, which matches a book checkpoint. It does not train. It is a separate program from `llm_tests`.
 
 Build from the repository root. Requirements are in the [README](../README.md).
 
 ```bash
 ./build.sh amd       # or: ./build.sh opencl, ./build.sh cuda, ./build.sh arc
-cmake --build build -j --target train_books
+cmake --build build -j --target train_data
 cmake --build build -j --target chat
 ```
 
 ## Train on exchanges
 
-Put one exchange in each file. `train_books` appends eos after each file, and that token marks the end of the assistant turn. A trailing newline on the file matches the transcript `chat` stores.
+Put one exchange in each file. `train_data` appends eos after each file, and that token marks the end of the assistant turn. A trailing newline on the file matches the transcript `chat` stores.
 
 `dialogues/bell.txt`:
 
@@ -38,23 +38,23 @@ tide.txt
 Paths in the list are resolved from the list's directory.
 
 ```bash
-./build/train_books --files dialogues.txt --out chat-run \
+./build/train_data --files dialogues.txt --out chat-run \
   --preset tiny --vocab 1024 --seq-len 256 --batch 4 --steps 1000
 ```
 
 Two short exchanges and a few steps are enough to prove the loop. They are not enough for a reply that answers the question. A usable transcript model needs many exchanges and a full training run. The same tiny preset memorizes a small corpus rather than learning general conversation.
 
-The same file list trains an encoder. `--seq-len` must be at most 512. `train_books` does not sample after this run. `chat` does. Each new token is the pad id.
+The same file list trains an encoder. `--seq-len` must be at most 512. `train_data` does not sample after this run. `chat` does. Each new token is the pad id.
 
 ```bash
-./build/train_books --files dialogues.txt --out chat-bert \
+./build/train_data --files dialogues.txt --out chat-bert \
   --preset bert-tiny --vocab 1024 --seq-len 256 --batch 4 --steps 1000
 ./build/chat --model chat-bert
 ```
 
 [train_bert_chat](train_bert_chat.md) is the short in-process run of that objective.
 
-`chat-run/` must contain `tokenizer.bpe` and `model.bin`. The other `train_books` files are not read by `chat`. A public llama.cpp GGUF, including Qwen2 and Qwen3, becomes that directory with `gguf from MODEL.GGUF chat-run`. A model trained with `--preset qwen-tiny`, `qwen-small`, or `qwen-base` loads the same way. See [gguf](gguf.md).
+`chat-run/` must contain `tokenizer.bpe` and `model.bin`. The other `train_data` files are not read by `chat`. A public llama.cpp GGUF, including Qwen2 and Qwen3, becomes that directory with `gguf from MODEL.GGUF chat-run`. A model trained with `--preset qwen-tiny`, `qwen-small`, or `qwen-base` loads the same way. See [gguf](gguf.md).
 
 ## Talk
 
@@ -153,4 +153,4 @@ Errors print `chat: <reason>` on stderr. In an interactive session the process s
 | `logits` | `forward` did not return one row per token |
 | `max_new_tokens`, `temperature`, `top_k`, `top_p` | that flag is out of range |
 
-Training flags stay on `train_books`. See [train_books](train_books.md) and [USAGE.md](../USAGE.md). To keep training a dialogue checkpoint on more exchanges, see [finetune](finetune.md).
+Training flags stay on `train_data`. See [train_data](train_data.md) and [USAGE.md](../USAGE.md). To keep training a dialogue checkpoint on more exchanges, see [finetune](finetune.md).

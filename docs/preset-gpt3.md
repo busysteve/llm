@@ -16,15 +16,15 @@ Train this shape from scratch. OpenAI did not release GPT-3 weights, and `gguf f
 
 Head dim is 64. KV heads match the query heads. GELU's first linear writes `d_ff`. Dropout is 0. Embeddings are untied. `max_seq_len` is 2048.
 
-`train_books` saves a version-2 checkpoint with AdamW moments. `save` without an optimizer writes version 1. The file is the same version as a `gpt2-*` checkpoint.
+`train_data` saves a version-2 checkpoint with AdamW moments. `save` without an optimizer writes version 1. The file is the same version as a `gpt2-*` checkpoint.
 
 ## Usage
 
 ```bash
 ./build.sh amd       # or: ./build.sh opencl, ./build.sh cuda, ./build.sh arc
-cmake --build build -j --target train_books
+cmake --build build -j --target train_data
 
-./build/train_books --files books.txt --out run \
+./build/train_data --files books.txt --out run \
   --preset gpt3-tiny --vocab 1024 --seq-len 512 --batch 4 --steps 1000 \
   --prompt "The morning after"
 ```
@@ -53,7 +53,7 @@ nn::Transformer model(ctx, config, seed);
 
 - Book windows up to 2048 tokens.
 - Dialogue whose history needs more than 1024 tokens before `chat` starts dropping turns.
-- A from-scratch dense decoder at GPT-3's context length, sampled with `chat` or the continuation `train_books` prints.
+- A from-scratch dense decoder at GPT-3's context length, sampled with `chat` or the continuation `train_data` prints.
 - More text on the same tokenizer through `finetune`, with `--seq-len` raised toward 2048 when the GPU allows it.
 - A comparison with `gpt2-*` at the same depth when the only change you want is the position table and the context limit.
 

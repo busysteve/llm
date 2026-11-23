@@ -48,7 +48,7 @@ void usage() {
   std::fputs(
       "usage: finetune --from DIR --files LIST --out DIR [options]\n"
       "\n"
-      "DIR is a train_books or finetune directory with tokenizer.bpe and model.bin.\n"
+      "DIR is a train_data or finetune directory with tokenizer.bpe and model.bin.\n"
       "LIST is one text path per line. Blank lines and lines starting with # are\n"
       "ignored. A relative path is resolved from the directory that contains LIST.\n"
       "\n"

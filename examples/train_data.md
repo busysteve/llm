@@ -1,12 +1,12 @@
 # How to train from a list of books
 
-`train_books` is the file-list example in [`train_books.cpp`](train_books.cpp). It reads a list of text files, trains a byte-level BPE tokenizer and a preset transformer, writes the tokenizer and the checkpoint, then loads both and prints a continuation. A `bert-*` preset trains masked tokens and does not print a continuation. `--early-stop` can hold out a suffix of the tokens and stop when that validation loss stops falling. `--min-loss` can stop when a step's training loss reaches a threshold. SIGINT or SIGTERM saves the current step, `--resume` continues that same run, `--reuse-tokens` starts a new model on the saved tokens, and `--tokenize-only` writes that tokenizer and token file and exits before the model. `--stdin` reads one document from standard input instead of `--files`. It is a separate program from `llm_tests`.
+`train_data` is the file-list example in [`train_data.cpp`](train_data.cpp). It reads a list of text files, trains a byte-level BPE tokenizer and a preset transformer, writes the tokenizer and the checkpoint, then loads both and prints a continuation. A `bert-*` preset trains masked tokens and does not print a continuation. `--early-stop` can hold out a suffix of the tokens and stop when that validation loss stops falling. `--min-loss` can stop when a step's training loss reaches a threshold. SIGINT or SIGTERM saves the current step, `--resume` continues that same run, `--reuse-tokens` starts a new model on the saved tokens, and `--tokenize-only` writes that tokenizer and token file and exits before the model. `--stdin` reads one document from standard input instead of `--files`. It is a separate program from `llm_tests`.
 
 Build from the repository root. Requirements are in the [README](../README.md).
 
 ```bash
 ./build.sh amd       # or: ./build.sh opencl, ./build.sh cuda, ./build.sh arc
-cmake --build build -j --target train_books
+cmake --build build -j --target train_data
 ```
 
 Use text you have the rights to train on. The sample commands below assume those files are already on disk.
@@ -23,14 +23,14 @@ novels/tide.txt
 
 Each file is read in full and trained as its own BPE string. Pairs do not cross from one file into the next. The encoder then appends an eos token, so a file boundary is a token in the training stream. The raw text is released before the network is built.
 
-The whole token array stays in host memory. A corpus shorter than `--seq-len + 1` tokens fails with `train_books: short corpus`.
+The whole token array stays in host memory. A corpus shorter than `--seq-len + 1` tokens fails with `train_data: short corpus`.
 
 ## Standard input
 
 `--stdin` reads one document from standard input and replaces `--files`. The document is one BPE string. One eos token is appended. A pipe of several books does not insert a boundary between them. Use `--files` when each file should end with eos.
 
 ```bash
-cat novels/harbor.txt | ./build/train_books --stdin --out run \
+cat novels/harbor.txt | ./build/train_data --stdin --out run \
   --preset tiny --vocab 1024 --seq-len 256 \
   --tokenize-only
 ```
@@ -42,7 +42,7 @@ stderr prints `read stdin (<bytes> bytes)`. Empty standard input fails with `std
 A first run with a smaller vocab spends less time in the tokenizer. Tokenizer training scans the corpus once per merge, in parallel on the CPU, so `--vocab 4096` on long books is the slow part. The GPU steps come after that.
 
 ```bash
-./build/train_books --files books.txt --out run \
+./build/train_data --files books.txt --out run \
   --preset tiny --vocab 1024 --seq-len 256 --batch 4 --steps 1000 \
   --prompt "The morning after"
 ```
@@ -145,7 +145,7 @@ Every `--eval-every` steps the run measures validation cross-entropy on 20 windo
 `<last>` in the `early_stop` line is the step that exhausted patience, or `--steps` when patience never tripped. `<best>` is the restored step.
 
 ```bash
-./build/train_books --files books.txt --out run \
+./build/train_data --files books.txt --out run \
   --preset tiny --vocab 1024 --seq-len 256 --batch 4 --steps 1000 \
   --early-stop 3
 ```
@@ -157,7 +157,7 @@ Every `--eval-every` steps the run measures validation cross-entropy on 20 windo
 The whole token stream stays in the training set. The weights, AdamW moments, and learning rate of the step that reached the threshold stay in place, and that is the `model.bin` at the end. A 500-step write from earlier in the run is replaced. When `--early-stop` is also set and this threshold trips first, the finished checkpoint is this step.
 
 ```bash
-./build/train_books --files books.txt --out run \
+./build/train_data --files books.txt --out run \
   --preset tiny --vocab 1024 --seq-len 256 --batch 4 --steps 1000 \
   --min-loss 2.5
 ```
@@ -173,10 +173,10 @@ SIGINT or SIGTERM finishes the AdamW update already running, writes `model.bin`,
 Batch windows are drawn again from `--seed`. They are not the next draws from the interrupted process. `--early-stop` patience starts again. If the previous process ended on `--early-stop`, `model.bin` is that best step, and resume continues from it. A run without `--resume` or `--reuse-tokens` replaces the tokenizer and the token file.
 
 ```bash
-./build/train_books --files books.txt --out run \
+./build/train_data --files books.txt --out run \
   --preset tiny --vocab 1024 --seq-len 256 --batch 4 --steps 1000
 # interrupt with Ctrl-C, then:
-./build/train_books --files books.txt --out run \
+./build/train_data --files books.txt --out run \
   --preset tiny --vocab 1024 --seq-len 256 --batch 4 --steps 1000 \
   --resume
 ```
@@ -190,11 +190,11 @@ Batch windows are drawn again from `--seed`. They are not the next draws from th
 The encoded stream still has to hold at least `--seq-len + 1` tokens, and `--seq-len` still has to fit the preset. `--preset` is checked and is not trained. `--steps`, `--early-stop`, `--min-loss`, and the sampling flags are not used. A later `--reuse-tokens` run trains a new model on this directory. Combining `--tokenize-only` with `--resume` or `--reuse-tokens` fails with `tokenize-only`.
 
 ```bash
-./build/train_books --files books.txt --out run \
+./build/train_data --files books.txt --out run \
   --preset tiny --vocab 1024 --seq-len 256 \
   --tokenize-only
 
-./build/train_books --files books.txt --out run \
+./build/train_data --files books.txt --out run \
   --preset tiny --vocab 1024 --seq-len 256 --batch 4 --steps 1000 \
   --reuse-tokens
 ```
@@ -204,14 +204,14 @@ The encoded stream still has to hold at least `--seq-len + 1` tokens, and `--seq
 `--reuse-tokens` reads `tokenizer.bpe`, `tokens.bin`, and `tokens.meta` from `--out` and trains a new model. It does not load `model.bin`. The finished run replaces `model.bin`. The tokenizer is not trained again, and `--files` is not encoded again. `--files` is still required. When `--prompt` is omitted, the continuation prompt is the opening of the first file. `--vocab` has to match the tokenizer. `--preset` chooses the new model. The learning-rate schedule starts at step 1 under this command's `--lr`, `--warmup`, and `--steps`. `--seed` initializes that model and draws the batch windows. stderr prints `reusing <N> tokens`. Combining `--reuse-tokens` with `--resume` fails with `reuse-tokens`.
 
 ```bash
-./build/train_books --files books.txt --out run \
+./build/train_data --files books.txt --out run \
   --preset tiny --vocab 1024 --seq-len 256 --batch 4 --steps 1000 \
   --reuse-tokens
 ```
 
 ## When it fails
 
-Errors print `train_books: <reason>` on stderr and the process exits 1. Common reasons:
+Errors print `train_data: <reason>` on stderr and the process exits 1. Common reasons:
 
 | Reason | Meaning |
 |---|---|

@@ -126,7 +126,7 @@ cmake --build build -j --target gguf
 ./build/llm_tests
 cmake --build build -j --target train_tiny
 ./build/train_tiny
-cmake --build build -j --target train_books
+cmake --build build -j --target train_data
 cmake --build build -j --target chat
-#time ./build/train_books --files books.txt --out llama.mod --preset llama-small --vocab 2048 --seq-len 256 --batch 6 --steps 5000 --prompt "moral goodness is"
-#./build/train_books --files ./conversation_data/dialogue.txt --out chat-test.mod --preset llama-small --vocab 2048 --seq-len 256 --batch 6 --steps 5000 --log-every 1 --prompt "How are you today?"
+#time ./build/train_data --files books.txt --out llama.mod --preset llama-small --vocab 2048 --seq-len 256 --batch 6 --steps 5000 --prompt "moral goodness is"
+#./build/train_data --files ./conversation_data/dialogue.txt --out chat-test.mod --preset llama-small --vocab 2048 --seq-len 256 --batch 6 --steps 5000 --log-every 1 --prompt "How are you today?"

@@ -80,7 +80,7 @@ bert_guess <piece>
 
 Pad, bos, and eos decode to no bytes, so `bert_guess` is empty when that id wins.
 
-A 30-step run on four exchanges is a shape check. The reply and the guess are whatever those weights produce. A longer chat checkpoint is a causal `train_books` run, then [`chat`](chat.md). A longer BERT checkpoint is `train_books --preset bert-tiny`. [`finetune`](finetune.md) continues either checkpoint.
+A 30-step run on four exchanges is a shape check. The reply and the guess are whatever those weights produce. A longer chat checkpoint is a causal `train_data` run, then [`chat`](chat.md). A longer BERT checkpoint is `train_data --preset bert-tiny`. [`finetune`](finetune.md) continues either checkpoint.
 
 A successful run exits 0. Each last loss has to be finite and lower than that model's first loss.
 

@@ -54,7 +54,7 @@ last_loss <step 30 loss>
 
 The prompt is `A tiny model`. Sampling is greedy: temperature 0 and top-k 1. A successful run exits 0. The last loss has to be finite and lower than the first.
 
-The temp directory is removed before the process exits. This example leaves no `tokenizer.bpe` and no `model.bin`. To keep a model, use [train_books](train_books.md).
+The temp directory is removed before the process exits. This example leaves no `tokenizer.bpe` and no `model.bin`. To keep a model, use [train_data](train_data.md).
 
 ## When it fails
 

@@ -71,7 +71,7 @@ Sampling is greedy: temperature 0 and top-k 1. Each new token is the pad id. `fo
 model> <reply>
 ```
 
-A 30-step run on four exchanges is a shape check. The reply is whatever those weights produce. Pad, bos, and eos decode to no bytes, so `model>` is empty when every sampled id is one of those. A longer checkpoint is `train_books --preset bert-tiny` with one exchange per file, then [`chat`](chat.md) `--model` on that directory. [`finetune`](finetune.md) continues the masked-token objective. `decode_step` and `prefill` still throw `causal`.
+A 30-step run on four exchanges is a shape check. The reply is whatever those weights produce. Pad, bos, and eos decode to no bytes, so `model>` is empty when every sampled id is one of those. A longer checkpoint is `train_data --preset bert-tiny` with one exchange per file, then [`chat`](chat.md) `--model` on that directory. [`finetune`](finetune.md) continues the masked-token objective. `decode_step` and `prefill` still throw `causal`.
 
 A successful run exits 0. The last loss has to be finite and lower than the first loss.
 

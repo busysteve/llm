@@ -22,7 +22,7 @@ The GPT-3 paper uses the GPT-2 block except for alternating dense and locally ba
 | Sparse attention | not implemented; every layer is dense causal attention |
 | Parameter count (untied, vocab ≈ 16000) | 111,220,864 (~111.22 M) |
 
-These match the values returned by `llm::presets::gpt3_base(vocab_size)` and the counts documented in the README / USAGE.md. The only extra parameters versus `gpt2_base` are the longer position table: `2048 * 768 - 1024 * 768 = 786432`. `gpt3_tiny` is 4 × 256 with `d_ff` 1024. `gpt3_small` is 6 × 512 with `d_ff` 2048. `train_books --preset gpt3-base` trains this shape and saves a version-2 checkpoint.
+These match the values returned by `llm::presets::gpt3_base(vocab_size)` and the counts documented in the README / USAGE.md. The only extra parameters versus `gpt2_base` are the longer position table: `2048 * 768 - 1024 * 768 = 786432`. `gpt3_tiny` is 4 × 256 with `d_ff` 1024. `gpt3_small` is 6 × 512 with `d_ff` 2048. `train_data --preset gpt3-base` trains this shape and saves a version-2 checkpoint.
 
 `--seq-len` may be as large as 2048. Attention memory grows with that length. On a 12 GB GPU prefer 512 or below for this width, the same rule as `base`.
 

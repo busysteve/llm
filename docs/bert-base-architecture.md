@@ -23,7 +23,7 @@ The `bert_base` preset in the `llm` library (`llm::presets::bert_base`) defines 
 
 These match the values returned by `llm::presets::bert_base(vocab_size)` and the counts documented in the README / USAGE.md. `bert_tiny` is 4 × 256 with `d_ff` 1024. `bert_small` is 6 × 512 with `d_ff` 2048. Both keep context 512 and a segment table of size 2.
 
-`train_books --preset bert-base` trains masked tokens and saves a version-6 checkpoint (AdamW). `save(path, nullptr)` of the same shape is version 5. The mask id is the tokenizer pad id. This library's byte-level BPE has no `<mask>` piece and does not insert pad during `encode`. Of the positions chosen for the loss (15% by default), 80% become that pad id, 10% become a random id, and 10% keep the original id. Other positions use ignore index `-100`.
+`train_data --preset bert-base` trains masked tokens and saves a version-6 checkpoint (AdamW). `save(path, nullptr)` of the same shape is version 5. The mask id is the tokenizer pad id. This library's byte-level BPE has no `<mask>` piece and does not insert pad during `encode`. Of the positions chosen for the loss (15% by default), 80% become that pad id, 10% become a random id, and 10% keep the original id. Other positions use ignore index `-100`.
 
 This is the block to train from scratch. It does not load published BERT weights. There is no WordPiece tokenizer, no next-sentence pooler, and no sentence-pair corpus format. `forward(tokens, type_ids)` is the hook for a later pair of segments. `chat` and `Generator` refuse this checkpoint. `gguf llama` rejects bidirectional attention and a segment table.
 

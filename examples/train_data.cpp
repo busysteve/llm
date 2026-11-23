@@ -84,7 +84,7 @@ struct StopGuard {
 
 void usage() {
   std::fputs(
-      "usage: train_books (--files LIST | --stdin) --out DIR [options]\n"
+      "usage: train_data (--files LIST | --stdin) --out DIR [options]\n"
       "\n"
       "LIST is one book path per line. Blank lines and lines starting with # are\n"
       "ignored. A relative path is resolved from the directory that contains LIST.\n"
@@ -606,7 +606,7 @@ int main(int argc, char** argv) {
     std::printf("prompt: %s\ncontinuation: %s\n", prompt.c_str(), text.c_str());
     return 0;
   } catch (const std::exception& error) {
-    std::fprintf(stderr, "train_books: %s\n", error.what());
+    std::fprintf(stderr, "train_data: %s\n", error.what());
     return 1;
   }
 }

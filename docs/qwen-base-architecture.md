@@ -25,7 +25,7 @@ The `qwen_base` preset in the `llm` library (`llm::presets::qwen_base`) defines 
 | Dropout | 0 |
 | Parameter count (untied, vocab ≈ 16000) | 118,970,112 (~118.97 M) |
 
-These match the values returned by `llm::presets::qwen_base(vocab_size)` and the counts documented in the README / USAGE.md. `train_books --preset qwen-base` trains this shape and saves a version-4 checkpoint.
+These match the values returned by `llm::presets::qwen_base(vocab_size)` and the counts documented in the README / USAGE.md. `train_data --preset qwen-base` trains this shape and saves a version-4 checkpoint.
 
 ## Architecture Diagram
 

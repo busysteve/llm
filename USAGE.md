@@ -144,11 +144,11 @@ tiny fits in 12 GB. Suggested batches are `(8, 512)` and `(16, 256)`. small is t
 
 ## Train from a list of books
 
-`examples/train_books.cpp` is the file-list example. It is not part of `llm_tests`. The walkthrough is [examples/train_books.md](examples/train_books.md).
+`examples/train_data.cpp` is the file-list example. It is not part of `llm_tests`. The walkthrough is [examples/train_data.md](examples/train_data.md).
 
 ```bash
-cmake --build build -j --target train_books
-./build/train_books --files books.txt --out run
+cmake --build build -j --target train_data
+./build/train_data --files books.txt --out run
 ```
 
 `books.txt` is one path per line. Blank lines and lines whose first character is `#` are ignored. A relative path is resolved from the directory that contains the list. Each file is read in full, trained as its own BPE string, and encoded with eos appended so a book boundary is a token. Pairs do not cross from one file into the next. The raw text is released before the network is built. `--stdin` reads one document from standard input and omits `--files`. That document is one BPE string with one eos token appended. It can feed a training run or `--tokenize-only`.
@@ -156,7 +156,7 @@ cmake --build build -j --target train_books
 The run writes `run/tokenizer.bpe`, `run/tokens.bin`, `run/tokens.meta`, and `run/model.bin`. `model.bin` is a version-2 façade checkpoint, version 4 for a `qwen-*` preset, or version 6 for a `bert-*` preset. After training a decoder, the process drops the training context, loads the tokenizer and `model.bin` with `LoadMode::Inference`, and prints a continuation. The default prompt is the opening of the first book. Generation stops on eos. A `bert-*` run trains masked tokens, prints `encoder: masked lm, mask token N`, and returns without sampling. `N` is the pad id. `chat` loads that directory and scores the pad id with `forward`.
 
 ```bash
-./build/train_books --files books.txt --out run \
+./build/train_data --files books.txt --out run \
   --preset tiny --vocab 4096 --seq-len 256 --batch 4 --steps 1000 \
   --prompt "The morning after"
 ```
@@ -165,11 +165,11 @@ The run writes `run/tokenizer.bpe`, `run/tokens.bin`, `run/tokens.meta`, and `ru
 
 `--early-stop N` with `N > 0` holds out the last `--valid-fraction` (default `0.1`) of the token stream, trains on the prefix, and stops after `N` validation evals with no drop in cross-entropy. The saved checkpoint is that best step. `tokens.bin` stays the full stream. `--early-stop 0` trains on the whole stream and does not evaluate. `--min-loss FLOAT` stops when a step's training loss is at or below `FLOAT` and keeps that step on the whole stream. Omitting `--min-loss` leaves the threshold off. When that threshold stops the run, the saved checkpoint is that step even if `--early-stop` had stored an earlier validation best.
 
-SIGINT or SIGTERM finishes the current update, writes `model.bin` with that step's weights and AdamW moments, prints `stop step N`, and exits before the continuation. A second signal aborts. `--resume` continues that directory. It keeps the tokenizer, the token file, the weights, and the AdamW moments, and it does not encode `--files` again. `--steps` is the total update count. The next update is the checkpoint step plus one, and its learning rate is `learning_rate_at` for that step under the `--lr`, `--warmup`, and `--steps` of this command. A checkpoint that has already reached `--steps` is not trained further. Batch windows are drawn again from `--seed`. `--early-stop` patience starts again. `finetune --resume` is a new run: it keeps moments and starts its own schedule at step 1. `--tokenize-only` trains the tokenizer, writes `tokenizer.bpe`, `tokens.bin`, and `tokens.meta`, and exits before the model. It does not write `model.bin`. `--stdin` can supply that text. `--reuse-tokens` is a new `train_books` run on the tokenizer and token file already in `--out`. It does not load `model.bin`. The schedule starts at step 1, and the finished run replaces `model.bin`.
+SIGINT or SIGTERM finishes the current update, writes `model.bin` with that step's weights and AdamW moments, prints `stop step N`, and exits before the continuation. A second signal aborts. `--resume` continues that directory. It keeps the tokenizer, the token file, the weights, and the AdamW moments, and it does not encode `--files` again. `--steps` is the total update count. The next update is the checkpoint step plus one, and its learning rate is `learning_rate_at` for that step under the `--lr`, `--warmup`, and `--steps` of this command. A checkpoint that has already reached `--steps` is not trained further. Batch windows are drawn again from `--seed`. `--early-stop` patience starts again. `finetune --resume` is a new run: it keeps moments and starts its own schedule at step 1. `--tokenize-only` trains the tokenizer, writes `tokenizer.bpe`, `tokens.bin`, and `tokens.meta`, and exits before the model. It does not write `model.bin`. `--stdin` can supply that text. `--reuse-tokens` is a new `train_data` run on the tokenizer and token file already in `--out`. It does not load `model.bin`. The schedule starts at step 1, and the finished run replaces `model.bin`.
 
 ## Talk to a trained model
 
-`examples/chat.cpp` loads `tokenizer.bpe` and `model.bin` from a `train_books` directory or from `gguf from`. It is not part of `llm_tests`. Training stays in `train_books`. The walkthrough is [examples/chat.md](examples/chat.md). Put one exchange in each file. `train_books` appends eos after each file, so that token ends the assistant turn:
+`examples/chat.cpp` loads `tokenizer.bpe` and `model.bin` from a `train_data` directory or from `gguf from`. It is not part of `llm_tests`. Training stays in `train_data`. The walkthrough is [examples/chat.md](examples/chat.md). Put one exchange in each file. `train_data` appends eos after each file, so that token ends the assistant turn:
 
 ```
 User: What is the harbor bell for?
@@ -178,7 +178,7 @@ Assistant: It marks the hour.
 
 ```bash
 cmake --build build -j --target chat
-./build/train_books --files dialogues.txt --out chat-run --vocab 1024
+./build/train_data --files dialogues.txt --out chat-run --vocab 1024
 ./build/chat --model chat-run
 ```
 
@@ -192,7 +192,7 @@ Defaults are `--max-new-tokens 128`, `--temperature 0.8`, `--top-k 40`, `--top-p
 
 ## Fine-tune an existing checkpoint
 
-`examples/finetune.cpp` loads `tokenizer.bpe` and `model.bin` from a `train_books` or `finetune` directory, encodes a new file list with that tokenizer, and keeps training. It is not part of `llm_tests`. The walkthrough is [examples/finetune.md](examples/finetune.md).
+`examples/finetune.cpp` loads `tokenizer.bpe` and `model.bin` from a `train_data` or `finetune` directory, encodes a new file list with that tokenizer, and keeps training. It is not part of `llm_tests`. The walkthrough is [examples/finetune.md](examples/finetune.md).
 
 ```bash
 cmake --build build -j --target finetune

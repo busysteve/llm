@@ -38,7 +38,7 @@ void usage() {
   std::fputs(
       "usage: chat --model DIR [options]\n"
       "\n"
-      "DIR is a train_books output directory with tokenizer.bpe and model.bin.\n"
+      "DIR is a train_data output directory with tokenizer.bpe and model.bin.\n"
       "Train one exchange per file so that file's eos ends the assistant turn:\n"
       "\n"
       "  User: What is the harbor bell for?\n"

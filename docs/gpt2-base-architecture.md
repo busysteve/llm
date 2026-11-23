@@ -19,7 +19,7 @@ The `gpt2_base` preset in the `llm` library (`llm::presets::gpt2_base`) defines 
 | Dropout | 0 (OpenAI trained GPT-2 with dropout 0.1; every preset in this library uses 0) |
 | Parameter count (untied, vocab ≈ 16000) | 110,434,432 (~110.43 M) |
 
-These match the values returned by `llm::presets::gpt2_base(vocab_size)` and the counts documented in the README / USAGE.md. `gpt2_tiny` is 4 × 256 with `d_ff` 1024. `gpt2_small` is 6 × 512 with `d_ff` 2048. Both keep context 1024. `train_books --preset gpt2-base` trains this shape and saves a version-2 checkpoint.
+These match the values returned by `llm::presets::gpt2_base(vocab_size)` and the counts documented in the README / USAGE.md. `gpt2_tiny` is 4 × 256 with `d_ff` 1024. `gpt2_small` is 6 × 512 with `d_ff` 2048. Both keep context 1024. `train_data --preset gpt2-base` trains this shape and saves a version-2 checkpoint.
 
 This is the block to train. It does not load OpenAI's GPT-2 weights. `gguf from` still rejects a public GPT-2 GGUF, and `gguf llama` rejects a checkpoint that uses GELU or linear bias. An nnllm GGUF keeps both.
 

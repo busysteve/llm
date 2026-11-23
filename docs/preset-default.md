@@ -1,6 +1,6 @@
 # tiny, small, and base
 
-`tiny`, `small`, and `base` are the default decoder presets (`llm::presets::tiny`, `small`, and `base`). They are a bias-free SwiGLU stack with learned absolute positions, LayerNorm, and context 1024. `train_books` uses `tiny` when `--preset` is omitted. `examples/train_tiny.cpp` trains `tiny`.
+`tiny`, `small`, and `base` are the default decoder presets (`llm::presets::tiny`, `small`, and `base`). They are a bias-free SwiGLU stack with learned absolute positions, LayerNorm, and context 1024. `train_data` uses `tiny` when `--preset` is omitted. `examples/train_tiny.cpp` trains `tiny`.
 
 ## Sizes
 
@@ -12,15 +12,15 @@
 
 Head dim is 64. KV heads match the query heads. SwiGLU's first linear writes `2 * d_ff`. Dropout is 0. Embeddings are untied. Bias is off. `max_seq_len` is 1024.
 
-`train_books` saves a version-2 checkpoint with AdamW moments. `save` without an optimizer writes version 1.
+`train_data` saves a version-2 checkpoint with AdamW moments. `save` without an optimizer writes version 1.
 
 ## Usage
 
 ```bash
 ./build.sh amd       # or: ./build.sh opencl, ./build.sh cuda, ./build.sh arc
-cmake --build build -j --target train_books
+cmake --build build -j --target train_data
 
-./build/train_books --files books.txt --out run \
+./build/train_data --files books.txt --out run \
   --preset tiny --vocab 1024 --seq-len 256 --batch 4 --steps 1000 \
   --prompt "The morning after"
 ```
@@ -36,7 +36,7 @@ cmake --build build -j --target chat
 ./build/chat --model run
 ```
 
-The encoded prompt plus `--max-new-tokens` has to fit in 1024. `chat` drops the oldest `User:` / `Assistant:` turn until it does. `finetune` keeps training the checkpoint on a new file list. Walkthroughs: [train_books](../examples/train_books.md), [chat](../examples/chat.md), [finetune](../examples/finetune.md).
+The encoded prompt plus `--max-new-tokens` has to fit in 1024. `chat` drops the oldest `User:` / `Assistant:` turn until it does. `finetune` keeps training the checkpoint on a new file list. Walkthroughs: [train_data](../examples/train_data.md), [chat](../examples/chat.md), [finetune](../examples/finetune.md).
 
 `gguf export` writes an `nnllm` GGUF that `gguf import` reads back. `gguf llama` writes a llama.cpp file and omits the position table and the LayerNorm biases. llama.cpp then applies RoPE and RMSNorm, so those tokens differ from this runtime. The program prints that warning and exits 0.
 
@@ -56,7 +56,7 @@ nn::Transformer model(ctx, config, seed);
 
 ## Applications
 
-- A first training run on a book list, followed by the continuation `train_books` prints.
+- A first training run on a book list, followed by the continuation `train_data` prints.
 - Dialogue when each file is one `User:` / `Assistant:` exchange and `chat` continues the transcript. [train_chat](../examples/train_chat.md) trains `tiny` on four of those exchanges and samples one reply.
 - More text on the same tokenizer through `finetune`.
 - An `nnllm` GGUF for another loader in this family.

@@ -14,15 +14,15 @@ Train this shape from scratch. `gguf from` does not load a public GPT-2 GGUF. Th
 
 Head dim is 64. KV heads match the query heads. GELU's first linear writes `d_ff`. Dropout is 0. Embeddings are untied. `nn` rejects tied embeddings, so the token table and the LM head stay separate. `max_seq_len` is 1024.
 
-`train_books` saves a version-2 checkpoint with AdamW moments. `save` without an optimizer writes version 1.
+`train_data` saves a version-2 checkpoint with AdamW moments. `save` without an optimizer writes version 1.
 
 ## Usage
 
 ```bash
 ./build.sh amd       # or: ./build.sh opencl, ./build.sh cuda, ./build.sh arc
-cmake --build build -j --target train_books
+cmake --build build -j --target train_data
 
-./build/train_books --files books.txt --out run \
+./build/train_data --files books.txt --out run \
   --preset gpt2-tiny --vocab 1024 --seq-len 256 --batch 4 --steps 1000 \
   --prompt "The morning after"
 ```
@@ -49,7 +49,7 @@ nn::Transformer model(ctx, config, seed);
 
 ## Applications
 
-- A from-scratch GPT-2-shaped model on a book list, with the continuation `train_books` prints.
+- A from-scratch GPT-2-shaped model on a book list, with the continuation `train_data` prints.
 - Dialogue through `chat` when each training file is one `User:` / `Assistant:` exchange.
 - More text on the same tokenizer through `finetune`.
 - A comparison with `gpt3-*`, which is this block at context 2048, or with `bert-*`, which is this dense block run in both directions at context 512.

@@ -14,15 +14,15 @@ Train this shape from scratch. The preset does not load published Qwen weights. 
 
 Q is `num_heads * 128` wide, so the query projection is twice `d_model`. K and V stay at `num_kv_heads * 128`. SwiGLU's first linear writes `2 * d_ff`. Dropout is 0. Embeddings are untied. `max_seq_len` is 1024.
 
-`train_books` saves a version-4 checkpoint with AdamW moments. `save` without an optimizer writes version 3.
+`train_data` saves a version-4 checkpoint with AdamW moments. `save` without an optimizer writes version 3.
 
 ## Usage
 
 ```bash
 ./build.sh amd       # or: ./build.sh opencl, ./build.sh cuda, ./build.sh arc
-cmake --build build -j --target train_books
+cmake --build build -j --target train_data
 
-./build/train_books --files books.txt --out run \
+./build/train_data --files books.txt --out run \
   --preset qwen-tiny --vocab 1024 --seq-len 256 --batch 4 --steps 1000 \
   --prompt "The morning after"
 ```
