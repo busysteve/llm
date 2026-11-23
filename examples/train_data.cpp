@@ -110,12 +110,17 @@ void usage() {
       "--tokenize-only writes that tokenizer and token file and exits before\n"
       "the model. --dir or --stdin can supply the text for that tokenization.\n"
       "\n"
-      "  --preset tiny|small|base|medium|large|\n"
-      "          llama-tiny|llama-small|llama-base|llama-medium|llama-large|\n"
-      "          qwen-tiny|qwen-small|qwen-base|qwen-medium|qwen-large|\n"
-      "          gpt2-tiny|gpt2-small|gpt2-base|gpt2-medium|gpt2-large|\n"
-      "          gpt3-tiny|gpt3-small|gpt3-base|gpt3-medium|gpt3-large|\n"
-      "          bert-tiny|bert-small|bert-base|bert-medium|bert-large\n"
+      "  --preset tiny|small|base|base-medium|base-large|medium|large|\n"
+      "          llama-tiny|llama-small|llama-base|llama-base-medium|llama-base-large|\n"
+      "          llama-medium|llama-large|\n"
+      "          qwen-tiny|qwen-small|qwen-base|qwen-base-medium|qwen-base-large|\n"
+      "          qwen-medium|qwen-large|\n"
+      "          gpt2-tiny|gpt2-small|gpt2-base|gpt2-base-medium|gpt2-base-large|\n"
+      "          gpt2-medium|gpt2-large|\n"
+      "          gpt3-tiny|gpt3-small|gpt3-base|gpt3-base-medium|gpt3-base-large|\n"
+      "          gpt3-medium|gpt3-large|\n"
+      "          bert-tiny|bert-small|bert-base|bert-base-medium|bert-base-large|\n"
+      "          bert-medium|bert-large\n"
       "                             default tiny\n"
       "  --vocab N                  default 4096 (minimum 259)\n"
       "  --seq-len N                default 256, at most the preset maximum\n"
@@ -164,7 +169,9 @@ void usage() {
       "long books is the slow part. --vocab 1024 is a faster first run.\n"
       "tiny fits in 12 GB at this default batch and length. small prefers 24 GB.\n"
       "base is a 24 GB model; prefer --seq-len 512 or less on a smaller card.\n"
-      "medium is 24 layers at width 1024. large is 36 layers at width 1280.\n"
+      "base-medium is 18 layers at the base width. base-large is 20 layers\n"
+      "at the base width. medium is 24 layers at width 1024. large is 36\n"
+      "layers at width 1280.\n"
       "llama-* is that width with RoPE and RMSNorm. qwen-* is the Qwen3 block:\n"
       "grouped-query attention, head dim 128, QK-norm, RoPE base 1e6, and\n"
       "RMSNorm epsilon 1e-6. Train a qwen preset from scratch.\n"
@@ -397,31 +404,43 @@ nn::TransformerConfig preset_config(const std::string& name, int vocab) {
   if (name == "tiny") return llm::presets::tiny(vocab);
   if (name == "small") return llm::presets::small(vocab);
   if (name == "base") return llm::presets::base(vocab);
+  if (name == "base-medium") return llm::presets::base_medium(vocab);
+  if (name == "base-large") return llm::presets::base_large(vocab);
   if (name == "medium") return llm::presets::medium(vocab);
   if (name == "large") return llm::presets::large(vocab);
   if (name == "llama-tiny") return llm::presets::llama_tiny(vocab);
   if (name == "llama-small") return llm::presets::llama_small(vocab);
   if (name == "llama-base") return llm::presets::llama_base(vocab);
+  if (name == "llama-base-medium") return llm::presets::llama_base_medium(vocab);
+  if (name == "llama-base-large") return llm::presets::llama_base_large(vocab);
   if (name == "llama-medium") return llm::presets::llama_medium(vocab);
   if (name == "llama-large") return llm::presets::llama_large(vocab);
   if (name == "qwen-tiny") return llm::presets::qwen_tiny(vocab);
   if (name == "qwen-small") return llm::presets::qwen_small(vocab);
   if (name == "qwen-base") return llm::presets::qwen_base(vocab);
+  if (name == "qwen-base-medium") return llm::presets::qwen_base_medium(vocab);
+  if (name == "qwen-base-large") return llm::presets::qwen_base_large(vocab);
   if (name == "qwen-medium") return llm::presets::qwen_medium(vocab);
   if (name == "qwen-large") return llm::presets::qwen_large(vocab);
   if (name == "gpt2-tiny") return llm::presets::gpt2_tiny(vocab);
   if (name == "gpt2-small") return llm::presets::gpt2_small(vocab);
   if (name == "gpt2-base") return llm::presets::gpt2_base(vocab);
+  if (name == "gpt2-base-medium") return llm::presets::gpt2_base_medium(vocab);
+  if (name == "gpt2-base-large") return llm::presets::gpt2_base_large(vocab);
   if (name == "gpt2-medium") return llm::presets::gpt2_medium(vocab);
   if (name == "gpt2-large") return llm::presets::gpt2_large(vocab);
   if (name == "gpt3-tiny") return llm::presets::gpt3_tiny(vocab);
   if (name == "gpt3-small") return llm::presets::gpt3_small(vocab);
   if (name == "gpt3-base") return llm::presets::gpt3_base(vocab);
+  if (name == "gpt3-base-medium") return llm::presets::gpt3_base_medium(vocab);
+  if (name == "gpt3-base-large") return llm::presets::gpt3_base_large(vocab);
   if (name == "gpt3-medium") return llm::presets::gpt3_medium(vocab);
   if (name == "gpt3-large") return llm::presets::gpt3_large(vocab);
   if (name == "bert-tiny") return llm::presets::bert_tiny(vocab);
   if (name == "bert-small") return llm::presets::bert_small(vocab);
   if (name == "bert-base") return llm::presets::bert_base(vocab);
+  if (name == "bert-base-medium") return llm::presets::bert_base_medium(vocab);
+  if (name == "bert-base-large") return llm::presets::bert_base_large(vocab);
   if (name == "bert-medium") return llm::presets::bert_medium(vocab);
   if (name == "bert-large") return llm::presets::bert_large(vocab);
   throw std::runtime_error("preset");

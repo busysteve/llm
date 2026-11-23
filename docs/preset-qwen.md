@@ -1,6 +1,6 @@
-# qwen-tiny, qwen-small, qwen-base, qwen-medium, and qwen-large
+# qwen-tiny, qwen-small, qwen-base, qwen-base-medium, qwen-base-large, qwen-medium, and qwen-large
 
-`qwen-tiny`, `qwen-small`, `qwen-base`, `qwen-medium`, and `qwen-large` (`llm::presets::qwen_tiny`, `qwen_small`, `qwen_base`, `qwen_medium`, and `qwen_large`) are the Qwen3 decoder. Attention is causal and grouped. Head dim is 128. Q and K each pass an RMSNorm of width 128 before RoPE. The RoPE base is `1e6`. The RMSNorm epsilon is `1e-6`. Bias is off. A diagram of `qwen_base` is in [qwen-base-architecture.md](qwen-base-architecture.md).
+`qwen-tiny`, `qwen-small`, `qwen-base`, `qwen-base-medium`, `qwen-base-large`, `qwen-medium`, and `qwen-large` (`llm::presets::qwen_tiny`, `qwen_small`, `qwen_base`, `qwen_base_medium`, `qwen_base_large`, `qwen_medium`, and `qwen_large`) are the Qwen3 decoder. Attention is causal and grouped. Head dim is 128. Q and K each pass an RMSNorm of width 128 before RoPE. The RoPE base is `1e6`. The RMSNorm epsilon is `1e-6`. Bias is off. A diagram of `qwen_base` is in [qwen-base-architecture.md](qwen-base-architecture.md).
 
 Train this shape from scratch. The preset does not load published Qwen weights. A public Qwen2 or Qwen3 GGUF comes in through `gguf from`.
 
@@ -11,6 +11,8 @@ Train this shape from scratch. The preset does not load published Qwen weights. 
 | qwen_tiny | 4 | 256 | 4 | 2 | 128 | 768 | 12,127,488 (12.13M) |
 | qwen_small | 6 | 512 | 8 | 2 | 128 | 1536 | 38,412,288 (38.41M) |
 | qwen_base | 12 | 768 | 12 | 4 | 128 | 2048 | 118,970,112 (118.97M) |
+| qwen_base_medium | 18 | 768 | 12 | 4 | 128 | 2048 | 166,166,784 (166.17M) |
+| qwen_base_large | 20 | 768 | 12 | 4 | 128 | 2048 | 181,899,008 (181.90M) |
 | qwen_medium | 24 | 1024 | 16 | 4 | 128 | 2816 | 366,271,488 (366.27M) |
 | qwen_large | 36 | 1280 | 20 | 5 | 128 | 3584 | 831,426,816 (831.43M) |
 
@@ -29,7 +31,7 @@ cmake --build build -j --target train_data
   --prompt "The morning after"
 ```
 
-`--preset` is `qwen-tiny`, `qwen-small`, `qwen-base`, `qwen-medium`, or `qwen-large`. `--seq-len` must be at most 1024. `--vocab` must be at least 259. The extra parameters versus `llama-*` are the wider Q projection and the QK-norm weights. Treat memory as the matching default width, and give `qwen-base` 24 GB. On a 12 GB GPU keep that width at `--seq-len` 512 or below. `qwen-medium` is 24 layers at width 1024 with 4 KV heads, and `qwen-large` is 36 layers at width 1280 with 5 KV heads. Both are past these notes. The notes are one GPU, full attention, and no activation checkpointing. They were sized for float32 activations. Training stores retained activations as bfloat16 and keeps parameters, Adam state, and checkpoints in float32, so the activation working set is about half of these notes.
+`--preset` is `qwen-tiny`, `qwen-small`, `qwen-base`, `qwen-base-medium`, `qwen-base-large`, `qwen-medium`, or `qwen-large`. `--seq-len` must be at most 1024. `--vocab` must be at least 259. The extra parameters versus `llama-*` are the wider Q projection and the QK-norm weights. Treat memory as the matching default width, and give `qwen-base` 24 GB. On a 12 GB GPU keep that width at `--seq-len` 512 or below. `qwen-base-medium` is 18 layers at the base width with 4 KV heads, and `qwen-base-large` is 20 layers at the base width with 4 KV heads. `qwen-medium` is 24 layers at width 1024 with 4 KV heads, and `qwen-large` is 36 layers at width 1280 with 5 KV heads. `qwen-base-medium`, `qwen-base-large`, `qwen-medium`, and `qwen-large` are past these notes. The notes are one GPU, full attention, and no activation checkpointing. They were sized for float32 activations. Training stores retained activations as bfloat16 and keeps parameters, Adam state, and checkpoints in float32, so the activation working set is about half of these notes.
 
 The run prints a continuation. `chat` continues a transcript inside the 1024-token window. `finetune` keeps training on a new file list.
 
@@ -40,7 +42,7 @@ nn::TransformerConfig config = llm::presets::qwen_tiny(vocab_size);
 nn::Transformer model(ctx, config, seed);
 ```
 
-`vocab_size` must be at least 1. `qwen_small`, `qwen_base`, `qwen_medium`, and `qwen_large` take the same argument.
+`vocab_size` must be at least 1. `qwen_small`, `qwen_base`, `qwen_base_medium`, `qwen_base_large`, `qwen_medium`, and `qwen_large` take the same argument.
 
 ## Benefits
 

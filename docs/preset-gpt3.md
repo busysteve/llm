@@ -1,6 +1,6 @@
-# gpt3-tiny, gpt3-small, gpt3-base, gpt3-medium, and gpt3-large
+# gpt3-tiny, gpt3-small, gpt3-base, gpt3-base-medium, gpt3-base-large, gpt3-medium, and gpt3-large
 
-`gpt3-tiny`, `gpt3-small`, `gpt3-base`, `gpt3-medium`, and `gpt3-large` (`llm::presets::gpt3_tiny`, `gpt3_small`, `gpt3_base`, `gpt3_medium`, and `gpt3_large`) are the GPT-2 dense decoder with `max_seq_len` 2048. Positions are learned absolute. Norms are LayerNorm with epsilon `1e-5`. The MLP is erf GELU with `d_ff = 4 * d_model`. Every linear has a bias. Attention is causal and dense in every layer. A diagram of `gpt3_base` is in [gpt3-base-architecture.md](gpt3-base-architecture.md).
+`gpt3-tiny`, `gpt3-small`, `gpt3-base`, `gpt3-base-medium`, `gpt3-base-large`, `gpt3-medium`, and `gpt3-large` (`llm::presets::gpt3_tiny`, `gpt3_small`, `gpt3_base`, `gpt3_base_medium`, `gpt3_base_large`, `gpt3_medium`, and `gpt3_large`) are the GPT-2 dense decoder with `max_seq_len` 2048. Positions are learned absolute. Norms are LayerNorm with epsilon `1e-5`. The MLP is erf GELU with `d_ff = 4 * d_model`. Every linear has a bias. Attention is causal and dense in every layer. A diagram of `gpt3_base` is in [gpt3-base-architecture.md](gpt3-base-architecture.md).
 
 The GPT-3 paper alternates dense attention with locally banded sparse attention. This library has no sparse attention. The extra parameters versus `gpt2-*` are the longer position table: `1024 * d_model` rows.
 
@@ -13,6 +13,8 @@ Train this shape from scratch. OpenAI did not release GPT-3 weights, and `gguf f
 | gpt3_tiny | 4 | 256 | 4 | 1024 | 11,891,840 (11.89M) |
 | gpt3_small | 6 | 512 | 8 | 2048 | 36,363,904 (36.36M) |
 | gpt3_base | 12 | 768 | 12 | 3072 | 111,220,864 (111.22M) |
+| gpt3_base_medium | 18 | 768 | 12 | 3072 | 153,748,096 (153.75M) |
+| gpt3_base_large | 20 | 768 | 12 | 3072 | 167,923,840 (167.92M) |
 | gpt3_medium | 24 | 1024 | 16 | 4096 | 337,192,576 (337.19M) |
 | gpt3_large | 36 | 1280 | 20 | 5120 | 751,987,840 (751.99M) |
 
@@ -31,7 +33,7 @@ cmake --build build -j --target train_data
   --prompt "The morning after"
 ```
 
-`--preset` is `gpt3-tiny`, `gpt3-small`, `gpt3-base`, `gpt3-medium`, or `gpt3-large`. `--seq-len` must be at most 2048. `--vocab` must be at least 259. Attention memory grows with the length. The longer position table is cheap beside that. On a 12 GB GPU prefer `--seq-len` 512 or below for `gpt3-base`. `gpt3-medium` is 24 layers at width 1024, and `gpt3-large` is 36 layers at width 1280. Both are past these notes. `gpt3-tiny` is the width that can spend the extra context on a 12 GB card. The notes are one GPU, full attention, and no activation checkpointing. They were sized for float32 activations. Training stores retained activations as bfloat16 and keeps parameters, Adam state, and checkpoints in float32, so the activation working set is about half of these notes.
+`--preset` is `gpt3-tiny`, `gpt3-small`, `gpt3-base`, `gpt3-base-medium`, `gpt3-base-large`, `gpt3-medium`, or `gpt3-large`. `--seq-len` must be at most 2048. `--vocab` must be at least 259. Attention memory grows with the length. The longer position table is cheap beside that. On a 12 GB GPU prefer `--seq-len` 512 or below for `gpt3-base`. `gpt3-base-medium` is 18 layers at the base width, and `gpt3-base-large` is 20 layers at the base width. `gpt3-medium` is 24 layers at width 1024, and `gpt3-large` is 36 layers at width 1280. `gpt3-base-medium`, `gpt3-base-large`, `gpt3-medium`, and `gpt3-large` are past these notes. `gpt3-tiny` is the width that can spend the extra context on a 12 GB card. The notes are one GPU, full attention, and no activation checkpointing. They were sized for float32 activations. Training stores retained activations as bfloat16 and keeps parameters, Adam state, and checkpoints in float32, so the activation working set is about half of these notes.
 
 The run prints a continuation. `chat` uses the 2048-token window and drops the oldest `User:` / `Assistant:` turn until the prompt plus `--max-new-tokens` fits. `finetune` keeps training on a new file list. Its `--seq-len` must also stay at or below 2048.
 
@@ -42,7 +44,7 @@ nn::TransformerConfig config = llm::presets::gpt3_tiny(vocab_size);
 nn::Transformer model(ctx, config, seed);
 ```
 
-`vocab_size` must be at least 1. `gpt3_small`, `gpt3_base`, `gpt3_medium`, and `gpt3_large` take the same argument.
+`vocab_size` must be at least 1. `gpt3_small`, `gpt3_base`, `gpt3_base_medium`, `gpt3_base_large`, `gpt3_medium`, and `gpt3_large` take the same argument.
 
 ## Benefits
 

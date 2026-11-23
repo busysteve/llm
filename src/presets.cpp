@@ -65,6 +65,11 @@ nn::TransformerConfig small(int vocab_size) { return make_config(vocab_size, 6, 
 
 nn::TransformerConfig base(int vocab_size) { return make_config(vocab_size, 12, 768, 12, 2048); }
 
+// Base width, deeper than base. medium and large also step up in width.
+nn::TransformerConfig base_medium(int vocab_size) { return make_config(vocab_size, 18, 768, 12, 2048); }
+
+nn::TransformerConfig base_large(int vocab_size) { return make_config(vocab_size, 20, 768, 12, 2048); }
+
 // SwiGLU width is (8/3) * d_model, rounded up to a multiple of 256.
 nn::TransformerConfig medium(int vocab_size) { return make_config(vocab_size, 24, 1024, 16, 2816); }
 
@@ -88,6 +93,18 @@ nn::TransformerConfig llama_base(int vocab_size) {
   return config;
 }
 
+nn::TransformerConfig llama_base_medium(int vocab_size) {
+  nn::TransformerConfig config = base_medium(vocab_size);
+  config.positional = nn::PositionalEncoding::Rope;
+  return config;
+}
+
+nn::TransformerConfig llama_base_large(int vocab_size) {
+  nn::TransformerConfig config = base_large(vocab_size);
+  config.positional = nn::PositionalEncoding::Rope;
+  return config;
+}
+
 nn::TransformerConfig llama_medium(int vocab_size) {
   nn::TransformerConfig config = medium(vocab_size);
   config.positional = nn::PositionalEncoding::Rope;
@@ -106,6 +123,14 @@ nn::TransformerConfig qwen_small(int vocab_size) { return qwen_width(vocab_size,
 
 nn::TransformerConfig qwen_base(int vocab_size) { return qwen_width(vocab_size, 12, 768, 12, 4, 2048); }
 
+nn::TransformerConfig qwen_base_medium(int vocab_size) {
+  return qwen_width(vocab_size, 18, 768, 12, 4, 2048);
+}
+
+nn::TransformerConfig qwen_base_large(int vocab_size) {
+  return qwen_width(vocab_size, 20, 768, 12, 4, 2048);
+}
+
 nn::TransformerConfig qwen_medium(int vocab_size) {
   return qwen_width(vocab_size, 24, 1024, 16, 4, 2816);
 }
@@ -120,6 +145,10 @@ nn::TransformerConfig gpt2_small(int vocab_size) { return gpt_width(vocab_size, 
 
 nn::TransformerConfig gpt2_base(int vocab_size) { return gpt_width(vocab_size, 12, 768, 12, 1024); }
 
+nn::TransformerConfig gpt2_base_medium(int vocab_size) { return gpt_width(vocab_size, 18, 768, 12, 1024); }
+
+nn::TransformerConfig gpt2_base_large(int vocab_size) { return gpt_width(vocab_size, 20, 768, 12, 1024); }
+
 nn::TransformerConfig gpt2_medium(int vocab_size) { return gpt_width(vocab_size, 24, 1024, 16, 1024); }
 
 nn::TransformerConfig gpt2_large(int vocab_size) { return gpt_width(vocab_size, 36, 1280, 20, 1024); }
@@ -129,6 +158,10 @@ nn::TransformerConfig gpt3_tiny(int vocab_size) { return gpt_width(vocab_size, 4
 nn::TransformerConfig gpt3_small(int vocab_size) { return gpt_width(vocab_size, 6, 512, 8, 2048); }
 
 nn::TransformerConfig gpt3_base(int vocab_size) { return gpt_width(vocab_size, 12, 768, 12, 2048); }
+
+nn::TransformerConfig gpt3_base_medium(int vocab_size) { return gpt_width(vocab_size, 18, 768, 12, 2048); }
+
+nn::TransformerConfig gpt3_base_large(int vocab_size) { return gpt_width(vocab_size, 20, 768, 12, 2048); }
 
 nn::TransformerConfig gpt3_medium(int vocab_size) { return gpt_width(vocab_size, 24, 1024, 16, 2048); }
 
@@ -148,6 +181,10 @@ nn::TransformerConfig bert_tiny(int vocab_size) { return bert_width(vocab_size, 
 nn::TransformerConfig bert_small(int vocab_size) { return bert_width(vocab_size, 6, 512, 8); }
 
 nn::TransformerConfig bert_base(int vocab_size) { return bert_width(vocab_size, 12, 768, 12); }
+
+nn::TransformerConfig bert_base_medium(int vocab_size) { return bert_width(vocab_size, 18, 768, 12); }
+
+nn::TransformerConfig bert_base_large(int vocab_size) { return bert_width(vocab_size, 20, 768, 12); }
 
 nn::TransformerConfig bert_medium(int vocab_size) { return bert_width(vocab_size, 24, 1024, 16); }
 

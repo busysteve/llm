@@ -526,6 +526,25 @@ void check_presets() {
     nn::Transformer model(ctx, llm::presets::base(16000), 1);
     CHECK(param_numel(model) == 110335488);
   }
+  CHECK(llm::presets::base_medium(8).num_layers == 18);
+  CHECK(llm::presets::base_medium(8).d_model == 768);
+  CHECK(llm::presets::base_medium(8).num_heads == 12);
+  CHECK(llm::presets::base_medium(8).d_ff == 2048);
+  CHECK(llm::presets::base_medium(8).max_seq_len == 1024);
+  CHECK(llm::presets::base_large(8).num_layers == 20);
+  CHECK(llm::presets::base_large(8).d_model == 768);
+  CHECK(llm::presets::base_large(8).num_heads == 12);
+  CHECK(llm::presets::base_large(8).d_ff == 2048);
+  {
+    nn::Context ctx;
+    nn::Transformer model(ctx, llm::presets::base_medium(16000), 1);
+    CHECK(param_numel(model) == 152821248);
+  }
+  {
+    nn::Context ctx;
+    nn::Transformer model(ctx, llm::presets::base_large(16000), 1);
+    CHECK(param_numel(model) == 166983168);
+  }
   CHECK(llm::presets::medium(8).num_layers == 24);
   CHECK(llm::presets::medium(8).d_model == 1024);
   CHECK(llm::presets::medium(8).num_heads == 16);
@@ -556,6 +575,14 @@ void check_presets() {
   CHECK(llm::presets::llama_small(8).num_layers == 6);
   CHECK(llm::presets::llama_base(8).d_model == 768);
   CHECK(llm::presets::llama_base(8).d_ff == 2048);
+  CHECK(llm::presets::llama_base_medium(8).num_layers == 18);
+  CHECK(llm::presets::llama_base_medium(8).d_model == 768);
+  CHECK(llm::presets::llama_base_medium(8).d_ff == 2048);
+  CHECK(llm::presets::llama_base_medium(8).positional == nn::PositionalEncoding::Rope);
+  CHECK(llm::presets::llama_base_large(8).num_layers == 20);
+  CHECK(llm::presets::llama_base_large(8).d_model == 768);
+  CHECK(llm::presets::llama_base_large(8).d_ff == 2048);
+  CHECK(llm::presets::llama_base_large(8).positional == nn::PositionalEncoding::Rope);
   CHECK(llm::presets::llama_medium(8).num_layers == 24);
   CHECK(llm::presets::llama_medium(8).d_model == 1024);
   CHECK(llm::presets::llama_medium(8).d_ff == 2816);
@@ -571,6 +598,16 @@ void check_presets() {
       CHECK(param.name.find("pos_emb") == std::string::npos);
       CHECK(param.name.size() < 5 || param.name.compare(param.name.size() - 5, 5, ".bias") != 0);
     }
+  }
+  {
+    nn::Context ctx;
+    nn::Transformer model(ctx, llm::presets::llama_base_medium(16000), 1);
+    CHECK(param_numel(model) == 152006400);
+  }
+  {
+    nn::Context ctx;
+    nn::Transformer model(ctx, llm::presets::llama_base_large(16000), 1);
+    CHECK(param_numel(model) == 166165248);
   }
   {
     nn::Context ctx;
@@ -603,6 +640,15 @@ void check_presets() {
   CHECK(llm::presets::qwen_base(8).num_heads == 12);
   CHECK(llm::presets::qwen_base(8).num_kv_heads == 4);
   CHECK(llm::presets::qwen_base(8).d_ff == 2048);
+  CHECK(llm::presets::qwen_base_medium(8).num_layers == 18);
+  CHECK(llm::presets::qwen_base_medium(8).d_model == 768);
+  CHECK(llm::presets::qwen_base_medium(8).num_heads == 12);
+  CHECK(llm::presets::qwen_base_medium(8).num_kv_heads == 4);
+  CHECK(llm::presets::qwen_base_medium(8).d_ff == 2048);
+  CHECK(llm::presets::qwen_base_large(8).num_layers == 20);
+  CHECK(llm::presets::qwen_base_large(8).d_model == 768);
+  CHECK(llm::presets::qwen_base_large(8).num_kv_heads == 4);
+  CHECK(llm::presets::qwen_base_large(8).d_ff == 2048);
   CHECK(llm::presets::qwen_medium(8).num_layers == 24);
   CHECK(llm::presets::qwen_medium(8).d_model == 1024);
   CHECK(llm::presets::qwen_medium(8).num_heads == 16);
@@ -644,6 +690,16 @@ void check_presets() {
     nn::Context ctx;
     nn::Transformer model(ctx, llm::presets::qwen_base(16000), 1);
     CHECK(param_numel(model) == 118970112);
+  }
+  {
+    nn::Context ctx;
+    nn::Transformer model(ctx, llm::presets::qwen_base_medium(16000), 1);
+    CHECK(param_numel(model) == 166166784);
+  }
+  {
+    nn::Context ctx;
+    nn::Transformer model(ctx, llm::presets::qwen_base_large(16000), 1);
+    CHECK(param_numel(model) == 181899008);
   }
   {
     nn::Context ctx;
@@ -707,6 +763,13 @@ void check_presets() {
   CHECK(llm::presets::gpt2_base(8).num_layers == 12);
   CHECK(llm::presets::gpt2_base(8).d_model == 768);
   CHECK(llm::presets::gpt2_base(8).d_ff == 3072);
+  CHECK(llm::presets::gpt2_base_medium(8).num_layers == 18);
+  CHECK(llm::presets::gpt2_base_medium(8).d_model == 768);
+  CHECK(llm::presets::gpt2_base_medium(8).d_ff == 3072);
+  CHECK(llm::presets::gpt2_base_medium(8).max_seq_len == 1024);
+  CHECK(llm::presets::gpt2_base_large(8).num_layers == 20);
+  CHECK(llm::presets::gpt2_base_large(8).d_model == 768);
+  CHECK(llm::presets::gpt2_base_large(8).d_ff == 3072);
   CHECK(llm::presets::gpt2_medium(8).num_layers == 24);
   CHECK(llm::presets::gpt2_medium(8).d_model == 1024);
   CHECK(llm::presets::gpt2_medium(8).num_heads == 16);
@@ -729,6 +792,14 @@ void check_presets() {
   CHECK(llm::presets::gpt3_base(8).num_layers == 12);
   CHECK(llm::presets::gpt3_base(8).d_model == 768);
   CHECK(llm::presets::gpt3_base(8).d_ff == 3072);
+  CHECK(llm::presets::gpt3_base_medium(8).num_layers == 18);
+  CHECK(llm::presets::gpt3_base_medium(8).d_model == 768);
+  CHECK(llm::presets::gpt3_base_medium(8).d_ff == 3072);
+  CHECK(llm::presets::gpt3_base_medium(8).max_seq_len == 2048);
+  CHECK(llm::presets::gpt3_base_large(8).num_layers == 20);
+  CHECK(llm::presets::gpt3_base_large(8).d_model == 768);
+  CHECK(llm::presets::gpt3_base_large(8).d_ff == 3072);
+  CHECK(llm::presets::gpt3_base_large(8).max_seq_len == 2048);
   CHECK(llm::presets::gpt3_medium(8).num_layers == 24);
   CHECK(llm::presets::gpt3_medium(8).d_model == 1024);
   CHECK(llm::presets::gpt3_medium(8).max_seq_len == 2048);
@@ -770,6 +841,16 @@ void check_presets() {
   }
   {
     nn::Context ctx;
+    nn::Transformer model(ctx, llm::presets::gpt2_base_medium(16000), 1);
+    CHECK(param_numel(model) == 152961664);
+  }
+  {
+    nn::Context ctx;
+    nn::Transformer model(ctx, llm::presets::gpt2_base_large(16000), 1);
+    CHECK(param_numel(model) == 167137408);
+  }
+  {
+    nn::Context ctx;
     nn::Transformer model(ctx, llm::presets::gpt2_medium(16000), 1);
     CHECK(param_numel(model) == 336144000);
   }
@@ -803,6 +884,16 @@ void check_presets() {
   }
   {
     nn::Context ctx;
+    nn::Transformer model(ctx, llm::presets::gpt3_base_medium(16000), 1);
+    CHECK(param_numel(model) == 153748096);
+  }
+  {
+    nn::Context ctx;
+    nn::Transformer model(ctx, llm::presets::gpt3_base_large(16000), 1);
+    CHECK(param_numel(model) == 167923840);
+  }
+  {
+    nn::Context ctx;
     nn::Transformer model(ctx, llm::presets::gpt3_medium(16000), 1);
     CHECK(param_numel(model) == 337192576);
   }
@@ -829,6 +920,16 @@ void check_presets() {
   CHECK(llm::presets::bert_base(8).num_layers == 12);
   CHECK(llm::presets::bert_base(8).d_model == 768);
   CHECK(llm::presets::bert_base(8).d_ff == 3072);
+  CHECK(llm::presets::bert_base_medium(8).num_layers == 18);
+  CHECK(llm::presets::bert_base_medium(8).d_model == 768);
+  CHECK(llm::presets::bert_base_medium(8).d_ff == 3072);
+  CHECK(llm::presets::bert_base_medium(8).max_seq_len == 512);
+  CHECK(llm::presets::bert_base_medium(8).causal == false);
+  CHECK(llm::presets::bert_base_large(8).num_layers == 20);
+  CHECK(llm::presets::bert_base_large(8).d_model == 768);
+  CHECK(llm::presets::bert_base_large(8).d_ff == 3072);
+  CHECK(llm::presets::bert_base_large(8).max_seq_len == 512);
+  CHECK(llm::presets::bert_base_large(8).causal == false);
   CHECK(llm::presets::bert_medium(8).num_layers == 24);
   CHECK(llm::presets::bert_medium(8).d_model == 1024);
   CHECK(llm::presets::bert_medium(8).d_ff == 4096);
@@ -862,6 +963,16 @@ void check_presets() {
     nn::Context ctx;
     nn::Transformer model(ctx, llm::presets::bert_base(16000), 1);
     CHECK(param_numel(model) == 110042752);
+  }
+  {
+    nn::Context ctx;
+    nn::Transformer model(ctx, llm::presets::bert_base_medium(16000), 1);
+    CHECK(param_numel(model) == 152569984);
+  }
+  {
+    nn::Context ctx;
+    nn::Transformer model(ctx, llm::presets::bert_base_large(16000), 1);
+    CHECK(param_numel(model) == 166745728);
   }
   {
     nn::Context ctx;
