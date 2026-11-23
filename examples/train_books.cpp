@@ -51,6 +51,8 @@ struct Options {
   int seed = 1;
   bool resume = false;
   bool reuse_tokens = false;
+  bool tokenize_only = false;
+  bool from_stdin = false;
   std::string prompt;
 };
 
@@ -82,10 +84,12 @@ struct StopGuard {
 
 void usage() {
   std::fputs(
-      "usage: train_books --files LIST --out DIR [options]\n"
+      "usage: train_books (--files LIST | --stdin) --out DIR [options]\n"
       "\n"
       "LIST is one book path per line. Blank lines and lines starting with # are\n"
       "ignored. A relative path is resolved from the directory that contains LIST.\n"
+      "--stdin reads one document from standard input instead of LIST. That\n"
+      "document is one tokenizer string, with one eos token appended.\n"
       "\n"
       "Trains a byte-level BPE tokenizer on those files, trains a preset\n"
       "transformer, writes tokenizer.bpe and model.bin, then loads both and\n"
@@ -96,6 +100,8 @@ void usage() {
       "AdamW moments, and the learning-rate step are kept. --steps is the\n"
       "total update count from the start of the run. --reuse-tokens starts a\n"
       "new model on the tokenizer and token file already in --out.\n"
+      "--tokenize-only writes that tokenizer and token file and exits before\n"
+      "the model. --stdin can supply the text for that tokenization.\n"
       "\n"
       "  --preset tiny|small|base|llama-tiny|llama-small|llama-base|\n"
       "          qwen-tiny|qwen-small|qwen-base|\n"
@@ -122,7 +128,8 @@ void usage() {
       "                             validation loss. Used when --early-stop\n"
       "                             is positive.\n"
       "  --lr FLOAT                 default 3e-4\n"
-      "  --prompt TEXT              default: opening of the first book\n"
+      "  --prompt TEXT              default: opening of the first book,\n"
+      "                             or of the stdin document\n"
       "  --max-new-tokens N         default 80\n"
       "  --temperature FLOAT        default 0.8 (0 is greedy)\n"
       "  --top-k N                  default 40 (0 disables)\n"
@@ -133,6 +140,10 @@ void usage() {
       "  --reuse-tokens             restart training on the tokens in --out.\n"
       "                             Requires tokenizer.bpe, tokens.bin, and\n"
       "                             tokens.meta. Does not load model.bin.\n"
+      "  --tokenize-only            write tokenizer.bpe, tokens.bin, and\n"
+      "                             tokens.meta, then exit before the model.\n"
+      "  --stdin                    read one document from standard input\n"
+      "                             instead of --files.\n"
       "\n"
       "Each book is one tokenizer string, then encoded with an eos token appended.\n"
       "Tokenizer training scans the corpus once per merge, so a large vocab on\n"
@@ -209,6 +220,8 @@ Options parse(int argc, char** argv) {
     else if (flag == "--seed") opt.seed = need_int(i, argc, argv);
     else if (flag == "--resume") opt.resume = true;
     else if (flag == "--reuse-tokens") opt.reuse_tokens = true;
+    else if (flag == "--tokenize-only") opt.tokenize_only = true;
+    else if (flag == "--stdin") opt.from_stdin = true;
     else throw std::runtime_error(argv[i]);
   }
   if (help) {
@@ -229,8 +242,14 @@ Options parse(int argc, char** argv) {
       (opt.eval_every < 1 || opt.eval_every > opt.steps)) {
     throw std::runtime_error("eval_every");
   }
+  if (opt.tokenize_only && (opt.resume || opt.reuse_tokens)) {
+    throw std::runtime_error("tokenize-only");
+  }
   if (opt.resume && opt.reuse_tokens) throw std::runtime_error("reuse-tokens");
-  if (opt.files.empty() || opt.out.empty()) {
+  if (opt.from_stdin && (opt.resume || opt.reuse_tokens || !opt.files.empty())) {
+    throw std::runtime_error("stdin");
+  }
+  if (opt.out.empty() || (opt.files.empty() && !opt.from_stdin)) {
     usage();
     throw std::runtime_error("files");
   }
@@ -260,6 +279,19 @@ std::vector<std::filesystem::path> read_list(const std::filesystem::path& list_p
   }
   if (paths.empty()) throw std::runtime_error("files");
   return paths;
+}
+
+std::string read_stdin() {
+  std::string text;
+  char buf[65536];
+  while (true) {
+    const std::size_t n = std::fread(buf, 1, sizeof buf, stdin);
+    if (n > 0) text.append(buf, n);
+    if (std::ferror(stdin)) throw std::runtime_error("stdin");
+    if (n < sizeof buf) break;
+  }
+  if (text.empty()) throw std::runtime_error("stdin");
+  return text;
 }
 
 std::string read_book(const std::filesystem::path& path) {
@@ -354,7 +386,8 @@ bool is_file(const std::filesystem::path& path) { return std::filesystem::is_reg
 int main(int argc, char** argv) {
   try {
     const Options opt = parse(argc, argv);
-    const std::vector<std::filesystem::path> paths = read_list(opt.files);
+    const std::vector<std::filesystem::path> paths =
+        opt.from_stdin ? std::vector<std::filesystem::path>{} : read_list(opt.files);
 
     const std::filesystem::path tok_path = opt.out / "tokenizer.bpe";
     const std::filesystem::path model_path = opt.out / "model.bin";
@@ -387,12 +420,18 @@ int main(int argc, char** argv) {
                    resume_tokens->ids().size());
     } else {
       std::vector<std::string> books;
-      books.reserve(paths.size());
       int64_t bytes = 0;
-      for (const std::filesystem::path& path : paths) {
-        books.push_back(read_book(path));
-        bytes += static_cast<int64_t>(books.back().size());
-        std::fprintf(stderr, "read %s (%zu bytes)\n", path.string().c_str(), books.back().size());
+      if (opt.from_stdin) {
+        books.push_back(read_stdin());
+        bytes = static_cast<int64_t>(books.back().size());
+        std::fprintf(stderr, "read stdin (%zu bytes)\n", books.back().size());
+      } else {
+        books.reserve(paths.size());
+        for (const std::filesystem::path& path : paths) {
+          books.push_back(read_book(path));
+          bytes += static_cast<int64_t>(books.back().size());
+          std::fprintf(stderr, "read %s (%zu bytes)\n", path.string().c_str(), books.back().size());
+        }
       }
       prompt = opt.prompt.empty() ? opening_of(books.front()) : opt.prompt;
 
@@ -417,6 +456,15 @@ int main(int argc, char** argv) {
     const nn::TransformerConfig config = preset_config(opt.preset, tok->vocab_size());
     if (opt.seq_len > config.max_seq_len) throw std::runtime_error("seq_len");
     const bool encoder = !config.causal;
+
+    // Tokens are on the host. Exit before the training context allocates a model.
+    if (opt.tokenize_only) {
+      llm::write_token_file(bin_path, meta_path, ids, static_cast<int32_t>(tok->vocab_size()));
+      tok->save(tok_path);
+      std::fprintf(stderr, "saved %s\n", tok_path.string().c_str());
+      std::fprintf(stderr, "tokenize only\n");
+      return 0;
+    }
 
     std::vector<int32_t> train_ids;
     std::vector<int32_t> valid_ids;

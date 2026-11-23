@@ -1,6 +1,6 @@
 # How to train from a list of books
 
-`train_books` is the file-list example in [`train_books.cpp`](train_books.cpp). It reads a list of text files, trains a byte-level BPE tokenizer and a preset transformer, writes the tokenizer and the checkpoint, then loads both and prints a continuation. A `bert-*` preset trains masked tokens and does not print a continuation. `--early-stop` can hold out a suffix of the tokens and stop when that validation loss stops falling. `--min-loss` can stop when a step's training loss reaches a threshold. SIGINT or SIGTERM saves the current step, `--resume` continues that same run, and `--reuse-tokens` starts a new model on the saved tokens. It is a separate program from `llm_tests`.
+`train_books` is the file-list example in [`train_books.cpp`](train_books.cpp). It reads a list of text files, trains a byte-level BPE tokenizer and a preset transformer, writes the tokenizer and the checkpoint, then loads both and prints a continuation. A `bert-*` preset trains masked tokens and does not print a continuation. `--early-stop` can hold out a suffix of the tokens and stop when that validation loss stops falling. `--min-loss` can stop when a step's training loss reaches a threshold. SIGINT or SIGTERM saves the current step, `--resume` continues that same run, `--reuse-tokens` starts a new model on the saved tokens, and `--tokenize-only` writes that tokenizer and token file and exits before the model. `--stdin` reads one document from standard input instead of `--files`. It is a separate program from `llm_tests`.
 
 Build from the repository root. Requirements are in the [README](../README.md).
 
@@ -25,6 +25,18 @@ Each file is read in full and trained as its own BPE string. Pairs do not cross 
 
 The whole token array stays in host memory. A corpus shorter than `--seq-len + 1` tokens fails with `train_books: short corpus`.
 
+## Standard input
+
+`--stdin` reads one document from standard input and replaces `--files`. The document is one BPE string. One eos token is appended. A pipe of several books does not insert a boundary between them. Use `--files` when each file should end with eos.
+
+```bash
+cat novels/harbor.txt | ./build/train_books --stdin --out run \
+  --preset tiny --vocab 1024 --seq-len 256 \
+  --tokenize-only
+```
+
+stderr prints `read stdin (<bytes> bytes)`. Empty standard input fails with `stdin`. Combining `--stdin` with `--files`, `--resume`, or `--reuse-tokens` fails with `stdin`.
+
 ## Run
 
 A first run with a smaller vocab spends less time in the tokenizer. Tokenizer training scans the corpus once per merge, in parallel on the CPU, so `--vocab 4096` on long books is the slow part. The GPU steps come after that.
@@ -35,13 +47,13 @@ A first run with a smaller vocab spends less time in the tokenizer. Tokenizer tr
   --prompt "The morning after"
 ```
 
-Progress is printed on stderr: each file and its size, the vocab and byte count, the token count, and the paths that were saved. With `--early-stop` the stderr line `holdout train=<n> valid=<n> early_stop=<n> eval_every=<n>` follows the token count. Training steps are printed on stdout. Each of those lines starts with the local time:
+Progress is printed on stderr: each file and its size, or `read stdin (<bytes> bytes)`, then the vocab and byte count, the token count, and the paths that were saved. With `--early-stop` the stderr line `holdout train=<n> valid=<n> early_stop=<n> eval_every=<n>` follows the token count. Training steps are printed on stdout. Each of those lines starts with the local time:
 
 ```
 YYYY-MM-DD hh:mm:ss.sss step 10 loss <loss> lr <lr> grad_norm <norm>
 ```
 
-When a signal stops the run, stdout prints `YYYY-MM-DD hh:mm:ss.sss stop step <step>` and the process exits before the continuation. When `--resume` continues a checkpoint, stderr prints `resuming step <N>` and the next stdout step is `N + 1`. When that checkpoint has already reached `--steps`, stderr prints `resume step <N> reached steps <steps>` and no further update runs. When `--reuse-tokens` restarts on the saved stream, stderr prints `reusing <N> tokens` and the next stdout step is `1`.
+When a signal stops the run, stdout prints `YYYY-MM-DD hh:mm:ss.sss stop step <step>` and the process exits before the continuation. When `--resume` continues a checkpoint, stderr prints `resuming step <N>` and the next stdout step is `N + 1`. When that checkpoint has already reached `--steps`, stderr prints `resume step <N> reached steps <steps>` and no further update runs. When `--reuse-tokens` restarts on the saved stream, stderr prints `reusing <N> tokens` and the next stdout step is `1`. When `--tokenize-only` finishes, stderr prints `tokenize only` and the process exits before the model.
 
 When `--min-loss` trips, stdout also prints:
 
@@ -84,13 +96,15 @@ The pad id is the mask. `encode` does not insert it. About 15% of positions are 
 | `tokens.meta` | vocab size and length for `TextDataset` |
 | `model.bin` | version-2 façade checkpoint, version 4 for a `qwen-*` preset, or version 6 for a `bert-*` preset, including AdamW moments |
 
+`--tokenize-only` writes the first three files and does not write `model.bin`. An existing `model.bin` is left in place.
+
 With `--steps` of 500 or more, `model.bin` is also written every 500 steps. The final save always runs after the last step. `--steps` below 500 writes the checkpoint once, at the end, and also when a signal stops an earlier step. With `--early-stop`, that final file is the best validation step, including that step's AdamW moments, even when a 500-step write was a later step. When `--min-loss` stops the run, `model.bin` is the step whose training loss reached the threshold, including that step's AdamW moments. A signal writes the update that just finished, including its AdamW moments, and does not copy back an earlier validation best.
 
 Load `tokenizer.bpe` and `model.bin` together. `chat` does that for a dialogue corpus. `--plain` feeds the line as the prompt with no `User:` / `Assistant:` tags, which matches a book continuation. See [chat](chat.md).
 
 ## Flags
 
-`--files` and `--out` are required. `--help` prints this list and exits 0.
+`--out` is required. Pass `--files` or `--stdin`. `--help` prints this list and exits 0.
 
 | Flag | Default | Role |
 |---|---|---|
@@ -107,7 +121,7 @@ Load `tokenizer.bpe` and `model.bin` together. `chat` does that for a dialogue c
 | `--eval-every N` | 0, or `min(50, --steps)` when `--early-stop` is positive | steps between validation evals |
 | `--valid-fraction FLOAT` | 0.1 | suffix of the token stream held out when `--early-stop` is positive |
 | `--lr FLOAT` | 3e-4 | peak learning rate |
-| `--prompt TEXT` | opening of the first file | text to continue |
+| `--prompt TEXT` | opening of the first file, or of the stdin document | text to continue |
 | `--max-new-tokens N` | 80 | tokens to sample after training |
 | `--temperature FLOAT` | 0.8 | `0` is greedy |
 | `--top-k N` | 40 | `0` disables top-k |
@@ -115,6 +129,8 @@ Load `tokenizer.bpe` and `model.bin` together. `chat` does that for a dialogue c
 | `--seed N` | 1 | model init and batch order. `--resume` keeps the checkpoint weights and draws windows from this seed again. `--reuse-tokens` initializes a new model from this seed |
 | `--resume` | off | continue `--out` from its checkpoint. `--steps` is the total update count |
 | `--reuse-tokens` | off | train a new model on the tokenizer and token file already in `--out` |
+| `--tokenize-only` | off | train the tokenizer, write the token file, and exit before the model |
+| `--stdin` | off | read one document from standard input instead of `--files` |
 
 Weight decay stays 0.1. The cosine floor is one tenth of `--lr`. Eval is off unless `--early-stop` is positive. Defaults `--preset tiny`, `--seq-len 256`, and `--batch 4` fit a 12 GB GPU. `small` prefers 24 GB. `base` is a 24 GB model. On a smaller card keep `--seq-len` at 512 or below.
 
@@ -167,6 +183,22 @@ Batch windows are drawn again from `--seed`. They are not the next draws from th
 
 [`finetune`](finetune.md) `--resume` keeps moments for a new file list and starts that run's schedule at step 1.
 
+## Tokenize only
+
+`--tokenize-only` trains the byte-level BPE tokenizer, encodes each file with eos appended, writes `tokenizer.bpe`, `tokens.bin`, and `tokens.meta`, and exits before the model. It does not create a training context and it does not write `model.bin`. An existing `model.bin` in `--out` is left in place. stderr prints `saved <tokenizer.bpe>` and then `tokenize only`. `--stdin` reads that text from standard input. See the standard input section.
+
+The encoded stream still has to hold at least `--seq-len + 1` tokens, and `--seq-len` still has to fit the preset. `--preset` is checked and is not trained. `--steps`, `--early-stop`, `--min-loss`, and the sampling flags are not used. A later `--reuse-tokens` run trains a new model on this directory. Combining `--tokenize-only` with `--resume` or `--reuse-tokens` fails with `tokenize-only`.
+
+```bash
+./build/train_books --files books.txt --out run \
+  --preset tiny --vocab 1024 --seq-len 256 \
+  --tokenize-only
+
+./build/train_books --files books.txt --out run \
+  --preset tiny --vocab 1024 --seq-len 256 --batch 4 --steps 1000 \
+  --reuse-tokens
+```
+
 ## Restart on saved tokens
 
 `--reuse-tokens` reads `tokenizer.bpe`, `tokens.bin`, and `tokens.meta` from `--out` and trains a new model. It does not load `model.bin`. The finished run replaces `model.bin`. The tokenizer is not trained again, and `--files` is not encoded again. `--files` is still required. When `--prompt` is omitted, the continuation prompt is the opening of the first file. `--vocab` has to match the tokenizer. `--preset` chooses the new model. The learning-rate schedule starts at step 1 under this command's `--lr`, `--warmup`, and `--steps`. `--seed` initializes that model and draws the batch windows. stderr prints `reusing <N> tokens`. Combining `--reuse-tokens` with `--resume` fails with `reuse-tokens`.
@@ -195,6 +227,8 @@ Errors print `train_books: <reason>` on stderr and the process exits 1. Common r
 | `preset` | the name is not `tiny`, `small`, `base`, `llama-tiny`, `llama-small`, `llama-base`, `qwen-tiny`, `qwen-small`, `qwen-base`, `gpt2-tiny`, `gpt2-small`, `gpt2-base`, `gpt3-tiny`, `gpt3-small`, `gpt3-base`, `bert-tiny`, `bert-small`, or `bert-base`, or `--resume` and that preset does not match the checkpoint |
 | `resume` | `--resume` is set and `--out` is missing `tokenizer.bpe`, `tokens.bin`, `tokens.meta`, or `model.bin` |
 | `reuse-tokens` | `--reuse-tokens` is combined with `--resume`, or `--out` is missing `tokenizer.bpe`, `tokens.bin`, or `tokens.meta` |
+| `tokenize-only` | `--tokenize-only` is combined with `--resume` or `--reuse-tokens` |
+| `stdin` | `--stdin` is combined with `--files`, `--resume`, or `--reuse-tokens`, or standard input is empty or cannot be read |
 | `adamw` | `--resume` found a checkpoint whose optimizer is not AdamW |
 | `optimizer block missing` | `--resume` found a checkpoint with no optimizer |
 | a flag name | the flag is unknown, or its value is missing or not a number |
