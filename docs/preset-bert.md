@@ -1,6 +1,6 @@
-# bert-tiny, bert-small, and bert-base
+# bert-tiny, bert-small, bert-base, bert-medium, and bert-large
 
-`bert-tiny`, `bert-small`, and `bert-base` (`llm::presets::bert_tiny`, `bert_small`, and `bert_base`) are an encoder. The dense block matches GPT-2: learned absolute positions, LayerNorm epsilon `1e-5`, erf GELU, `d_ff = 4 * d_model`, and a bias on every linear. Attention is bidirectional. Context is 512. A segment table has 2 rows. A diagram of `bert_base` is in [bert-base-architecture.md](bert-base-architecture.md).
+`bert-tiny`, `bert-small`, `bert-base`, `bert-medium`, and `bert-large` (`llm::presets::bert_tiny`, `bert_small`, `bert_base`, `bert_medium`, and `bert_large`) are an encoder. The dense block matches GPT-2: learned absolute positions, LayerNorm epsilon `1e-5`, erf GELU, `d_ff = 4 * d_model`, and a bias on every linear. Attention is bidirectional. Context is 512. A segment table has 2 rows. A diagram of `bert_base` is in [bert-base-architecture.md](bert-base-architecture.md).
 
 Train this shape from scratch. The preset does not load published BERT weights. There is no WordPiece tokenizer, no `<mask>` piece, and no next-sentence pooler. `Generator` and `chat` append the pad id and read that position from `forward`. `decode_step` and `prefill` throw `causal`.
 
@@ -11,6 +11,8 @@ Train this shape from scratch. The preset does not load published BERT weights. 
 | bert_tiny | 4 | 256 | 4 | 1024 | 11,499,136 (11.50M) |
 | bert_small | 6 | 512 | 8 | 2048 | 35,578,496 (35.58M) |
 | bert_base | 12 | 768 | 12 | 3072 | 110,042,752 (110.04M) |
+| bert_medium | 24 | 1024 | 16 | 4096 | 335,621,760 (335.62M) |
+| bert_large | 36 | 1280 | 20 | 5120 | 750,024,320 (750.02M) |
 
 Head dim is 64. KV heads match the query heads. GELU's first linear writes `d_ff`. Dropout is 0. Embeddings are untied. `max_seq_len` is 512. `type_vocab_size` is 2.
 
@@ -26,7 +28,7 @@ cmake --build build -j --target train_data
   --preset bert-tiny --vocab 1024 --seq-len 256 --batch 4 --steps 1000
 ```
 
-`--preset` is `bert-tiny`, `bert-small`, or `bert-base`. `--seq-len` must be at most 512. `--vocab` must be at least 259. Memory matches `gpt2-*` at the same depth, and the context is already 512. `bert-tiny` fits in 12 GB. `bert-small` prefers 24 GB at batch 4 and length 512. `bert-base` is a 24 GB target. The notes are one GPU, full attention, and no activation checkpointing. They were sized for float32 activations. Training stores retained activations as bfloat16 and keeps parameters, Adam state, and checkpoints in float32, so the activation working set is about half of these notes.
+`--preset` is `bert-tiny`, `bert-small`, `bert-base`, `bert-medium`, or `bert-large`. `--seq-len` must be at most 512. `--vocab` must be at least 259. Memory matches `gpt2-*` at the same depth, and the context is already 512. `bert-tiny` fits in 12 GB. `bert-small` prefers 24 GB at batch 4 and length 512. `bert-base` is a 24 GB target. `bert-medium` is 24 layers at width 1024, and `bert-large` is 36 layers at width 1280. Both are past these notes. The notes are one GPU, full attention, and no activation checkpointing. They were sized for float32 activations. Training stores retained activations as bfloat16 and keeps parameters, Adam state, and checkpoints in float32, so the activation working set is about half of these notes.
 
 `train_data` sets masked language modeling because the config is non-causal. The mask id is the tokenizer pad id. `encode` does not insert that id. Of the positions chosen for the loss (15% by default), 80% become the pad id, 10% become a random id, and 10% keep the original id. Every other position is labeled `-100`. After the save the process prints one line and exits 0:
 
@@ -51,7 +53,7 @@ cfg.mask_prob = 0.15f;
 cfg.seq_len = 256;  // at most config.max_seq_len (512)
 ```
 
-`vocab_size` must be at least 1. `mask_token` must be inside the vocabulary when `masked_lm` is set. `bert_small` and `bert_base` take the same vocab argument.
+`vocab_size` must be at least 1. `mask_token` must be inside the vocabulary when `masked_lm` is set. `bert_small`, `bert_base`, `bert_medium`, and `bert_large` take the same vocab argument.
 
 ## Benefits
 

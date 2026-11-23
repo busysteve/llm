@@ -526,6 +526,24 @@ void check_presets() {
     nn::Transformer model(ctx, llm::presets::base(16000), 1);
     CHECK(param_numel(model) == 110335488);
   }
+  CHECK(llm::presets::medium(8).num_layers == 24);
+  CHECK(llm::presets::medium(8).d_model == 1024);
+  CHECK(llm::presets::medium(8).num_heads == 16);
+  CHECK(llm::presets::medium(8).d_ff == 2816);
+  CHECK(llm::presets::large(8).num_layers == 36);
+  CHECK(llm::presets::large(8).d_model == 1280);
+  CHECK(llm::presets::large(8).num_heads == 20);
+  CHECK(llm::presets::large(8).d_ff == 3584);
+  {
+    nn::Context ctx;
+    nn::Transformer model(ctx, llm::presets::medium(16000), 1);
+    CHECK(param_numel(model) == 342198272);
+  }
+  {
+    nn::Context ctx;
+    nn::Transformer model(ctx, llm::presets::large(16000), 1);
+    CHECK(param_numel(model) == 773839360);
+  }
   check_invalid([] { llm::presets::llama_tiny(0); }, "vocab_size");
   const nn::TransformerConfig llama = llm::presets::llama_tiny(16000);
   CHECK(llama.positional == nn::PositionalEncoding::Rope);
@@ -538,6 +556,13 @@ void check_presets() {
   CHECK(llm::presets::llama_small(8).num_layers == 6);
   CHECK(llm::presets::llama_base(8).d_model == 768);
   CHECK(llm::presets::llama_base(8).d_ff == 2048);
+  CHECK(llm::presets::llama_medium(8).num_layers == 24);
+  CHECK(llm::presets::llama_medium(8).d_model == 1024);
+  CHECK(llm::presets::llama_medium(8).d_ff == 2816);
+  CHECK(llm::presets::llama_medium(8).positional == nn::PositionalEncoding::Rope);
+  CHECK(llm::presets::llama_large(8).num_layers == 36);
+  CHECK(llm::presets::llama_large(8).d_model == 1280);
+  CHECK(llm::presets::llama_large(8).d_ff == 3584);
   {
     nn::Context ctx;
     nn::Transformer model(ctx, llama, 1);
@@ -546,6 +571,16 @@ void check_presets() {
       CHECK(param.name.find("pos_emb") == std::string::npos);
       CHECK(param.name.size() < 5 || param.name.compare(param.name.size() - 5, 5, ".bias") != 0);
     }
+  }
+  {
+    nn::Context ctx;
+    nn::Transformer model(ctx, llm::presets::llama_medium(16000), 1);
+    CHECK(param_numel(model) == 341099520);
+  }
+  {
+    nn::Context ctx;
+    nn::Transformer model(ctx, llm::presets::llama_large(16000), 1);
+    CHECK(param_numel(model) == 772435200);
   }
   check_invalid([] { llm::presets::qwen_tiny(0); }, "vocab_size");
   const nn::TransformerConfig qwen = llm::presets::qwen_tiny(16000);
@@ -568,6 +603,16 @@ void check_presets() {
   CHECK(llm::presets::qwen_base(8).num_heads == 12);
   CHECK(llm::presets::qwen_base(8).num_kv_heads == 4);
   CHECK(llm::presets::qwen_base(8).d_ff == 2048);
+  CHECK(llm::presets::qwen_medium(8).num_layers == 24);
+  CHECK(llm::presets::qwen_medium(8).d_model == 1024);
+  CHECK(llm::presets::qwen_medium(8).num_heads == 16);
+  CHECK(llm::presets::qwen_medium(8).num_kv_heads == 4);
+  CHECK(llm::presets::qwen_medium(8).d_ff == 2816);
+  CHECK(llm::presets::qwen_large(8).num_layers == 36);
+  CHECK(llm::presets::qwen_large(8).d_model == 1280);
+  CHECK(llm::presets::qwen_large(8).num_heads == 20);
+  CHECK(llm::presets::qwen_large(8).num_kv_heads == 5);
+  CHECK(llm::presets::qwen_large(8).d_ff == 3584);
   {
     nn::Context ctx;
     nn::Transformer model(ctx, qwen, 1);
@@ -599,6 +644,16 @@ void check_presets() {
     nn::Context ctx;
     nn::Transformer model(ctx, llm::presets::qwen_base(16000), 1);
     CHECK(param_numel(model) == 118970112);
+  }
+  {
+    nn::Context ctx;
+    nn::Transformer model(ctx, llm::presets::qwen_medium(16000), 1);
+    CHECK(param_numel(model) == 366271488);
+  }
+  {
+    nn::Context ctx;
+    nn::Transformer model(ctx, llm::presets::qwen_large(16000), 1);
+    CHECK(param_numel(model) == 831426816);
   }
   {
     const auto tok = llm::BpeTokenizer::train({"ab"}, 259);
@@ -652,6 +707,14 @@ void check_presets() {
   CHECK(llm::presets::gpt2_base(8).num_layers == 12);
   CHECK(llm::presets::gpt2_base(8).d_model == 768);
   CHECK(llm::presets::gpt2_base(8).d_ff == 3072);
+  CHECK(llm::presets::gpt2_medium(8).num_layers == 24);
+  CHECK(llm::presets::gpt2_medium(8).d_model == 1024);
+  CHECK(llm::presets::gpt2_medium(8).num_heads == 16);
+  CHECK(llm::presets::gpt2_medium(8).d_ff == 4096);
+  CHECK(llm::presets::gpt2_large(8).num_layers == 36);
+  CHECK(llm::presets::gpt2_large(8).d_model == 1280);
+  CHECK(llm::presets::gpt2_large(8).num_heads == 20);
+  CHECK(llm::presets::gpt2_large(8).d_ff == 5120);
   const nn::TransformerConfig gpt3 = llm::presets::gpt3_tiny(16000);
   CHECK(gpt3.activation == nn::TransformerActivation::Gelu);
   CHECK(gpt3.positional == nn::PositionalEncoding::LearnedAbsolute);
@@ -666,6 +729,13 @@ void check_presets() {
   CHECK(llm::presets::gpt3_base(8).num_layers == 12);
   CHECK(llm::presets::gpt3_base(8).d_model == 768);
   CHECK(llm::presets::gpt3_base(8).d_ff == 3072);
+  CHECK(llm::presets::gpt3_medium(8).num_layers == 24);
+  CHECK(llm::presets::gpt3_medium(8).d_model == 1024);
+  CHECK(llm::presets::gpt3_medium(8).max_seq_len == 2048);
+  CHECK(llm::presets::gpt3_medium(8).d_ff == 4096);
+  CHECK(llm::presets::gpt3_large(8).num_layers == 36);
+  CHECK(llm::presets::gpt3_large(8).d_model == 1280);
+  CHECK(llm::presets::gpt3_large(8).d_ff == 5120);
   {
     nn::Context ctx;
     nn::Transformer model(ctx, gpt2, 1);
@@ -700,6 +770,16 @@ void check_presets() {
   }
   {
     nn::Context ctx;
+    nn::Transformer model(ctx, llm::presets::gpt2_medium(16000), 1);
+    CHECK(param_numel(model) == 336144000);
+  }
+  {
+    nn::Context ctx;
+    nn::Transformer model(ctx, llm::presets::gpt2_large(16000), 1);
+    CHECK(param_numel(model) == 750677120);
+  }
+  {
+    nn::Context ctx;
     nn::Transformer model(ctx, gpt3, 1);
     CHECK(param_numel(model) == 11891840);
     bool saw_pos = false;
@@ -721,6 +801,16 @@ void check_presets() {
     nn::Transformer model(ctx, llm::presets::gpt3_base(16000), 1);
     CHECK(param_numel(model) == 111220864);
   }
+  {
+    nn::Context ctx;
+    nn::Transformer model(ctx, llm::presets::gpt3_medium(16000), 1);
+    CHECK(param_numel(model) == 337192576);
+  }
+  {
+    nn::Context ctx;
+    nn::Transformer model(ctx, llm::presets::gpt3_large(16000), 1);
+    CHECK(param_numel(model) == 751987840);
+  }
   check_invalid([] { llm::presets::bert_tiny(0); }, "vocab_size");
   const nn::TransformerConfig bert = llm::presets::bert_tiny(16000);
   CHECK(bert.causal == false);
@@ -739,6 +829,14 @@ void check_presets() {
   CHECK(llm::presets::bert_base(8).num_layers == 12);
   CHECK(llm::presets::bert_base(8).d_model == 768);
   CHECK(llm::presets::bert_base(8).d_ff == 3072);
+  CHECK(llm::presets::bert_medium(8).num_layers == 24);
+  CHECK(llm::presets::bert_medium(8).d_model == 1024);
+  CHECK(llm::presets::bert_medium(8).d_ff == 4096);
+  CHECK(llm::presets::bert_medium(8).max_seq_len == 512);
+  CHECK(llm::presets::bert_medium(8).causal == false);
+  CHECK(llm::presets::bert_large(8).num_layers == 36);
+  CHECK(llm::presets::bert_large(8).d_model == 1280);
+  CHECK(llm::presets::bert_large(8).d_ff == 5120);
   {
     nn::Context ctx;
     nn::Transformer model(ctx, bert, 1);
@@ -764,6 +862,16 @@ void check_presets() {
     nn::Context ctx;
     nn::Transformer model(ctx, llm::presets::bert_base(16000), 1);
     CHECK(param_numel(model) == 110042752);
+  }
+  {
+    nn::Context ctx;
+    nn::Transformer model(ctx, llm::presets::bert_medium(16000), 1);
+    CHECK(param_numel(model) == 335621760);
+  }
+  {
+    nn::Context ctx;
+    nn::Transformer model(ctx, llm::presets::bert_large(16000), 1);
+    CHECK(param_numel(model) == 750024320);
   }
 }
 

@@ -1,6 +1,6 @@
-# tiny, small, and base
+# tiny, small, base, medium, and large
 
-`tiny`, `small`, and `base` are the default decoder presets (`llm::presets::tiny`, `small`, and `base`). They are a bias-free SwiGLU stack with learned absolute positions, LayerNorm, and context 1024. `train_data` uses `tiny` when `--preset` is omitted. `examples/train_tiny.cpp` trains `tiny`.
+`tiny`, `small`, `base`, `medium`, and `large` are the default decoder presets (`llm::presets::tiny`, `small`, `base`, `medium`, and `large`). They are a bias-free SwiGLU stack with learned absolute positions, LayerNorm, and context 1024. `train_data` uses `tiny` when `--preset` is omitted. `examples/train_tiny.cpp` trains `tiny`.
 
 ## Sizes
 
@@ -9,6 +9,8 @@
 | tiny | 4 | 256 | 4 | 768 | 11,866,624 (11.87M) |
 | small | 6 | 512 | 8 | 1536 | 37,368,832 (37.37M) |
 | base | 12 | 768 | 12 | 2048 | 110,335,488 (110.34M) |
+| medium | 24 | 1024 | 16 | 2816 | 342,198,272 (342.20M) |
+| large | 36 | 1280 | 20 | 3584 | 773,839,360 (773.84M) |
 
 Head dim is 64. KV heads match the query heads. SwiGLU's first linear writes `2 * d_ff`. Dropout is 0. Embeddings are untied. Bias is off. `max_seq_len` is 1024.
 
@@ -25,9 +27,9 @@ cmake --build build -j --target train_data
   --prompt "The morning after"
 ```
 
-`--preset` is `tiny`, `small`, or `base`. `--seq-len` must be at most 1024. `--vocab` must be at least 259. The notes below are one GPU, full attention, and no activation checkpointing. They were sized for float32 activations. Training stores retained activations as bfloat16 and keeps parameters, Adam state, and checkpoints in float32, so the activation working set is about half of these notes.
+`--preset` is `tiny`, `small`, `base`, `medium`, or `large`. `--seq-len` must be at most 1024. `--vocab` must be at least 259. The notes below are one GPU, full attention, and no activation checkpointing. They were sized for float32 activations. Training stores retained activations as bfloat16 and keeps parameters, Adam state, and checkpoints in float32, so the activation working set is about half of these notes.
 
-`tiny` fits in 12 GB. Suggested batches are `(8, 512)` and `(16, 256)`. `small` is tight in 12 GB at `(4, 512)`; 24 GB is comfortable. `base` is a 24 GB target. On a 12 GB GPU keep `base` at `--seq-len` 512 or below.
+`tiny` fits in 12 GB. Suggested batches are `(8, 512)` and `(16, 256)`. `small` is tight in 12 GB at `(4, 512)`; 24 GB is comfortable. `base` is a 24 GB target. On a 12 GB GPU keep `base` at `--seq-len` 512 or below. `medium` is 24 layers at width 1024, and `large` is 36 layers at width 1280. Both are past these notes.
 
 The run writes `tokenizer.bpe`, `tokens.bin`, `tokens.meta`, and `model.bin`, then prints a continuation. Load that directory with `chat`:
 
@@ -45,12 +47,12 @@ nn::TransformerConfig config = llm::presets::tiny(vocab_size);
 nn::Transformer model(ctx, config, seed);
 ```
 
-`vocab_size` must be at least 1. `small` and `base` take the same argument.
+`vocab_size` must be at least 1. `small`, `base`, `medium`, and `large` take the same argument.
 
 ## Benefits
 
 - Each token has a learned position row. The checkpoint stores `pos_emb.weight`, and the forward pass adds it.
-- `tiny` is the shape `train_tiny` accepts, and it is the 12 GB starting point. `small` and `base` step up in depth and width.
+- `tiny` is the shape `train_tiny` accepts, and it is the 12 GB starting point. `small`, `base`, `medium`, and `large` step up in depth and width.
 - Linears are bias-free and the norms are LayerNorm, so the file stays on the version-2 façade path.
 - `chat` and `Generator` sample from the checkpoint. Context is 1024.
 

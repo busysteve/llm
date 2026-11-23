@@ -65,6 +65,11 @@ nn::TransformerConfig small(int vocab_size) { return make_config(vocab_size, 6, 
 
 nn::TransformerConfig base(int vocab_size) { return make_config(vocab_size, 12, 768, 12, 2048); }
 
+// SwiGLU width is (8/3) * d_model, rounded up to a multiple of 256.
+nn::TransformerConfig medium(int vocab_size) { return make_config(vocab_size, 24, 1024, 16, 2816); }
+
+nn::TransformerConfig large(int vocab_size) { return make_config(vocab_size, 36, 1280, 20, 3584); }
+
 nn::TransformerConfig llama_tiny(int vocab_size) {
   nn::TransformerConfig config = tiny(vocab_size);
   config.positional = nn::PositionalEncoding::Rope;
@@ -83,11 +88,31 @@ nn::TransformerConfig llama_base(int vocab_size) {
   return config;
 }
 
+nn::TransformerConfig llama_medium(int vocab_size) {
+  nn::TransformerConfig config = medium(vocab_size);
+  config.positional = nn::PositionalEncoding::Rope;
+  return config;
+}
+
+nn::TransformerConfig llama_large(int vocab_size) {
+  nn::TransformerConfig config = large(vocab_size);
+  config.positional = nn::PositionalEncoding::Rope;
+  return config;
+}
+
 nn::TransformerConfig qwen_tiny(int vocab_size) { return qwen_width(vocab_size, 4, 256, 4, 2, 768); }
 
 nn::TransformerConfig qwen_small(int vocab_size) { return qwen_width(vocab_size, 6, 512, 8, 2, 1536); }
 
 nn::TransformerConfig qwen_base(int vocab_size) { return qwen_width(vocab_size, 12, 768, 12, 4, 2048); }
+
+nn::TransformerConfig qwen_medium(int vocab_size) {
+  return qwen_width(vocab_size, 24, 1024, 16, 4, 2816);
+}
+
+nn::TransformerConfig qwen_large(int vocab_size) {
+  return qwen_width(vocab_size, 36, 1280, 20, 5, 3584);
+}
 
 nn::TransformerConfig gpt2_tiny(int vocab_size) { return gpt_width(vocab_size, 4, 256, 4, 1024); }
 
@@ -95,11 +120,19 @@ nn::TransformerConfig gpt2_small(int vocab_size) { return gpt_width(vocab_size, 
 
 nn::TransformerConfig gpt2_base(int vocab_size) { return gpt_width(vocab_size, 12, 768, 12, 1024); }
 
+nn::TransformerConfig gpt2_medium(int vocab_size) { return gpt_width(vocab_size, 24, 1024, 16, 1024); }
+
+nn::TransformerConfig gpt2_large(int vocab_size) { return gpt_width(vocab_size, 36, 1280, 20, 1024); }
+
 nn::TransformerConfig gpt3_tiny(int vocab_size) { return gpt_width(vocab_size, 4, 256, 4, 2048); }
 
 nn::TransformerConfig gpt3_small(int vocab_size) { return gpt_width(vocab_size, 6, 512, 8, 2048); }
 
 nn::TransformerConfig gpt3_base(int vocab_size) { return gpt_width(vocab_size, 12, 768, 12, 2048); }
+
+nn::TransformerConfig gpt3_medium(int vocab_size) { return gpt_width(vocab_size, 24, 1024, 16, 2048); }
+
+nn::TransformerConfig gpt3_large(int vocab_size) { return gpt_width(vocab_size, 36, 1280, 20, 2048); }
 
 // BERT block: the GPT-2 dense stack with bidirectional attention, a segment
 // table of size 2, and context 512. The tokenizer pad id is the mask token.
@@ -115,6 +148,10 @@ nn::TransformerConfig bert_tiny(int vocab_size) { return bert_width(vocab_size, 
 nn::TransformerConfig bert_small(int vocab_size) { return bert_width(vocab_size, 6, 512, 8); }
 
 nn::TransformerConfig bert_base(int vocab_size) { return bert_width(vocab_size, 12, 768, 12); }
+
+nn::TransformerConfig bert_medium(int vocab_size) { return bert_width(vocab_size, 24, 1024, 16); }
+
+nn::TransformerConfig bert_large(int vocab_size) { return bert_width(vocab_size, 36, 1280, 20); }
 
 }  // namespace presets
 

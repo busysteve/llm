@@ -89,7 +89,7 @@ continuation: <new text>
 
 The default prompt, when `--prompt` is omitted, is the opening of the first file: leading whitespace is skipped, then up to 48 Unicode code points are taken, and a newline ends the excerpt early. With `--dir`, that file is the first path in lexicographic order. Generation stops when eos is sampled. That id is not part of the continuation.
 
-A `bert-tiny`, `bert-small`, or `bert-base` run does not sample. After the save it prints one line and exits 0:
+A `bert-tiny`, `bert-small`, `bert-base`, `bert-medium`, or `bert-large` run does not sample. After the save it prints one line and exits 0:
 
 ```
 encoder: masked lm, mask token <pad id>
@@ -120,7 +120,7 @@ Load `tokenizer.bpe` and `model.bin` together. `chat` does that for a dialogue c
 
 | Flag | Default | Role |
 |---|---|---|
-| `--preset tiny\|small\|base\|llama-tiny\|llama-small\|llama-base\|qwen-tiny\|qwen-small\|qwen-base\|gpt2-tiny\|gpt2-small\|gpt2-base\|gpt3-tiny\|gpt3-small\|gpt3-base\|bert-tiny\|bert-small\|bert-base` | `tiny` | model shape |
+| `--preset tiny\|small\|base\|medium\|large\|llama-tiny\|llama-small\|llama-base\|llama-medium\|llama-large\|qwen-tiny\|qwen-small\|qwen-base\|qwen-medium\|qwen-large\|gpt2-tiny\|gpt2-small\|gpt2-base\|gpt2-medium\|gpt2-large\|gpt3-tiny\|gpt3-small\|gpt3-base\|gpt3-medium\|gpt3-large\|bert-tiny\|bert-small\|bert-base\|bert-medium\|bert-large` | `tiny` | model shape |
 | `--vocab N` | 4096 | BPE size, minimum 259 |
 | `--seq-len N` | 256 | tokens per example, at most the preset `max_seq_len` |
 | `--batch N` | 4 | examples per step |
@@ -146,9 +146,9 @@ Load `tokenizer.bpe` and `model.bin` together. `chat` does that for a dialogue c
 | `--dir DIR` | | recurse `DIR` and read every regular file instead of `--files` |
 | `--stdin` | off | read one document from standard input instead of `--files` or `--dir` |
 
-Weight decay stays 0.1. The cosine floor is one tenth of `--lr`. Eval is off unless `--early-stop` is positive. Defaults `--preset tiny`, `--seq-len 256`, and `--batch 4` fit a 12 GB GPU. `small` prefers 24 GB. `base` is a 24 GB model. On a smaller card keep `--seq-len` at 512 or below.
+Weight decay stays 0.1. The cosine floor is one tenth of `--lr`. Eval is off unless `--early-stop` is positive. Defaults `--preset tiny`, `--seq-len 256`, and `--batch 4` fit a 12 GB GPU. `small` prefers 24 GB. `base` is a 24 GB model. On a smaller card keep `--seq-len` at 512 or below. `medium` is 24 layers at width 1024, and `large` is 36 layers at width 1280.
 
-`tiny`, `small`, and `base` use learned absolute positions and LayerNorm. `llama-tiny`, `llama-small`, and `llama-base` are the same widths with RoPE and RMSNorm, which is the block llama.cpp runs. `qwen-tiny`, `qwen-small`, and `qwen-base` are the Qwen3 block: head dim 128, grouped-query attention, QK-norm, RoPE base `1e6`, and RMSNorm epsilon `1e-6`. `gpt2-tiny`, `gpt2-small`, and `gpt2-base` are the GPT-2 block: GELU, linear bias, `d_ff = 4 * d_model`, learned positions, and context 1024. `gpt3-tiny`, `gpt3-small`, and `gpt3-base` are that dense block with context 2048. `bert-tiny`, `bert-small`, and `bert-base` are that dense block with bidirectional attention, a segment table of size 2, and context 512. They train masked tokens. The pad id is the mask. Train a llama, qwen, GPT, or BERT preset from scratch. A checkpoint that was trained with learned positions does not become a llama or qwen block. The saved `qwen-*` checkpoint is version 4. A `gpt2-*` or `gpt3-*` checkpoint is version 2. A `bert-*` checkpoint is version 6. `gguf llama` rejects GELU, linear bias, bidirectional attention, and a segment table. Usage, benefits, and applications for each preset type are in [preset-default](../docs/preset-default.md), [preset-llama](../docs/preset-llama.md), [preset-qwen](../docs/preset-qwen.md), [preset-gpt2](../docs/preset-gpt2.md), [preset-gpt3](../docs/preset-gpt3.md), and [preset-bert](../docs/preset-bert.md). [train_chat](train_chat.md) trains `tiny` and `bert-tiny` on four exchanges, then prints one reply and one masked token. [train_bert_chat](train_bert_chat.md) trains `bert_tiny` on those exchanges and prints one reply.
+`tiny`, `small`, `base`, `medium`, and `large` use learned absolute positions and LayerNorm. `medium` is 24 layers at width 1024. `large` is 36 layers at width 1280. `llama-tiny`, `llama-small`, `llama-base`, `llama-medium`, and `llama-large` are the same widths with RoPE and RMSNorm, which is the block llama.cpp runs. `qwen-tiny`, `qwen-small`, `qwen-base`, `qwen-medium`, and `qwen-large` are the Qwen3 block: head dim 128, grouped-query attention, QK-norm, RoPE base `1e6`, and RMSNorm epsilon `1e-6`. `gpt2-tiny`, `gpt2-small`, `gpt2-base`, `gpt2-medium`, and `gpt2-large` are the GPT-2 block: GELU, linear bias, `d_ff = 4 * d_model`, learned positions, and context 1024. `gpt3-tiny`, `gpt3-small`, `gpt3-base`, `gpt3-medium`, and `gpt3-large` are that dense block with context 2048. `bert-tiny`, `bert-small`, `bert-base`, `bert-medium`, and `bert-large` are that dense block with bidirectional attention, a segment table of size 2, and context 512. They train masked tokens. The pad id is the mask. Train a llama, qwen, GPT, or BERT preset from scratch. A checkpoint that was trained with learned positions does not become a llama or qwen block. The saved `qwen-*` checkpoint is version 4. A `gpt2-*` or `gpt3-*` checkpoint is version 2. A `bert-*` checkpoint is version 6. `gguf llama` rejects GELU, linear bias, bidirectional attention, and a segment table. Usage, benefits, and applications for each preset type are in [preset-default](../docs/preset-default.md), [preset-llama](../docs/preset-llama.md), [preset-qwen](../docs/preset-qwen.md), [preset-gpt2](../docs/preset-gpt2.md), [preset-gpt3](../docs/preset-gpt3.md), and [preset-bert](../docs/preset-bert.md). [train_chat](train_chat.md) trains `tiny` and `bert-tiny` on four exchanges, then prints one reply and one masked token. [train_bert_chat](train_bert_chat.md) trains `bert_tiny` on those exchanges and prints one reply.
 
 ## Early stop
 
@@ -251,7 +251,7 @@ Errors print `train_data: <reason>` on stderr and the process exits 1. Common re
 | `min_loss` | `--min-loss` is negative or infinite |
 | `eval_every` | `--early-stop` is positive and `--eval-every` is not in `1 .. --steps` |
 | `valid_fraction` | `--valid-fraction` is not inside `(0, 1)` |
-| `preset` | the name is not `tiny`, `small`, `base`, `llama-tiny`, `llama-small`, `llama-base`, `qwen-tiny`, `qwen-small`, `qwen-base`, `gpt2-tiny`, `gpt2-small`, `gpt2-base`, `gpt3-tiny`, `gpt3-small`, `gpt3-base`, `bert-tiny`, `bert-small`, or `bert-base`, or `--resume` and that preset does not match the checkpoint |
+| `preset` | the name is not one of the preset names in the flag table, or `--resume` and that preset does not match the checkpoint |
 | `resume` | `--resume` is set and `--out` is missing `tokenizer.bpe`, `tokens.bin`, `tokens.meta`, or `model.bin` |
 | `lr-new` | `--lr-new` is set without `--resume` |
 | `reuse-tokens` | `--reuse-tokens` is combined with `--resume`, or `--out` is missing `tokenizer.bpe`, `tokens.bin`, or `tokens.meta` |
