@@ -51,6 +51,7 @@ struct Options {
   float top_p = 0.9f;
   int seed = 1;
   bool resume = false;
+  bool lr_new = false;
   bool reuse_tokens = false;
   bool tokenize_only = false;
   bool from_stdin = false;
@@ -102,7 +103,9 @@ void usage() {
       "SIGINT or SIGTERM finishes the current update, writes model.bin, and\n"
       "exits without sampling. --resume continues that checkpoint. Weights,\n"
       "AdamW moments, and the learning-rate step are kept. --steps is the\n"
-      "total update count from the start of the run. --reuse-tokens starts a\n"
+      "total update count from the start of the run. --lr-new with --resume\n"
+      "keeps the weights and moments and starts that schedule at step 1.\n"
+      "--reuse-tokens starts a\n"
       "new model on the tokenizer and token file already in --out.\n"
       "--tokenize-only writes that tokenizer and token file and exits before\n"
       "the model. --dir or --stdin can supply the text for that tokenization.\n"
@@ -141,6 +144,10 @@ void usage() {
       "  --seed N                   default 1\n"
       "  --resume                   continue --out. Requires tokenizer.bpe,\n"
       "                             tokens.bin, tokens.meta, and model.bin.\n"
+      "  --lr-new                   with --resume, start the learning-rate\n"
+      "                             schedule at step 1. --lr, --warmup, and\n"
+      "                             --steps apply to that schedule. The AdamW\n"
+      "                             step is kept.\n"
       "  --reuse-tokens             restart training on the tokens in --out.\n"
       "                             Requires tokenizer.bpe, tokens.bin, and\n"
       "                             tokens.meta. Does not load model.bin.\n"
@@ -226,6 +233,7 @@ Options parse(int argc, char** argv) {
     else if (flag == "--top-p") opt.top_p = need_float(i, argc, argv);
     else if (flag == "--seed") opt.seed = need_int(i, argc, argv);
     else if (flag == "--resume") opt.resume = true;
+    else if (flag == "--lr-new") opt.lr_new = true;
     else if (flag == "--reuse-tokens") opt.reuse_tokens = true;
     else if (flag == "--tokenize-only") opt.tokenize_only = true;
     else if (flag == "--stdin") opt.from_stdin = true;
@@ -249,6 +257,7 @@ Options parse(int argc, char** argv) {
       (opt.eval_every < 1 || opt.eval_every > opt.steps)) {
     throw std::runtime_error("eval_every");
   }
+  if (opt.lr_new && !opt.resume) throw std::runtime_error("lr-new");
   if (opt.tokenize_only && (opt.resume || opt.reuse_tokens)) {
     throw std::runtime_error("tokenize-only");
   }
@@ -568,12 +577,17 @@ int main(int argc, char** argv) {
       }
 
       // --steps is the total schedule length. A finished checkpoint is left as it is.
-      const bool train_more = !opt.resume || done < static_cast<uint64_t>(opt.steps);
+      // --lr-new starts a new schedule at step 1 and still trains.
+      const bool restart_lr = opt.resume && opt.lr_new;
+      const bool train_more = !opt.resume || restart_lr || done < static_cast<uint64_t>(opt.steps);
       if (train_more) {
-        if (done > static_cast<uint64_t>(std::numeric_limits<int>::max()) - 1) {
+        if (!restart_lr && done > static_cast<uint64_t>(std::numeric_limits<int>::max()) - 1) {
           throw std::runtime_error("resume");
         }
-        if (opt.resume) {
+        if (restart_lr) {
+          std::fprintf(stderr, "lr-new step 1 (AdamW step %llu)\n",
+                       static_cast<unsigned long long>(done));
+        } else if (opt.resume) {
           std::fprintf(stderr, "resuming step %llu\n", static_cast<unsigned long long>(done));
         }
         llm::TrainConfig cfg;
@@ -583,7 +597,7 @@ int main(int argc, char** argv) {
         cfg.batch_size = opt.batch;
         cfg.seq_len = opt.seq_len;
         cfg.max_steps = opt.steps;
-        cfg.start_step = static_cast<int>(done) + 1;
+        cfg.start_step = restart_lr ? 1 : static_cast<int>(done) + 1;
         cfg.grad_accum_steps = opt.accum;
         cfg.warmup_steps = opt.warmup;
         cfg.log_every = opt.log_every;

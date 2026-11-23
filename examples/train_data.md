@@ -1,6 +1,6 @@
 # How to train from a list of books
 
-`train_data` is the file-list example in [`train_data.cpp`](train_data.cpp). It reads a list of text files, or every regular file under a directory, trains a byte-level BPE tokenizer and a preset transformer, writes the tokenizer and the checkpoint, then loads both and prints a continuation. A `bert-*` preset trains masked tokens and does not print a continuation. `--early-stop` can hold out a suffix of the tokens and stop when that validation loss stops falling. `--min-loss` can stop when a step's training loss reaches a threshold. SIGINT or SIGTERM saves the current step, `--resume` continues that same run, `--reuse-tokens` starts a new model on the saved tokens, and `--tokenize-only` writes that tokenizer and token file and exits before the model. `--dir` recurses a directory instead of `--files`. `--stdin` reads one document from standard input instead of `--files` or `--dir`. It is a separate program from `llm_tests`.
+`train_data` is the file-list example in [`train_data.cpp`](train_data.cpp). It reads a list of text files, or every regular file under a directory, trains a byte-level BPE tokenizer and a preset transformer, writes the tokenizer and the checkpoint, then loads both and prints a continuation. A `bert-*` preset trains masked tokens and does not print a continuation. `--early-stop` can hold out a suffix of the tokens and stop when that validation loss stops falling. `--min-loss` can stop when a step's training loss reaches a threshold. SIGINT or SIGTERM saves the current step, `--resume` continues that same run, `--lr-new` with `--resume` starts a new learning-rate schedule at step 1, `--reuse-tokens` starts a new model on the saved tokens, and `--tokenize-only` writes that tokenizer and token file and exits before the model. `--dir` recurses a directory instead of `--files`. `--stdin` reads one document from standard input instead of `--files` or `--dir`. It is a separate program from `llm_tests`.
 
 Build from the repository root. Requirements are in the [README](../README.md).
 
@@ -65,7 +65,7 @@ Progress is printed on stderr: each file and its size, or `read stdin (<bytes> b
 YYYY-MM-DD hh:mm:ss.sss step 10 loss <loss> lr <lr> grad_norm <norm>
 ```
 
-When a signal stops the run, stdout prints `YYYY-MM-DD hh:mm:ss.sss stop step <step>` and the process exits before the continuation. When `--resume` continues a checkpoint, stderr prints `resuming step <N>` and the next stdout step is `N + 1`. When that checkpoint has already reached `--steps`, stderr prints `resume step <N> reached steps <steps>` and no further update runs. When `--reuse-tokens` restarts on the saved stream, stderr prints `reusing <N> tokens` and the next stdout step is `1`. When `--tokenize-only` finishes, stderr prints `tokenize only` and the process exits before the model.
+When a signal stops the run, stdout prints `YYYY-MM-DD hh:mm:ss.sss stop step <step>` and the process exits before the continuation. When `--resume` continues a checkpoint, stderr prints `resuming step <N>` and the next stdout step is `N + 1`. When that checkpoint has already reached `--steps`, stderr prints `resume step <N> reached steps <steps>` and no further update runs. When `--lr-new` restarts the schedule, stderr prints `lr-new step 1 (AdamW step <N>)` and the next stdout step is `1`. When `--reuse-tokens` restarts on the saved stream, stderr prints `reusing <N> tokens` and the next stdout step is `1`. When `--tokenize-only` finishes, stderr prints `tokenize only` and the process exits before the model.
 
 When `--min-loss` trips, stdout also prints:
 
@@ -140,6 +140,7 @@ Load `tokenizer.bpe` and `model.bin` together. `chat` does that for a dialogue c
 | `--top-p FLOAT` | 0.9 | nucleus threshold |
 | `--seed N` | 1 | model init and batch order. `--resume` keeps the checkpoint weights and draws windows from this seed again. `--reuse-tokens` initializes a new model from this seed |
 | `--resume` | off | continue `--out` from its checkpoint. `--steps` is the total update count |
+| `--lr-new` | off | with `--resume`, start the learning-rate schedule at step 1. `--lr` is the new peak. The AdamW step is kept |
 | `--reuse-tokens` | off | train a new model on the tokenizer and token file already in `--out` |
 | `--tokenize-only` | off | train the tokenizer, write the token file, and exit before the model |
 | `--dir DIR` | | recurse `DIR` and read every regular file instead of `--files` |
@@ -196,6 +197,18 @@ Batch windows are drawn again from `--seed`. They are not the next draws from th
 
 [`finetune`](finetune.md) `--resume` keeps moments for a new file list and starts that run's schedule at step 1.
 
+## New learning rate
+
+`--lr-new` is used with `--resume`. It loads the same weights and AdamW moments, then runs a new warmup and cosine from step 1 through `--steps`. The peak is `--lr` and the floor is one tenth of that peak. Warmup is `--warmup`. A checkpoint that has already reached the old `--steps` is trained again. stderr prints `lr-new step 1 (AdamW step <N>)`, and the next stdout step is `1`.
+
+The AdamW step stored in `model.bin` is not reset. It stays the bias-correction timestep and keeps incrementing. The next plain `--resume` still counts from that step. Pass `--lr-new` again to start another schedule. Combining `--lr-new` with a run that is not `--resume` fails with `lr-new`.
+
+```bash
+./build/train_data --files books.txt --out run \
+  --preset tiny --vocab 1024 --seq-len 256 --batch 4 --steps 1000 \
+  --resume --lr-new --lr 1e-4 --warmup 0
+```
+
 ## Tokenize only
 
 `--tokenize-only` trains the byte-level BPE tokenizer, encodes each file with eos appended, writes `tokenizer.bpe`, `tokens.bin`, and `tokens.meta`, and exits before the model. It does not create a training context and it does not write `model.bin`. An existing `model.bin` in `--out` is left in place. stderr prints `saved <tokenizer.bpe>` and then `tokenize only`. `--dir` reads the text from that directory. `--stdin` reads that text from standard input. See the directory and standard input sections.
@@ -240,6 +253,7 @@ Errors print `train_data: <reason>` on stderr and the process exits 1. Common re
 | `valid_fraction` | `--valid-fraction` is not inside `(0, 1)` |
 | `preset` | the name is not `tiny`, `small`, `base`, `llama-tiny`, `llama-small`, `llama-base`, `qwen-tiny`, `qwen-small`, `qwen-base`, `gpt2-tiny`, `gpt2-small`, `gpt2-base`, `gpt3-tiny`, `gpt3-small`, `gpt3-base`, `bert-tiny`, `bert-small`, or `bert-base`, or `--resume` and that preset does not match the checkpoint |
 | `resume` | `--resume` is set and `--out` is missing `tokenizer.bpe`, `tokens.bin`, `tokens.meta`, or `model.bin` |
+| `lr-new` | `--lr-new` is set without `--resume` |
 | `reuse-tokens` | `--reuse-tokens` is combined with `--resume`, or `--out` is missing `tokenizer.bpe`, `tokens.bin`, or `tokens.meta` |
 | `tokenize-only` | `--tokenize-only` is combined with `--resume` or `--reuse-tokens` |
 | `stdin` | `--stdin` is combined with `--files`, `--dir`, `--resume`, or `--reuse-tokens`, or standard input is empty or cannot be read |
