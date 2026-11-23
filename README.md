@@ -39,7 +39,7 @@ cmake --build build -j --target finetune
 cmake --build build -j --target gguf
 ```
 
-`train_tiny` is the acceptance example. It is not part of `llm_tests`. `train_data` trains from a list of text files, writes `tokenizer.bpe` and `model.bin`, then loads those files and generates. SIGINT saves that checkpoint, `--resume` continues the same run, `--reuse-tokens` starts a new model on the saved tokens, `--tokenize-only` writes those tokens and exits before the model, and `--stdin` reads one document from standard input. `chat` loads that directory and continues a `User:` / `Assistant:` transcript, or with `--plain` continues the line as a prompt. `finetune` keeps training one of those checkpoints on a new file list. `gguf` converts `model.bin` to an `nnllm` GGUF and back, can write a llama.cpp GGUF from the same checkpoint, and can convert a public llama.cpp GGUF into a `chat` directory. Walkthroughs: [train_tiny](examples/train_tiny.md), [train_chat](examples/train_chat.md), [train_bert_chat](examples/train_bert_chat.md), [train_data](examples/train_data.md), [chat](examples/chat.md), [finetune](examples/finetune.md), [gguf](examples/gguf.md). Library details are in [USAGE.md](USAGE.md).
+`train_tiny` is the acceptance example. It is not part of `llm_tests`. `train_data` trains from a list of text files or from every regular file under a directory, writes `tokenizer.bpe` and `model.bin`, then loads those files and generates. SIGINT saves that checkpoint, `--resume` continues the same run, `--reuse-tokens` starts a new model on the saved tokens, `--tokenize-only` writes those tokens and exits before the model, `--dir` reads every regular file under a directory, and `--stdin` reads one document from standard input. `chat` loads that directory and continues a `User:` / `Assistant:` transcript, or with `--plain` continues the line as a prompt. `finetune` keeps training one of those checkpoints on a new file list. `gguf` converts `model.bin` to an `nnllm` GGUF and back, can write a llama.cpp GGUF from the same checkpoint, and can convert a public llama.cpp GGUF into a `chat` directory. Walkthroughs: [train_tiny](examples/train_tiny.md), [train_chat](examples/train_chat.md), [train_bert_chat](examples/train_bert_chat.md), [train_data](examples/train_data.md), [chat](examples/chat.md), [finetune](examples/finetune.md), [gguf](examples/gguf.md). Library details are in [USAGE.md](USAGE.md).
 
 ## Layout
 
@@ -61,8 +61,8 @@ examples/train_chat.cpp     train tiny for a reply and bert_tiny for one masked 
 examples/train_chat.md      how to run train_chat
 examples/train_bert_chat.cpp train bert_tiny on dialogue and print one reply
 examples/train_bert_chat.md  how to run train_bert_chat
-examples/train_data.cpp     train from a list of book files, save, and generate
-examples/train_data.md      how to train from a file list
+examples/train_data.cpp     train from a file list or a directory, save, and generate
+examples/train_data.md      how to train from a file list or a directory
 examples/chat.cpp           continue a User/Assistant transcript, or a plain prompt
 examples/chat.md            how to converse with a trained model
 examples/finetune.cpp       fine-tune an existing checkpoint on new text

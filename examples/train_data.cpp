@@ -30,6 +30,7 @@ namespace {
 
 struct Options {
   std::filesystem::path files;
+  std::filesystem::path dir;
   std::filesystem::path out;
   std::string preset = "tiny";
   int vocab = 4096;
@@ -84,12 +85,15 @@ struct StopGuard {
 
 void usage() {
   std::fputs(
-      "usage: train_data (--files LIST | --stdin) --out DIR [options]\n"
+      "usage: train_data (--files LIST | --dir DIR | --stdin) --out DIR [options]\n"
       "\n"
       "LIST is one book path per line. Blank lines and lines starting with # are\n"
       "ignored. A relative path is resolved from the directory that contains LIST.\n"
-      "--stdin reads one document from standard input instead of LIST. That\n"
-      "document is one tokenizer string, with one eos token appended.\n"
+      "--dir recurses DIR and reads every regular file, in lexicographic path\n"
+      "order. Directory symlinks are not followed, and a symbolic link to a\n"
+      "file is skipped. --stdin reads one document from standard input instead\n"
+      "of LIST or DIR. That document is one tokenizer string, with one eos\n"
+      "token appended.\n"
       "\n"
       "Trains a byte-level BPE tokenizer on those files, trains a preset\n"
       "transformer, writes tokenizer.bpe and model.bin, then loads both and\n"
@@ -101,7 +105,7 @@ void usage() {
       "total update count from the start of the run. --reuse-tokens starts a\n"
       "new model on the tokenizer and token file already in --out.\n"
       "--tokenize-only writes that tokenizer and token file and exits before\n"
-      "the model. --stdin can supply the text for that tokenization.\n"
+      "the model. --dir or --stdin can supply the text for that tokenization.\n"
       "\n"
       "  --preset tiny|small|base|llama-tiny|llama-small|llama-base|\n"
       "          qwen-tiny|qwen-small|qwen-base|\n"
@@ -142,8 +146,10 @@ void usage() {
       "                             tokens.meta. Does not load model.bin.\n"
       "  --tokenize-only            write tokenizer.bpe, tokens.bin, and\n"
       "                             tokens.meta, then exit before the model.\n"
+      "  --dir DIR                  recurse DIR and read every regular file\n"
+      "                             instead of --files. Paths are sorted.\n"
       "  --stdin                    read one document from standard input\n"
-      "                             instead of --files.\n"
+      "                             instead of --files or --dir.\n"
       "\n"
       "Each book is one tokenizer string, then encoded with an eos token appended.\n"
       "Tokenizer training scans the corpus once per merge, so a large vocab on\n"
@@ -194,6 +200,7 @@ Options parse(int argc, char** argv) {
     const std::string_view flag = argv[i];
     if (flag == "--help" || flag == "-h") help = true;
     else if (flag == "--files") opt.files = need(i, argc, argv);
+    else if (flag == "--dir") opt.dir = need(i, argc, argv);
     else if (flag == "--out") opt.out = need(i, argc, argv);
     else if (flag == "--preset") opt.preset = need(i, argc, argv);
     else if (flag == "--vocab") opt.vocab = need_int(i, argc, argv);
@@ -246,10 +253,12 @@ Options parse(int argc, char** argv) {
     throw std::runtime_error("tokenize-only");
   }
   if (opt.resume && opt.reuse_tokens) throw std::runtime_error("reuse-tokens");
-  if (opt.from_stdin && (opt.resume || opt.reuse_tokens || !opt.files.empty())) {
+  if (opt.from_stdin &&
+      (opt.resume || opt.reuse_tokens || !opt.files.empty() || !opt.dir.empty())) {
     throw std::runtime_error("stdin");
   }
-  if (opt.out.empty() || (opt.files.empty() && !opt.from_stdin)) {
+  if (!opt.dir.empty() && !opt.files.empty()) throw std::runtime_error("dir");
+  if (opt.out.empty() || (opt.files.empty() && opt.dir.empty() && !opt.from_stdin)) {
     usage();
     throw std::runtime_error("files");
   }
@@ -279,6 +288,31 @@ std::vector<std::filesystem::path> read_list(const std::filesystem::path& list_p
   }
   if (paths.empty()) throw std::runtime_error("files");
   return paths;
+}
+
+// Every regular file under root, in lexicographic path order. A symlink is
+// skipped, and a directory symlink is not followed.
+std::vector<std::filesystem::path> read_dir(const std::filesystem::path& root) {
+  if (!std::filesystem::is_directory(root)) throw std::runtime_error("dir");
+  std::vector<std::filesystem::path> paths;
+  const std::filesystem::recursive_directory_iterator end;
+  for (std::filesystem::recursive_directory_iterator it(root); it != end; ++it) {
+    if (it->is_symlink()) {
+      it.disable_recursion_pending();
+      continue;
+    }
+    if (!it->is_regular_file()) continue;
+    paths.push_back(it->path());
+  }
+  if (paths.empty()) throw std::runtime_error("dir");
+  std::sort(paths.begin(), paths.end());
+  return paths;
+}
+
+std::vector<std::filesystem::path> read_paths(const Options& opt) {
+  if (opt.from_stdin) return {};
+  if (!opt.dir.empty()) return read_dir(opt.dir);
+  return read_list(opt.files);
 }
 
 std::string read_stdin() {
@@ -386,8 +420,7 @@ bool is_file(const std::filesystem::path& path) { return std::filesystem::is_reg
 int main(int argc, char** argv) {
   try {
     const Options opt = parse(argc, argv);
-    const std::vector<std::filesystem::path> paths =
-        opt.from_stdin ? std::vector<std::filesystem::path>{} : read_list(opt.files);
+    const std::vector<std::filesystem::path> paths = read_paths(opt);
 
     const std::filesystem::path tok_path = opt.out / "tokenizer.bpe";
     const std::filesystem::path model_path = opt.out / "model.bin";
