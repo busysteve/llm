@@ -26,7 +26,7 @@ cmake --build build -j --target train_data
   --preset bert-tiny --vocab 1024 --seq-len 256 --batch 4 --steps 1000
 ```
 
-`--preset` is `bert-tiny`, `bert-small`, or `bert-base`. `--seq-len` must be at most 512. `--vocab` must be at least 259. Memory matches `gpt2-*` at the same depth, and the context is already 512. `bert-tiny` fits in 12 GB. `bert-small` prefers 24 GB at batch 4 and length 512. `bert-base` is a 24 GB target. The notes are float32, one GPU, full attention, and no activation checkpointing.
+`--preset` is `bert-tiny`, `bert-small`, or `bert-base`. `--seq-len` must be at most 512. `--vocab` must be at least 259. Memory matches `gpt2-*` at the same depth, and the context is already 512. `bert-tiny` fits in 12 GB. `bert-small` prefers 24 GB at batch 4 and length 512. `bert-base` is a 24 GB target. The notes are one GPU, full attention, and no activation checkpointing. They were sized for float32 activations. Training stores retained activations as bfloat16 and keeps parameters, Adam state, and checkpoints in float32, so the activation working set is about half of these notes.
 
 `train_data` sets masked language modeling because the config is non-causal. The mask id is the tokenizer pad id. `encode` does not insert that id. Of the positions chosen for the loss (15% by default), 80% become the pad id, 10% become a random id, and 10% keep the original id. Every other position is labeled `-100`. After the save the process prints one line and exits 0:
 

@@ -27,7 +27,7 @@ cmake --build build -j --target train_data
   --prompt "The morning after"
 ```
 
-`--preset` is `llama-tiny`, `llama-small`, or `llama-base`. `--seq-len` must be at most 1024. `--vocab` must be at least 259. Memory follows the matching default width: `llama-tiny` fits in 12 GB, `llama-small` prefers 24 GB at `(4, 512)`, and `llama-base` is a 24 GB target. On a 12 GB GPU keep the base width at `--seq-len` 512 or below. The notes are float32, one GPU, full attention, and no activation checkpointing.
+`--preset` is `llama-tiny`, `llama-small`, or `llama-base`. `--seq-len` must be at most 1024. `--vocab` must be at least 259. Memory follows the matching default width: `llama-tiny` fits in 12 GB, `llama-small` prefers 24 GB at `(4, 512)`, and `llama-base` is a 24 GB target. On a 12 GB GPU keep the base width at `--seq-len` 512 or below. The notes are one GPU, full attention, and no activation checkpointing. They were sized for float32 activations. Training stores retained activations as bfloat16 and keeps parameters, Adam state, and checkpoints in float32, so the activation working set is about half of these notes.
 
 The run prints a continuation. `chat` loads the directory and continues a `User:` / `Assistant:` transcript inside the 1024-token window. `finetune` keeps training on a new file list.
 

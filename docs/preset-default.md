@@ -25,7 +25,7 @@ cmake --build build -j --target train_data
   --prompt "The morning after"
 ```
 
-`--preset` is `tiny`, `small`, or `base`. `--seq-len` must be at most 1024. `--vocab` must be at least 259. The notes below are float32, one GPU, full attention, and no activation checkpointing.
+`--preset` is `tiny`, `small`, or `base`. `--seq-len` must be at most 1024. `--vocab` must be at least 259. The notes below are one GPU, full attention, and no activation checkpointing. They were sized for float32 activations. Training stores retained activations as bfloat16 and keeps parameters, Adam state, and checkpoints in float32, so the activation working set is about half of these notes.
 
 `tiny` fits in 12 GB. Suggested batches are `(8, 512)` and `(16, 256)`. `small` is tight in 12 GB at `(4, 512)`; 24 GB is comfortable. `base` is a 24 GB target. On a 12 GB GPU keep `base` at `--seq-len` 512 or below.
 

@@ -29,7 +29,7 @@ cmake --build build -j --target train_data
   --prompt "The morning after"
 ```
 
-`--preset` is `gpt3-tiny`, `gpt3-small`, or `gpt3-base`. `--seq-len` must be at most 2048. `--vocab` must be at least 259. Attention memory grows with the length. The longer position table is cheap beside that. On a 12 GB GPU prefer `--seq-len` 512 or below for `gpt3-base`. `gpt3-tiny` is the width that can spend the extra context on a 12 GB card. The notes are float32, one GPU, full attention, and no activation checkpointing.
+`--preset` is `gpt3-tiny`, `gpt3-small`, or `gpt3-base`. `--seq-len` must be at most 2048. `--vocab` must be at least 259. Attention memory grows with the length. The longer position table is cheap beside that. On a 12 GB GPU prefer `--seq-len` 512 or below for `gpt3-base`. `gpt3-tiny` is the width that can spend the extra context on a 12 GB card. The notes are one GPU, full attention, and no activation checkpointing. They were sized for float32 activations. Training stores retained activations as bfloat16 and keeps parameters, Adam state, and checkpoints in float32, so the activation working set is about half of these notes.
 
 The run prints a continuation. `chat` uses the 2048-token window and drops the oldest `User:` / `Assistant:` turn until the prompt plus `--max-new-tokens` fits. `finetune` keeps training on a new file list. Its `--seq-len` must also stay at or below 2048.
 

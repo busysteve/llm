@@ -27,7 +27,7 @@ cmake --build build -j --target train_data
   --prompt "The morning after"
 ```
 
-`--preset` is `qwen-tiny`, `qwen-small`, or `qwen-base`. `--seq-len` must be at most 1024. `--vocab` must be at least 259. The extra parameters versus `llama-*` are the wider Q projection and the QK-norm weights. Treat memory as the matching default width, and give `qwen-base` 24 GB. On a 12 GB GPU keep that width at `--seq-len` 512 or below. The notes are float32, one GPU, full attention, and no activation checkpointing.
+`--preset` is `qwen-tiny`, `qwen-small`, or `qwen-base`. `--seq-len` must be at most 1024. `--vocab` must be at least 259. The extra parameters versus `llama-*` are the wider Q projection and the QK-norm weights. Treat memory as the matching default width, and give `qwen-base` 24 GB. On a 12 GB GPU keep that width at `--seq-len` 512 or below. The notes are one GPU, full attention, and no activation checkpointing. They were sized for float32 activations. Training stores retained activations as bfloat16 and keeps parameters, Adam state, and checkpoints in float32, so the activation working set is about half of these notes.
 
 The run prints a continuation. `chat` continues a transcript inside the 1024-token window. `finetune` keeps training on a new file list.
 
