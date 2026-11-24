@@ -1,6 +1,6 @@
 # llm
 
-A C++17 library for small decoder-only language models and a BERT encoder, built beside [`nnCUDA`](../nnCUDA). This tree is the tokenizer, the token dataset, transformer presets, the trainer, and the generator.
+A C++17 library for small decoder-only language models and a BERT encoder, built beside [`nnCUDA`](../nnCUDA). This tree is the tokenizer, the token dataset, transformer presets, the trainer, an optional reinforcement-learning trainer, and the generator.
 
 Public headers live under `include/llm/` and do not include CUDA, HIP, OpenCL, Metal, or SYCL headers. The `llm` target links `nn` and pthread. That library is the CUDA tree [`nnCUDA`](../nnCUDA), the OpenCL tree [`nnCL`](../nnCL), the ROCm tree [`nnROCm`](../nnROCm), the Intel Arc tree [`nnArc`](../nnArc), or the Apple AGX tree [`nnAGX`](../nnAGX).
 
@@ -40,10 +40,11 @@ cmake --build build -j --target train_bert_chat
 cmake --build build -j --target train_data
 cmake --build build -j --target chat
 cmake --build build -j --target finetune
+cmake --build build -j --target reinforce
 cmake --build build -j --target gguf
 ```
 
-`train_tiny` is the acceptance example. It is not part of `llm_tests`. `train_bench` times eight steps of `presets::tiny` after one warmup step and prints tokens per second. It is not part of `llm_tests`. `train_data` trains from a list of text files or from every regular file under a directory, writes `tokenizer.bpe` and `model.bin`, then loads those files and generates. SIGINT saves that checkpoint, `--resume` continues the same run, `--lr-new` with `--resume` starts a new learning-rate schedule at step 1, `--reuse-tokens` starts a new model on the saved tokens, `--tokenize-only` writes those tokens and exits before the model, `--dir` reads every regular file under a directory, and `--stdin` reads one document from standard input. `--layers`, `--d-model`, `--heads`, `--d-ff`, `--max-seq`, `--kv-heads`, and `--head-dim` override the selected preset's sizes. `chat` loads that directory and continues a `User:` / `Assistant:` transcript, or with `--plain` continues the line as a prompt. `finetune` keeps training one of those checkpoints on a new file list. `gguf` converts `model.bin` to an `nnllm` GGUF and back, can write a llama.cpp GGUF from the same checkpoint, and can convert a public llama.cpp GGUF into a `chat` directory. Walkthroughs: [train_tiny](examples/train_tiny.md), [train_bench](examples/train_bench.md), [train_chat](examples/train_chat.md), [train_bert_chat](examples/train_bert_chat.md), [train_data](examples/train_data.md), [chat](examples/chat.md), [finetune](examples/finetune.md), [gguf](examples/gguf.md). Library details are in [USAGE.md](USAGE.md).
+`train_tiny` is the acceptance example. It is not part of `llm_tests`. `train_bench` times eight steps of `presets::tiny` after one warmup step and prints tokens per second. It is not part of `llm_tests`. `train_data` trains from a list of text files or from every regular file under a directory, writes `tokenizer.bpe` and `model.bin`, then loads those files and generates. SIGINT saves that checkpoint, `--resume` continues the same run, `--lr-new` with `--resume` starts a new learning-rate schedule at step 1, `--reuse-tokens` starts a new model on the saved tokens, `--tokenize-only` writes those tokens and exits before the model, `--dir` reads every regular file under a directory, and `--stdin` reads one document from standard input. `--layers`, `--d-model`, `--heads`, `--d-ff`, `--max-seq`, `--kv-heads`, and `--head-dim` override the selected preset's sizes. `chat` loads that directory and continues a `User:` / `Assistant:` transcript, or with `--plain` continues the line as a prompt. `finetune` keeps training one of those checkpoints on a new file list. `reinforce` updates a causal checkpoint from a caller-supplied reward. `gguf` converts `model.bin` to an `nnllm` GGUF and back, can write a llama.cpp GGUF from the same checkpoint, and can convert a public llama.cpp GGUF into a `chat` directory. Walkthroughs: [train_tiny](examples/train_tiny.md), [train_bench](examples/train_bench.md), [train_chat](examples/train_chat.md), [train_bert_chat](examples/train_bert_chat.md), [train_data](examples/train_data.md), [chat](examples/chat.md), [finetune](examples/finetune.md), [reinforce](examples/reinforce.md), [gguf](examples/gguf.md). Library details are in [USAGE.md](USAGE.md).
 
 ## Layout
 
@@ -53,11 +54,13 @@ include/llm/bpe.hpp         BpeTokenizer
 include/llm/data.hpp        TextDataset and token files
 include/llm/presets.hpp     tiny through large, including base-medium and base-large, plus llama, qwen, gpt2, gpt3, and bert configs, AdamW groups
 include/llm/train.hpp       learning-rate schedule and Trainer
-include/llm/generate.hpp    Generator
+include/llm/rl.hpp          policy gradient and RlTrainer
+include/llm/generate.hpp    Generator and sample_token
 src/bpe.cpp                 byte-level BPE, train, and the LPB1 file
 src/data.cpp                token file and next-token batches
 src/presets.cpp             preset configs and adamw_groups
 src/train.cpp               warmup/cosine schedule and the fit loop
+src/rl.cpp                  host policy gradient and the reinforcement-learning fit loop
 src/generate.cpp            prefill, sample, decode_step, and a masked forward for an encoder
 examples/train_tiny.cpp     acceptance train and generate
 examples/train_tiny.md      how to run train_tiny
@@ -73,11 +76,14 @@ examples/chat.cpp           continue a User/Assistant transcript, or a plain pro
 examples/chat.md            how to converse with a trained model
 examples/finetune.cpp       fine-tune an existing checkpoint on new text
 examples/finetune.md        how to fine-tune an existing model
+examples/reinforce.cpp      update a causal checkpoint from a string reward
+examples/reinforce.md       how to run reinforce
 examples/gguf.cpp           convert model.bin to GGUF, to a llama.cpp GGUF, and from a public GGUF
 examples/gguf.md            how to convert a checkpoint to GGUF, and a public GGUF to chat files
 tests/test_bpe.cpp          tokenizer tests
 tests/test_data.cpp         dataset tests
 tests/test_train.cpp        presets, trainer, and generator tests
+tests/test_rl.cpp           policy gradient and RlTrainer tests
 docs/llama-base-architecture.md  Mermaid diagram of llama_base
 docs/qwen-base-architecture.md   Mermaid diagram of qwen_base
 docs/gpt2-base-architecture.md   Mermaid diagram of gpt2_base
@@ -164,6 +170,8 @@ tiny fits in 12 GB. Suggested batches are `(8, 512)` and `(16, 256)`. small is t
 
 `Trainer::fit` runs `max_steps` AdamW updates. Each step is 1-based. The learning rate warms up linearly, then follows a cosine down to `min_lr`. `learning_rate_at` is that schedule. Micro-batches accumulate gradients on device (`Tensor::scale` by `1 / grad_accum_steps`) before one clip and one `opt.step`. A non-finite loss or grad norm throws when `abort_on_non_finite` is set. Eval, when a validation set is passed, prints mean cross-entropy and perplexity. A positive `early_stop_patience` stops after that many validation evals with no improvement and restores the best step, including AdamW moments. A finite `min_loss` of at least 0 stops when a step's training loss is at or below that value and keeps that step. Checkpoints use `Transformer::save(path, &adamw)`, so the file is version 2, version 4 for a Qwen-style block, or version 6 for a bidirectional block or a segment table, and includes embeddings and AdamW moments. When `masked_lm` is set, each step picks positions with probability `mask_prob` (default 0.15). Of those, 80% become `mask_token`, 10% become a random id, and 10% stay. The loss is the original id at the chosen positions and ignore index `-100` elsewhere.
 
+`RlTrainer::fit` is a separate loop for a causal decoder. It samples a group of completions, scores them with a caller-supplied reward, and backpropagates a host policy gradient through `Transformer::backward`. `group_size` 1 uses the raw reward. A larger group uses reward minus the group mean. A positive `kl_coef` adds the full-vocabulary KL against a frozen reference model the caller loads and does not train. Prompt tokens and padding stay on ignore index `-100`. The learning rate is `learning_rate_at` on a `TrainConfig` filled with the schedule fields. `Trainer::fit` is unchanged. `examples/reinforce.cpp` is that loop with a reward that is 1 when the completion contains a string.
+
 ## Generator
 
-`Generator::generate` encodes the prompt with no extra bos or eos. A causal model prefills the cache and samples new tokens with `decode_step`. A bidirectional model appends the tokenizer pad id, which is the mask, and reads that position from `forward`. Segment ids stay 0. Temperature 0 is greedy. Otherwise logits are divided by temperature, masked to `top_k` (`0` skips top-k), softmaxed, then nucleus-filtered on probabilities (`top_p == 1` skips nucleus), and drawn. An eos id stops the string without being appended. The return value is `decode` of the new ids only.
+`sample_token` draws one id from a logit row. `Generator::generate` calls it. `generate` encodes the prompt with no extra bos or eos. A causal model prefills the cache and samples new tokens with `decode_step`. A bidirectional model appends the tokenizer pad id, which is the mask, and reads that position from `forward`. Segment ids stay 0. Temperature 0 is greedy. Otherwise logits are divided by temperature, masked to `top_k` (`0` skips top-k), softmaxed, then nucleus-filtered on probabilities (`top_p == 1` skips nucleus), and drawn. An eos id stops the string without being appended. The return value is `decode` of the new ids only.

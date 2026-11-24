@@ -62,11 +62,11 @@ endif()
 set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
 
-add_library(llm STATIC src/bpe.cpp src/data.cpp src/presets.cpp src/train.cpp src/generate.cpp)
+add_library(llm STATIC src/bpe.cpp src/data.cpp src/presets.cpp src/train.cpp src/generate.cpp src/rl.cpp)
 target_link_libraries(llm PUBLIC nn Threads::Threads)
 target_include_directories(llm PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
-add_executable(llm_tests tests/test_bpe.cpp tests/test_data.cpp tests/test_train.cpp)
+add_executable(llm_tests tests/test_bpe.cpp tests/test_data.cpp tests/test_train.cpp tests/test_rl.cpp)
 target_link_libraries(llm_tests PRIVATE llm)
 # CUDA IndexTensor is read with cudaMemcpy. OpenCL, ROCm, Arc, and AGX use IndexTensor::to_host().
 if(NOT NN_IS_OPENCL AND NOT NN_IS_ROCM AND NOT NN_IS_ARC AND NOT NN_IS_AGX)
@@ -94,16 +94,19 @@ target_link_libraries(chat PRIVATE llm)
 add_executable(finetune examples/finetune.cpp)
 target_link_libraries(finetune PRIVATE llm)
 
+add_executable(reinforce examples/reinforce.cpp)
+target_link_libraries(reinforce PRIVATE llm)
+
 add_executable(gguf examples/gguf.cpp)
 
 # nnROCm device code is linked by the HIP compiler. Host objects stay C++.
 # nnArc device code is linked with -fsycl. gguf does not link nn.
 if(NN_IS_ROCM)
-  set_target_properties(llm_tests train_tiny train_bench train_chat train_bert_chat train_data chat finetune
+  set_target_properties(llm_tests train_tiny train_bench train_chat train_bert_chat train_data chat finetune reinforce
     PROPERTIES LINKER_LANGUAGE HIP)
 endif()
 if(NN_IS_ARC)
-  foreach(llm_bin llm_tests train_tiny train_bench train_chat train_bert_chat train_data chat finetune)
+  foreach(llm_bin llm_tests train_tiny train_bench train_chat train_bert_chat train_data chat finetune reinforce)
     target_compile_options(${llm_bin} PRIVATE -fsycl)
     target_link_options(${llm_bin} PRIVATE -fsycl)
   endforeach()

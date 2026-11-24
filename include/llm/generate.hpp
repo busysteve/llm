@@ -8,6 +8,7 @@
 #include <random>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace llm {
 
@@ -18,6 +19,10 @@ struct GenerateConfig {
   float top_p = 1.f;
   int32_t eos_id = -1;
 };
+
+// Temperature 0 returns the argmax. Otherwise logits are divided by temperature,
+// restricted to top_k (0 skips that cut), softmaxed, nucleus-filtered, and drawn.
+int sample_token(std::vector<float> logits, const GenerateConfig& cfg, std::mt19937& rng);
 
 class Generator {
  public:

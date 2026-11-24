@@ -132,7 +132,7 @@ std::string generate_masked(nn::Context& ctx, nn::Transformer& model, const Toke
     const size_t row = (host.size() - 1) * static_cast<size_t>(vocab);
     std::vector<float> logits(all.begin() + static_cast<std::ptrdiff_t>(row),
                               all.begin() + static_cast<std::ptrdiff_t>(row + static_cast<size_t>(vocab)));
-    const int32_t id = static_cast<int32_t>(pick_id(std::move(logits), cfg, rng));
+    const int32_t id = static_cast<int32_t>(sample_token(std::move(logits), cfg, rng));
     host.pop_back();
     if (cfg.eos_id >= 0 && id == cfg.eos_id) break;
     generated.push_back(id);
@@ -142,6 +142,10 @@ std::string generate_masked(nn::Context& ctx, nn::Transformer& model, const Toke
 }
 
 }  // namespace
+
+int sample_token(std::vector<float> logits, const GenerateConfig& cfg, std::mt19937& rng) {
+  return pick_id(std::move(logits), cfg, rng);
+}
 
 Generator::Generator(nn::Context& ctx, nn::Transformer& model, const Tokenizer& tok)
     : ctx_(&ctx), model_(&model), tok_(&tok) {}
@@ -176,7 +180,7 @@ std::string Generator::generate(std::string_view prompt, GenerateConfig cfg, std
   std::vector<int32_t> generated;
   generated.reserve(static_cast<size_t>(cfg.max_new_tokens));
   for (int n = 0; n < cfg.max_new_tokens; ++n) {
-    const int32_t id = static_cast<int32_t>(pick_id(logits->to_host(), cfg, rng));
+    const int32_t id = static_cast<int32_t>(sample_token(logits->to_host(), cfg, rng));
     if (cfg.eos_id >= 0 && id == cfg.eos_id) break;
     generated.push_back(id);
     if (n + 1 == cfg.max_new_tokens) break;

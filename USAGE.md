@@ -273,6 +273,34 @@ When `early_stop_patience` is positive, `fit` throws `std::invalid_argument("ear
 
 A finite `min_loss` of at least 0 is checked after each optimizer step, against the same mean of micro-batch losses that `log_every` prints. A finite mean at or below `min_loss` stops the loop before validation and before that step's `ckpt_every` write. Grads are zeroed, a non-empty `checkpoint_path` is saved, and `fit` prints `min_loss step <step> loss <loss>`. An earlier validation snapshot is left unused. A non-finite step loss does not meet the threshold.
 
+## Reinforcement learning
+
+Header: `llm/rl.hpp`
+
+```cpp
+llm::RlConfig cfg;
+cfg.group_size = 4;
+cfg.max_steps = 100;
+cfg.kl_coef = 0.02f;
+cfg.checkpoint_path = "model.bin";
+llm::RlTrainer trainer(ctx, policy, opt, cfg, &reference);
+trainer.fit(tok, prompts, reward, rng);
+```
+
+`RlConfig` defaults are `learning_rate` `1e-5`, `min_lr` `1e-6`, `warmup_steps` 0, `max_steps` 100, `start_step` 1, `batch_prompts` 1, `group_size` 4, `max_new_tokens` 64, `temperature` 1, `top_k` 0, `top_p` 1, `kl_coef` 0, `log_every` 1, `ckpt_every` 0, `grad_clip_norm` 1, `abort_on_non_finite` true, an empty `checkpoint_path`, and a null `stop_flag`. The constructor throws `std::invalid_argument` with the field name when `max_steps`, `start_step`, `batch_prompts`, `group_size`, or `max_new_tokens` is not positive; when `start_step` is greater than `max_steps`; when `warmup_steps`, `log_every`, or `ckpt_every` is negative; when `learning_rate`, `min_lr`, `kl_coef`, or `grad_clip_norm` is NaN, infinite, or negative; or when `temperature`, `top_k`, or `top_p` fails the same check as `GenerateConfig`. A non-causal policy throws `causal`. `kl_coef > 0` requires a reference, and `kl_coef == 0` rejects one. A reference that differs in `vocab_size`, `d_model`, `num_layers`, `num_heads`, `max_seq_len`, or `causal` throws `reference`. A parameter that is not float32 throws `dtype`.
+
+`fit` throws `prompt` when the prompt list is empty or a prompt encodes empty, `vocab_size` when the tokenizer vocab differs from the policy, `pad_id` or `eos_id` when that id is outside the vocab, and `max_seq_len` when `prompt length + max_new_tokens` exceeds the policy context. A non-finite reward or loss throws `std::runtime_error("non-finite loss")` when `abort_on_non_finite` is set. A non-finite clipped grad norm throws `std::runtime_error("non-finite grad")` on the same flag.
+
+Each step draws `batch_prompts` prompts with replacement. For each prompt it samples `group_size` completions in eval mode through `prefill` and `decode_step`, using `sample_token`. Temperature 0 is greedy. An eos id is stored in `Episode::token_ids` and is a trained label. `Episode::text` is `decode` of those ids with that trailing eos removed. The views in `Episode` are valid only for the reward call.
+
+`group_size == 1` sets the advantage to the reward. `group_size > 1` sets it to the reward minus the mean reward in that group. Equal rewards in the group produce advantage 0. The loss does not divide by the group standard deviation.
+
+The scoring forward is a full sequence, not the cache. For `full = prompt + completion`, the input drops the last token and `labels[t]` is `full[t + 1]`. A target that is still inside the prompt is ignore index `-100`. Shorter rows are right-padded with `pad_id` on the input and `-100` on the label. The loss is the mean over completion labels of `-advantage * log π(token) + kl_coef * KL(π || π_ref)`. The KL is the full-vocabulary categorical KL at that position. The gradient is `(advantage * (softmax - one_hot) + kl_coef * softmax * (log_softmax - log_softmax_ref - KL)) / n_valid`, then scaled by `1 / batch_prompts`. With advantage 1 and `kl_coef` 0 that row matches `sequence_cross_entropy`. `policy_gradient` computes it on the host from `to_host` logits, including bfloat16 activations widened to float. The gradient tensor is float32, the same kind `sequence_cross_entropy` writes. A step with no completion labels skips `backward` and `opt.step`. A zero advantage with `kl_coef` 0 is a real zero gradient, and AdamW still steps, so weight decay still applies.
+
+The learning rate is `learning_rate_at` for a `TrainConfig` that carries `learning_rate`, `min_lr`, `warmup_steps`, and `max_steps`. `log_every` prints `step`, `loss`, `reward`, `kl`, `lr`, and `grad_norm` with the same local-time prefix as `Trainer::fit`. `ckpt_every` and `stop_flag` save `checkpoint_path` with the policy AdamW. A nonzero stop flag saves after the step, prints `stop step <step>`, and returns that step. `fit` returns the last step that ran.
+
+`examples/reinforce.cpp` loads a causal checkpoint, builds a fresh AdamW, and uses a reward that is 1 when the completion contains `--contains`. A positive `--kl` loads a second inference copy as the reference. The walkthrough is [examples/reinforce.md](examples/reinforce.md).
+
 ## Generator
 
 Header: `llm/generate.hpp`
@@ -293,4 +321,4 @@ The prompt ids are copied into an `IndexTensor` of shape `(1, prompt_len)` on th
 
 A bidirectional model does not call `prefill` or `decode_step`. Each new token appends `pad_id`, uploads the whole sequence, synchronizes, and calls `forward`. Segment ids stay 0. The logits at the appended position are the row that is sampled. The pad id is then replaced by that sample. `pad_id` outside `[0, vocab)` throws `std::invalid_argument("mask_token")`. A `forward` result whose length is not `seq * vocab` throws `("logits")`.
 
-Temperature `0` picks the argmax. Any other temperature divides the logits, keeps the top `top_k` when `top_k > 0` (`top_k == 0` skips top-k), softmaxes, then applies nucleus filtering on those probabilities when `top_p < 1` (`top_p == 1` skips nucleus), and draws with `rng`. A sampled id equal to `eos_id` stops the loop when `eos_id >= 0`, and that id is not appended. Other ids are kept until `max_new_tokens`. `decode` is called on the new ids only.
+`sample_token` is the draw. Temperature `0` picks the argmax. Any other temperature divides the logits, keeps the top `top_k` when `top_k > 0` (`top_k == 0` skips top-k), softmaxes, then applies nucleus filtering on those probabilities when `top_p < 1` (`top_p == 1` skips nucleus), and draws with `rng`. `Generator::generate` calls `sample_token`. A sampled id equal to `eos_id` stops the loop when `eos_id >= 0`, and that id is not appended. Other ids are kept until `max_new_tokens`. `decode` is called on the new ids only.
