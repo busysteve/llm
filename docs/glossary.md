@@ -1,6 +1,6 @@
 # Glossary
 
-Terms, acronyms, and processes for the models in this repository, the neural net they are built from, and the compute they run on. A name in `code` font is an identifier in `llm` or `nn`. Byte layouts and call sequences are in [USAGE.md](../USAGE.md). Preset shapes are in the other files in this directory.
+Terms, acronyms, and processes for the models in this repository, the neural net they are built from, and the compute they run on. A name in `code` font is an identifier in `llm` or `nn`. Byte layouts and call sequences are in [USAGE.md](../USAGE.md). The source layout is in [code-structure.md](code-structure.md). Preset shapes are in the other files in this directory.
 
 ## Processes
 
