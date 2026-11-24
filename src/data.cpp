@@ -1,6 +1,9 @@
 #include "llm/data.hpp"
 
+#include <algorithm>
+#include <array>
 #include <charconv>
+#include <cstdlib>
 #include <fstream>
 #include <limits>
 #include <stdexcept>
@@ -9,16 +12,28 @@
 namespace llm {
 namespace {
 
-void write_bytes(const std::filesystem::path& path, const std::vector<unsigned char>& bytes) {
-  std::ofstream out(path, std::ios::binary | std::ios::trunc);
-  if (!out) throw std::runtime_error("token write");
-  if (!bytes.empty()) {
-    out.write(reinterpret_cast<const char*>(bytes.data()),
-              static_cast<std::streamsize>(bytes.size()));
+// Stage each file beside its destination so publishing uses a local rename.
+class StagedFile {
+ public:
+  explicit StagedFile(const std::filesystem::path& destination) {
+    std::string pattern = (destination.parent_path() / ".tokens-XXXXXX").string();
+    if (::mkdtemp(pattern.data()) == nullptr) throw std::runtime_error("token write");
+    directory_ = std::move(pattern);
   }
-  out.close();
-  if (!out) throw std::runtime_error("token write");
-}
+
+  StagedFile(const StagedFile&) = delete;
+  StagedFile& operator=(const StagedFile&) = delete;
+
+  ~StagedFile() {
+    std::error_code error;
+    std::filesystem::remove_all(directory_, error);
+  }
+
+  std::filesystem::path path() const { return std::filesystem::path(directory_) / "data"; }
+
+ private:
+  std::string directory_;
+};
 
 int64_t parse_i64(const std::string& line) {
   if (line.empty()) throw std::runtime_error("token meta");
@@ -66,20 +81,21 @@ std::vector<int32_t> read_ids(const std::filesystem::path& path, int64_t numel, 
   std::vector<int32_t> ids(static_cast<size_t>(count));
   if (count == 0) return ids;
 
-  std::vector<unsigned char> bytes(static_cast<size_t>(size));
-  in.read(reinterpret_cast<char*>(bytes.data()), size);
-  if (!in) throw std::runtime_error("token read");
-
-  for (int64_t i = 0; i < count; ++i) {
-    const size_t offset = static_cast<size_t>(i) * 4;
-    const uint32_t bits = static_cast<uint32_t>(bytes[offset]) |
-                          (static_cast<uint32_t>(bytes[offset + 1]) << 8) |
-                          (static_cast<uint32_t>(bytes[offset + 2]) << 16) |
-                          (static_cast<uint32_t>(bytes[offset + 3]) << 24);
-    const int32_t id = static_cast<int32_t>(bits);
-    // Meta vocab is the only range check. A stored id outside it is a mismatch.
-    if (id < 0 || id >= vocab_size) throw std::runtime_error("vocab_size");
-    ids[static_cast<size_t>(i)] = id;
+  std::array<unsigned char, 16 * 1024> bytes;
+  for (size_t start = 0; start < ids.size();) {
+    const size_t batch = std::min(ids.size() - start, bytes.size() / 4);
+    in.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(batch * 4));
+    if (!in) throw std::runtime_error("token read");
+    for (size_t i = 0; i < batch; ++i) {
+      const size_t offset = i * 4;
+      const uint32_t bits = static_cast<uint32_t>(bytes[offset]) |
+                            (static_cast<uint32_t>(bytes[offset + 1]) << 8) |
+                            (static_cast<uint32_t>(bytes[offset + 2]) << 16) |
+                            (static_cast<uint32_t>(bytes[offset + 3]) << 24);
+      if (bits >= static_cast<uint32_t>(vocab_size)) throw std::runtime_error("vocab_size");
+      ids[start + i] = static_cast<int32_t>(bits);
+    }
+    start += batch;
   }
   return ids;
 }
@@ -144,30 +160,60 @@ Batch TextDataset::next(nn::Context& ctx, int batch_size, int seq_len, std::mt19
   return batch;
 }
 
+int64_t write_token_batches(const std::filesystem::path& tokens_bin,
+                            const std::filesystem::path& meta_path,
+                            int32_t vocab_size, int64_t min_tokens,
+                            const std::function<void(const TokenBatchSink&)>& produce) {
+  if (vocab_size < 1) throw std::invalid_argument("vocab_size");
+
+  const StagedFile staged_bin(tokens_bin);
+  std::ofstream out(staged_bin.path(), std::ios::binary);
+  if (!out) throw std::runtime_error("token write");
+  std::array<unsigned char, 16 * 1024> bytes;
+  size_t used = 0;
+  int64_t count = 0;
+  const auto flush = [&] {
+    out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(used));
+    if (!out) throw std::runtime_error("token write");
+    used = 0;
+  };
+
+  produce([&](const std::vector<int32_t>& ids) {
+    for (int32_t id : ids) {
+      if (id < 0 || id >= vocab_size) throw std::invalid_argument("id");
+      if (count == std::numeric_limits<int64_t>::max()) throw std::runtime_error("numel");
+      const uint32_t bits = static_cast<uint32_t>(id);
+      bytes[used++] = static_cast<unsigned char>(bits);
+      bytes[used++] = static_cast<unsigned char>(bits >> 8);
+      bytes[used++] = static_cast<unsigned char>(bits >> 16);
+      bytes[used++] = static_cast<unsigned char>(bits >> 24);
+      if (used == bytes.size()) flush();
+      ++count;
+    }
+  });
+  if (count < min_tokens) throw std::runtime_error("short corpus");
+  if (used != 0) flush();
+  out.close();
+  if (!out) throw std::runtime_error("token write");
+
+  const StagedFile staged_meta(meta_path);
+  std::ofstream meta(staged_meta.path());
+  if (!meta) throw std::runtime_error("token write");
+  meta << count << '\n' << vocab_size << '\n';
+  meta.close();
+  if (!meta) throw std::runtime_error("token write");
+
+  std::filesystem::rename(staged_bin.path(), tokens_bin);
+  std::filesystem::rename(staged_meta.path(), meta_path);
+  return count;
+}
+
 void write_token_file(const std::filesystem::path& tokens_bin,
                       const std::filesystem::path& meta_path,
                       const std::vector<int32_t>& ids,
                       int32_t vocab_size) {
-  if (vocab_size < 1) throw std::invalid_argument("vocab_size");
-  for (int32_t id : ids) {
-    if (id < 0 || id >= vocab_size) throw std::invalid_argument("id");
-  }
-
-  std::vector<unsigned char> bytes(ids.size() * 4);
-  for (size_t i = 0; i < ids.size(); ++i) {
-    const uint32_t bits = static_cast<uint32_t>(ids[i]);
-    bytes[i * 4] = static_cast<unsigned char>(bits);
-    bytes[i * 4 + 1] = static_cast<unsigned char>(bits >> 8);
-    bytes[i * 4 + 2] = static_cast<unsigned char>(bits >> 16);
-    bytes[i * 4 + 3] = static_cast<unsigned char>(bits >> 24);
-  }
-  write_bytes(tokens_bin, bytes);
-
-  std::ofstream meta(meta_path, std::ios::trunc);
-  if (!meta) throw std::runtime_error("token write");
-  meta << static_cast<long long>(ids.size()) << '\n' << vocab_size << '\n';
-  meta.close();
-  if (!meta) throw std::runtime_error("token write");
+  write_token_batches(tokens_bin, meta_path, vocab_size, 0,
+                      [&](const TokenBatchSink& emit) { emit(ids); });
 }
 
 }  // namespace llm

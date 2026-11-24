@@ -158,6 +158,23 @@ void run_data_tests() {
   CHECK(read_bytes(bin) == bin_before);
   CHECK(read_text(meta) == meta_before);
 
+  const std::vector<int32_t> chunk(5000, 256);
+  const auto produce = [&](const llm::TokenBatchSink& emit) {
+    emit(chunk);
+    emit({257});
+  };
+  check_runtime([&] { llm::write_token_batches(bin, meta, 300, 5002, produce); }, "short corpus");
+  CHECK(read_bytes(bin) == bin_before);
+  CHECK(read_text(meta) == meta_before);
+
+  const auto chunk_bin = dir / "chunk.bin";
+  const auto chunk_meta = dir / "chunk.meta";
+  CHECK(llm::write_token_batches(chunk_bin, chunk_meta, 300, 5001, produce) == 5001);
+  const llm::TextDataset chunk_data(chunk_bin, chunk_meta);
+  std::vector<int32_t> expected = chunk;
+  expected.push_back(257);
+  CHECK(chunk_data.ids() == expected);
+
   write_text(meta, "5\n49999\n");
   check_runtime([&] { llm::TextDataset(bin, meta); }, "vocab_size");
   write_text(meta, "4\n20000000\n");

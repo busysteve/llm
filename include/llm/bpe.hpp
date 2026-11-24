@@ -3,7 +3,9 @@
 #include "llm/tokenizer.hpp"
 
 #include <cstdint>
+#include <functional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace llm {
@@ -16,6 +18,9 @@ class BpeTokenizer : public Tokenizer {
 
   int vocab_size() const override;
   std::vector<int32_t> encode(std::string_view text, EncodeOptions opt = {}) const override;
+  // Emits ordered batches. Each batch is valid for the duration of the callback.
+  void encode_chunks(std::string_view text, EncodeOptions opt,
+                     const std::function<void(const std::vector<int32_t>&)>& emit) const;
   std::string decode(const std::vector<int32_t>& ids) const override;
   int32_t bos_id() const override;
   int32_t eos_id() const override;
@@ -32,12 +37,14 @@ class BpeTokenizer : public Tokenizer {
 
   BpeTokenizer(int vocab_size, std::vector<Merge> merges);
   void build_pieces();
+  void encode_range(std::string_view text, std::vector<int32_t>& out) const;
 
   int vocab_size_ = 0;
   int32_t pad_id_ = 0;
   int32_t bos_id_ = 0;
   int32_t eos_id_ = 0;
   std::vector<Merge> merges_;
+  std::unordered_map<uint64_t, int32_t> merge_ids_;
   // Byte expansion of every id. Pad, bos, and eos stay empty.
   std::vector<std::string> pieces_;
 };

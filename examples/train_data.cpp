@@ -572,16 +572,32 @@ int main(int argc, char** argv) {
 
       std::fprintf(stderr, "training tokenizer vocab=%d on %zu books, %lld bytes\n", opt.vocab,
                    books.size(), static_cast<long long>(bytes));
-      tok = llm::BpeTokenizer::train(books, opt.vocab);
+      auto bpe = llm::BpeTokenizer::train(books, opt.vocab);
 
-      llm::EncodeOptions encode_opt;
-      encode_opt.add_eos = true;
-      for (const std::string& book : books) {
-        const std::vector<int32_t> part = tok->encode(book, encode_opt);
-        ids.insert(ids.end(), part.begin(), part.end());
+      const auto encode_books = [&](const llm::TokenBatchSink& emit) {
+        llm::EncodeOptions encode_opt;
+        encode_opt.add_eos = true;
+        for (std::string& book : books) {
+          bpe->encode_chunks(book, encode_opt, emit);
+          std::string().swap(book);
+        }
+      };
+      if (opt.tokenize_only) {
+        model_config(opt);
+        const int64_t count = llm::write_token_batches(bin_path, meta_path, bpe->vocab_size(),
+                                                       static_cast<int64_t>(opt.seq_len) + 1,
+                                                       encode_books);
+        std::fprintf(stderr, "encoded %lld tokens\n", static_cast<long long>(count));
+        bpe->save(tok_path);
+        std::fprintf(stderr, "saved %s\n", tok_path.string().c_str());
+        std::fprintf(stderr, "tokenize only\n");
+        return 0;
       }
-      books.clear();
-      books.shrink_to_fit();
+
+      encode_books([&](const std::vector<int32_t>& part) {
+        ids.insert(ids.end(), part.begin(), part.end());
+      });
+      tok = std::move(bpe);
       std::fprintf(stderr, "encoded %zu tokens\n", ids.size());
       if (static_cast<int64_t>(ids.size()) < static_cast<int64_t>(opt.seq_len) + 1) {
         throw std::runtime_error("short corpus");
@@ -590,15 +606,6 @@ int main(int argc, char** argv) {
 
     const nn::TransformerConfig config = model_config(opt);
     const bool encoder = !config.causal;
-
-    // Tokens are on the host. Exit before the training context allocates a model.
-    if (opt.tokenize_only) {
-      llm::write_token_file(bin_path, meta_path, ids, static_cast<int32_t>(tok->vocab_size()));
-      tok->save(tok_path);
-      std::fprintf(stderr, "saved %s\n", tok_path.string().c_str());
-      std::fprintf(stderr, "tokenize only\n");
-      return 0;
-    }
 
     std::vector<int32_t> train_ids;
     std::vector<int32_t> valid_ids;

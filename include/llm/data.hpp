@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <random>
 #include <vector>
 
@@ -30,6 +31,13 @@ class TextDataset {
   int64_t numel_ = 0;
   int32_t vocab_size_ = 0;
 };
+
+// The producer emits batches in token order. Files are published after validation.
+using TokenBatchSink = std::function<void(const std::vector<int32_t>&)>;
+int64_t write_token_batches(const std::filesystem::path& tokens_bin,
+                            const std::filesystem::path& meta_path,
+                            int32_t vocab_size, int64_t min_tokens,
+                            const std::function<void(const TokenBatchSink&)>& produce);
 
 void write_token_file(const std::filesystem::path& tokens_bin,
                       const std::filesystem::path& meta_path,

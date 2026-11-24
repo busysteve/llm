@@ -5,6 +5,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <condition_variable>
 #include <cstdint>
 #include <exception>
@@ -23,6 +24,7 @@ namespace llm {
 namespace {
 
 constexpr char kMagic[4] = {'L', 'P', 'B', '1'};
+constexpr size_t kEncodeChunkBytes = 64 * 1024;
 
 void require_vocab_size(long long vocab_size) {
   if (vocab_size < 259 || vocab_size > static_cast<long long>(std::numeric_limits<int32_t>::max())) {
@@ -49,18 +51,23 @@ ByteClass byte_class(unsigned char c) {
   return ByteClass::Other;
 }
 
-// Maximal runs of one class. Concatenating them restores the string, including non-UTF-8.
-std::vector<std::string_view> pieces_of(std::string_view text) {
-  std::vector<std::string_view> pieces;
-  size_t i = 0;
-  while (i < text.size()) {
-    const ByteClass kind = byte_class(static_cast<unsigned char>(text[i]));
-    size_t j = i + 1;
-    while (j < text.size() && byte_class(static_cast<unsigned char>(text[j])) == kind) ++j;
-    pieces.push_back(text.substr(i, j - i));
-    i = j;
+// Maximal runs of one byte class. Concatenating them restores the original bytes.
+std::string_view take_piece(std::string_view& text) {
+  const ByteClass kind = byte_class(static_cast<unsigned char>(text.front()));
+  size_t end = 1;
+  while (end < text.size() && byte_class(static_cast<unsigned char>(text[end])) == kind) ++end;
+  const std::string_view piece = text.substr(0, end);
+  text.remove_prefix(end);
+  return piece;
+}
+
+// Move a proposed split to the end of its run so merge rules cannot cross it.
+size_t piece_boundary(std::string_view text, size_t offset) {
+  const ByteClass kind = byte_class(static_cast<unsigned char>(text[offset - 1]));
+  while (offset < text.size() && byte_class(static_cast<unsigned char>(text[offset])) == kind) {
+    ++offset;
   }
-  return pieces;
+  return offset;
 }
 
 // Non-overlapping left to right, so a run of the same symbol collapses in pairs.
@@ -310,6 +317,7 @@ BpeTokenizer::BpeTokenizer(int vocab_size, std::vector<Merge> merges)
 }
 
 void BpeTokenizer::build_pieces() {
+  merge_ids_.reserve(merges_.size());
   pieces_.assign(static_cast<size_t>(vocab_size_), std::string());
   for (int i = 0; i < 256; ++i) {
     pieces_[static_cast<size_t>(i)] = std::string(1, static_cast<char>(i));
@@ -320,6 +328,7 @@ void BpeTokenizer::build_pieces() {
     const int32_t id = static_cast<int32_t>(256 + i);
     // A merge may only cite symbols that already exist. That excludes specials.
     if (left < 0 || right < 0 || left >= id || right >= id) throw std::runtime_error("bad tokenizer");
+    merge_ids_.emplace(pack_pair(left, right), id);
     pieces_[static_cast<size_t>(id)] =
         pieces_[static_cast<size_t>(left)] + pieces_[static_cast<size_t>(right)];
   }
@@ -330,9 +339,21 @@ std::unique_ptr<BpeTokenizer> BpeTokenizer::train(const std::vector<std::string>
   require_vocab_size(vocab_size);
   const int n_merges = vocab_size - 259;
 
-  std::vector<std::vector<int32_t>> words;
-  for (const std::string& text : texts) {
-    for (std::string_view piece : pieces_of(text)) words.push_back(bytes_of(piece));
+  struct Word {
+    std::vector<int32_t> ids;
+    int64_t frequency;
+  };
+  std::vector<Word> words;
+  {
+    std::unordered_map<std::string_view, size_t> distinct;
+    for (std::string_view text : texts) {
+      while (!text.empty()) {
+        const std::string_view piece = take_piece(text);
+        const auto [entry, inserted] = distinct.try_emplace(piece, words.size());
+        if (inserted) words.push_back({bytes_of(piece), 1});
+        else ++words[entry->second].frequency;
+      }
+    }
   }
 
   RangePool pool(choose_thread_count(n_threads, words.size()));
@@ -352,9 +373,9 @@ std::unique_ptr<BpeTokenizer> BpeTokenizer::train(const std::vector<std::string>
     pool.for_ranges(words.size(), [&](unsigned worker, size_t begin, size_t end) {
       auto& counts = locals[worker];
       for (size_t w = begin; w < end; ++w) {
-        const std::vector<int32_t>& word = words[w];
+        const std::vector<int32_t>& word = words[w].ids;
         for (size_t j = 0; j + 1 < word.size(); ++j) {
-          counts[pack_pair(word[j], word[j + 1])] += 1;
+          counts[pack_pair(word[j], word[j + 1])] += words[w].frequency;
         }
       }
     });
@@ -385,7 +406,7 @@ std::unique_ptr<BpeTokenizer> BpeTokenizer::train(const std::vector<std::string>
     merges.push_back(Merge{best_left, best_right});
     pool.for_ranges(words.size(), [&](unsigned, size_t begin, size_t end) {
       for (size_t w = begin; w < end; ++w) {
-        merge_pair(words[w], best_left, best_right, new_id);
+        merge_pair(words[w].ids, best_left, best_right, new_id);
       }
     });
   }
@@ -401,36 +422,130 @@ int32_t BpeTokenizer::eos_id() const { return eos_id_; }
 
 int32_t BpeTokenizer::pad_id() const { return pad_id_; }
 
-std::vector<int32_t> BpeTokenizer::encode(std::string_view text, EncodeOptions opt) const {
-  const std::vector<std::string_view> pieces = pieces_of(text);
-  std::vector<std::vector<int32_t>> parts(pieces.size());
-  // A short prompt is cheaper on one thread. A book has enough pieces to split.
-  const unsigned n_threads = pieces.size() < 64 ? 1u : choose_thread_count(0, pieces.size());
-  run_parallel(n_threads, pieces.size(), [&](unsigned, size_t begin, size_t end) {
-    for (size_t p = begin; p < end; ++p) {
-      std::vector<int32_t> part = bytes_of(pieces[p]);
-      // Learn order is lowest rank first. Later merges cannot recreate an earlier pair,
-      // so one pass per merge inside each piece is the usual greedy BPE apply.
-      for (size_t i = 0; i < merges_.size(); ++i) {
-        if (part.size() < 2) break;
-        merge_pair(part, merges_[i].left, merges_[i].right, static_cast<int32_t>(256 + i));
-      }
-      parts[p] = std::move(part);
-    }
-  });
+void BpeTokenizer::encode_range(std::string_view text, std::vector<int32_t>& out) const {
+  constexpr size_t kShortPiece = 32;
+  constexpr int32_t kNoMerge = std::numeric_limits<int32_t>::max();
+  const auto merge_id = [&](int32_t left, int32_t right) {
+    const auto it = merge_ids_.find(pack_pair(left, right));
+    return it == merge_ids_.end() ? kNoMerge : it->second;
+  };
 
-  size_t total = 0;
-  for (const std::vector<int32_t>& part : parts) total += part.size();
-  if (opt.add_bos) ++total;
-  if (opt.add_eos) ++total;
+  struct Link {
+    size_t prev;
+    size_t next;
+  };
+  // Lexicographic order gives the lowest rank, then the leftmost occurrence.
+  using Candidate = std::pair<int32_t, size_t>;
+  const std::greater<Candidate> later;
   std::vector<int32_t> ids;
-  ids.reserve(total);
-  if (opt.add_bos) ids.push_back(bos_id_);
-  for (const std::vector<int32_t>& part : parts) {
-    ids.insert(ids.end(), part.begin(), part.end());
+  std::vector<Link> links;
+  std::vector<Candidate> heap;
+  while (!text.empty()) {
+    const std::string_view piece = take_piece(text);
+    if (piece.size() == 1) {
+      out.push_back(static_cast<unsigned char>(piece.front()));
+      continue;
+    }
+    ids.clear();
+    for (unsigned char byte : piece) ids.push_back(byte);
+    if (ids.size() <= kShortPiece) {
+      while (ids.size() > 1) {
+        int32_t best = kNoMerge;
+        for (size_t i = 1; i < ids.size(); ++i) {
+          best = std::min(best, merge_id(ids[i - 1], ids[i]));
+        }
+        if (best == kNoMerge) break;
+        const Merge& merge = merges_[best - 256];
+        merge_pair(ids, merge.left, merge.right, best);
+      }
+      out.insert(out.end(), ids.begin(), ids.end());
+      continue;
+    }
+
+    const size_t end = ids.size();
+    heap.clear();
+    const auto add_pair = [&](size_t left, size_t right) {
+      if (left == end || right == end) return false;
+      const int32_t id = merge_id(ids[left], ids[right]);
+      if (id == kNoMerge) return false;
+      heap.emplace_back(id, left);
+      return true;
+    };
+    for (size_t i = 1; i < end; ++i) add_pair(i - 1, i);
+    if (heap.empty()) {
+      out.insert(out.end(), ids.begin(), ids.end());
+      continue;
+    }
+
+    links.resize(end);
+    for (size_t i = 0; i < end; ++i) links[i] = {i == 0 ? end : i - 1, i + 1};
+    std::make_heap(heap.begin(), heap.end(), later);
+    while (!heap.empty()) {
+      std::pop_heap(heap.begin(), heap.end(), later);
+      const auto [id, left] = heap.back();
+      heap.pop_back();
+      const Merge& merge = merges_[id - 256];
+      const size_t right = links[left].next;
+      // The entries for pairs affected by earlier merges can still be in the heap.
+      if (right == end || ids[left] != merge.left || ids[right] != merge.right) continue;
+
+      const size_t next = links[right].next;
+      ids[left] = id;
+      ids[right] = -1;
+      links[left].next = next;
+      if (next != end) links[next].prev = left;
+      if (add_pair(links[left].prev, left)) std::push_heap(heap.begin(), heap.end(), later);
+      if (add_pair(left, next)) std::push_heap(heap.begin(), heap.end(), later);
+    }
+    for (size_t i = 0; i != end; i = links[i].next) out.push_back(ids[i]);
   }
-  if (opt.add_eos) ids.push_back(eos_id_);
+}
+
+std::vector<int32_t> BpeTokenizer::encode(std::string_view text, EncodeOptions opt) const {
+  std::vector<int32_t> ids;
+  if (text.size() < 2 * kEncodeChunkBytes) {
+    if (opt.add_bos) ids.push_back(bos_id_);
+    encode_range(text, ids);
+    if (opt.add_eos) ids.push_back(eos_id_);
+  } else {
+    encode_chunks(text, opt, [&](const std::vector<int32_t>& part) {
+      ids.insert(ids.end(), part.begin(), part.end());
+    });
+  }
   return ids;
+}
+
+void BpeTokenizer::encode_chunks(
+    std::string_view text, EncodeOptions opt,
+    const std::function<void(const std::vector<int32_t>&)>& emit) const {
+  constexpr size_t kWorkersPerBatch = 8;
+  const unsigned workers = choose_thread_count(0, kWorkersPerBatch);
+  std::vector<std::string_view> ranges;
+  ranges.reserve(workers);
+  std::vector<std::vector<int32_t>> parts(workers);
+  if (opt.add_bos) parts.front().push_back(bos_id_);
+
+  while (!text.empty()) {
+    ranges.clear();
+    while (!text.empty() && ranges.size() < workers) {
+      const size_t end = text.size() <= kEncodeChunkBytes
+                             ? text.size()
+                             : piece_boundary(text, kEncodeChunkBytes);
+      ranges.push_back(text.substr(0, end));
+      text.remove_prefix(end);
+    }
+    run_parallel(workers, ranges.size(), [&](unsigned, size_t begin, size_t end) {
+      for (size_t i = begin; i < end; ++i) encode_range(ranges[i], parts[i]);
+    });
+    for (size_t i = 0; i < ranges.size(); ++i) {
+      if (text.empty() && i + 1 == ranges.size() && opt.add_eos) parts[i].push_back(eos_id_);
+      emit(parts[i]);
+      parts[i].clear();
+    }
+    if (text.empty()) return;
+  }
+  if (opt.add_eos) parts.front().push_back(eos_id_);
+  if (!parts.front().empty()) emit(parts.front());
 }
 
 std::string BpeTokenizer::decode(const std::vector<int32_t>& ids) const {

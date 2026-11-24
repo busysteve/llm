@@ -172,6 +172,15 @@ int main() {
   CHECK((quad->encode("aaaa") == std::vector<int32_t>{257}));
   CHECK((quad->encode("aaa") == std::vector<int32_t>{256, 97}));
 
+  // The long-run path must resolve overlapping pairs in the same order.
+  std::vector<int32_t> long_quad(20, 257);
+  long_quad.insert(long_quad.end(), {256, 97});
+  CHECK(quad->encode(std::string(83, 'a')) == long_quad);
+
+  // Deduplicated pieces still contribute once per occurrence to each pair count.
+  const auto weighted = llm::BpeTokenizer::train({"zz zz zz", "aa aa"}, 260);
+  CHECK((weighted->encode("zz aa") == std::vector<int32_t>{256, 32, 97, 97}));
+
   // Pre-tokenization keeps a merge inside one run. Space and punctuation are their own runs.
   const auto boundary = llm::BpeTokenizer::train({"a b", "a b", "ab"}, 260);
   CHECK((boundary->encode("ab") == std::vector<int32_t>{256}));
@@ -198,6 +207,21 @@ int main() {
   check_round_trip(*first, long_text);
   CHECK(serial->encode(long_text) == threaded->encode(long_text));
   CHECK(first->encode(long_text) == serial->encode(long_text));
+
+  // Chunk boundaries can land inside long runs. Specials belong at the two ends.
+  std::string chunked = std::string(65535, '!') + " " + std::string(70103, 'a');
+  chunked += " " + std::string(65537, 'a');
+  std::vector<int32_t> chunk_ids;
+  const auto append_chunk = [&](const std::vector<int32_t>& part) {
+    chunk_ids.insert(chunk_ids.end(), part.begin(), part.end());
+  };
+  quad->encode_chunks(chunked, {true, true}, append_chunk);
+  CHECK(chunk_ids == quad->encode(chunked, {true, true}));
+  CHECK(chunk_ids.front() == quad->bos_id() && chunk_ids.back() == quad->eos_id());
+  CHECK(quad->decode(chunk_ids) == chunked);
+  chunk_ids.clear();
+  quad->encode_chunks("", {true, true}, append_chunk);
+  CHECK((chunk_ids == std::vector<int32_t>{quad->bos_id(), quad->eos_id()}));
 
   const std::filesystem::path model = dir / "tok.bpe";
   first->save(model);
