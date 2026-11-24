@@ -1,6 +1,6 @@
 # qwen-tiny, qwen-small, qwen-base, qwen-base-medium, qwen-base-large, qwen-medium, and qwen-large
 
-`qwen-tiny`, `qwen-small`, `qwen-base`, `qwen-base-medium`, `qwen-base-large`, `qwen-medium`, and `qwen-large` (`llm::presets::qwen_tiny`, `qwen_small`, `qwen_base`, `qwen_base_medium`, `qwen_base_large`, `qwen_medium`, and `qwen_large`) are the Qwen3 decoder. Attention is causal and grouped. Head dim is 128. Q and K each pass an RMSNorm of width 128 before RoPE. The RoPE base is `1e6`. The RMSNorm epsilon is `1e-6`. Bias is off. A diagram of `qwen_base` is in [qwen-base-architecture.md](qwen-base-architecture.md).
+`qwen-tiny`, `qwen-small`, `qwen-base`, `qwen-base-medium`, `qwen-base-large`, `qwen-medium`, and `qwen-large` (`llm::presets::qwen_tiny`, `qwen_small`, `qwen_base`, `qwen_base_medium`, `qwen_base_large`, `qwen_medium`, and `qwen_large`) are the Qwen3 decoder. Attention is causal and grouped. Head dim is 128. Q and K each pass an RMSNorm of width 128 before RoPE. The RoPE base is `1e6`. The RMSNorm epsilon is `1e-6`. Bias is off. A diagram of `qwen_base`, including the layer and head float32 footprint, is in [qwen-base-architecture.md](qwen-base-architecture.md).
 
 Train this shape from scratch. The preset does not load published Qwen weights. A public Qwen2 or Qwen3 GGUF comes in through `gguf from`.
 

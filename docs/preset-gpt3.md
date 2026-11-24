@@ -1,6 +1,6 @@
 # gpt3-tiny, gpt3-small, gpt3-base, gpt3-base-medium, gpt3-base-large, gpt3-medium, and gpt3-large
 
-`gpt3-tiny`, `gpt3-small`, `gpt3-base`, `gpt3-base-medium`, `gpt3-base-large`, `gpt3-medium`, and `gpt3-large` (`llm::presets::gpt3_tiny`, `gpt3_small`, `gpt3_base`, `gpt3_base_medium`, `gpt3_base_large`, `gpt3_medium`, and `gpt3_large`) are the GPT-2 dense decoder with `max_seq_len` 2048. Positions are learned absolute. Norms are LayerNorm with epsilon `1e-5`. The MLP is erf GELU with `d_ff = 4 * d_model`. Every linear has a bias. Attention is causal and dense in every layer. A diagram of `gpt3_base` is in [gpt3-base-architecture.md](gpt3-base-architecture.md).
+`gpt3-tiny`, `gpt3-small`, `gpt3-base`, `gpt3-base-medium`, `gpt3-base-large`, `gpt3-medium`, and `gpt3-large` (`llm::presets::gpt3_tiny`, `gpt3_small`, `gpt3_base`, `gpt3_base_medium`, `gpt3_base_large`, `gpt3_medium`, and `gpt3_large`) are the GPT-2 dense decoder with `max_seq_len` 2048. Positions are learned absolute. Norms are LayerNorm with epsilon `1e-5`. The MLP is erf GELU with `d_ff = 4 * d_model`. Every linear has a bias. Attention is causal and dense in every layer. A diagram of `gpt3_base`, including the layer and head float32 footprint, is in [gpt3-base-architecture.md](gpt3-base-architecture.md).
 
 The GPT-3 paper alternates dense attention with locally banded sparse attention. This library has no sparse attention. The extra parameters versus `gpt2-*` are the longer position table: `1024 * d_model` rows.
 

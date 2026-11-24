@@ -1,6 +1,6 @@
 # llama-tiny, llama-small, llama-base, llama-base-medium, llama-base-large, llama-medium, and llama-large
 
-`llama-tiny`, `llama-small`, `llama-base`, `llama-base-medium`, `llama-base-large`, `llama-medium`, and `llama-large` (`llm::presets::llama_tiny`, `llama_small`, `llama_base`, `llama_base_medium`, `llama_base_large`, `llama_medium`, and `llama_large`) are the default widths with RoPE and RMSNorm. Attention is causal. Head dim is 64, KV heads match the query heads, the RoPE base is 10000, and the RMSNorm epsilon is `1e-5`. The checkpoint has no position table and no norm biases. A diagram of `llama_base` is in [llama-base-architecture.md](llama-base-architecture.md).
+`llama-tiny`, `llama-small`, `llama-base`, `llama-base-medium`, `llama-base-large`, `llama-medium`, and `llama-large` (`llm::presets::llama_tiny`, `llama_small`, `llama_base`, `llama_base_medium`, `llama_base_large`, `llama_medium`, and `llama_large`) are the default widths with RoPE and RMSNorm. Attention is causal. Head dim is 64, KV heads match the query heads, the RoPE base is 10000, and the RMSNorm epsilon is `1e-5`. The checkpoint has no position table and no norm biases. A diagram of `llama_base`, including the layer and head float32 footprint, is in [llama-base-architecture.md](llama-base-architecture.md).
 
 Train this shape from scratch. A checkpoint that was trained with learned positions stays a learned-position model.
 

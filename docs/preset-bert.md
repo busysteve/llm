@@ -1,6 +1,6 @@
 # bert-tiny, bert-small, bert-base, bert-base-medium, bert-base-large, bert-medium, and bert-large
 
-`bert-tiny`, `bert-small`, `bert-base`, `bert-base-medium`, `bert-base-large`, `bert-medium`, and `bert-large` (`llm::presets::bert_tiny`, `bert_small`, `bert_base`, `bert_base_medium`, `bert_base_large`, `bert_medium`, and `bert_large`) are an encoder. The dense block matches GPT-2: learned absolute positions, LayerNorm epsilon `1e-5`, erf GELU, `d_ff = 4 * d_model`, and a bias on every linear. Attention is bidirectional. Context is 512. A segment table has 2 rows. A diagram of `bert_base` is in [bert-base-architecture.md](bert-base-architecture.md).
+`bert-tiny`, `bert-small`, `bert-base`, `bert-base-medium`, `bert-base-large`, `bert-medium`, and `bert-large` (`llm::presets::bert_tiny`, `bert_small`, `bert_base`, `bert_base_medium`, `bert_base_large`, `bert_medium`, and `bert_large`) are an encoder. The dense block matches GPT-2: learned absolute positions, LayerNorm epsilon `1e-5`, erf GELU, `d_ff = 4 * d_model`, and a bias on every linear. Attention is bidirectional. Context is 512. A segment table has 2 rows. A diagram of `bert_base`, including the layer and head float32 footprint, is in [bert-base-architecture.md](bert-base-architecture.md).
 
 Train this shape from scratch. The preset does not load published BERT weights. There is no WordPiece tokenizer, no `<mask>` piece, and no next-sentence pooler. `Generator` and `chat` append the pad id and read that position from `forward`. `decode_step` and `prefill` throw `causal`.
 

@@ -1,6 +1,6 @@
 # gpt2-tiny, gpt2-small, gpt2-base, gpt2-base-medium, gpt2-base-large, gpt2-medium, and gpt2-large
 
-`gpt2-tiny`, `gpt2-small`, `gpt2-base`, `gpt2-base-medium`, `gpt2-base-large`, `gpt2-medium`, and `gpt2-large` (`llm::presets::gpt2_tiny`, `gpt2_small`, `gpt2_base`, `gpt2_base_medium`, `gpt2_base_large`, `gpt2_medium`, and `gpt2_large`) are the GPT-2 decoder. Positions are learned absolute. Norms are LayerNorm with epsilon `1e-5`. The MLP is erf GELU with `d_ff = 4 * d_model`. Every linear has a bias, including the LM head. Attention is causal. Context is 1024. A diagram of `gpt2_base` is in [gpt2-base-architecture.md](gpt2-base-architecture.md).
+`gpt2-tiny`, `gpt2-small`, `gpt2-base`, `gpt2-base-medium`, `gpt2-base-large`, `gpt2-medium`, and `gpt2-large` (`llm::presets::gpt2_tiny`, `gpt2_small`, `gpt2_base`, `gpt2_base_medium`, `gpt2_base_large`, `gpt2_medium`, and `gpt2_large`) are the GPT-2 decoder. Positions are learned absolute. Norms are LayerNorm with epsilon `1e-5`. The MLP is erf GELU with `d_ff = 4 * d_model`. Every linear has a bias, including the LM head. Attention is causal. Context is 1024. A diagram of `gpt2_base`, including the layer and head float32 footprint, is in [gpt2-base-architecture.md](gpt2-base-architecture.md).
 
 Train this shape from scratch. `gguf from` does not load a public GPT-2 GGUF. The checkpoint stays in `model.bin` or an `nnllm` GGUF.
 

@@ -79,6 +79,41 @@ graph TD
 
 The diagram shows the data flow for a forward pass. Each of the 12 identical blocks applies pre-norm RMSNorm → attention → residual, then pre-norm RMSNorm → SwiGLU FFN → residual. Inside attention the order is the Q, K, and V linears, a split into heads, RMSNorm on Q and on K, a repeat of each KV head across the three query heads in its group, RoPE on Q and on the repeated K, then the output projection. Positions come from that RoPE, so the checkpoint has no position table. All linear layers are bias-free, and embeddings are not tied to the LM head.
 
+## Layer and head footprint
+
+Each weight is float32, so each parameter is four bytes. The vocab in this count is 16000, the same vocab as the README Size column. Activations and Adam moments are not drawn. Repeating a KV head across its three query heads adds no weights.
+
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': { 'fontSize': '14px'}}}%%
+graph TD
+    Tok["tok_emb.weight<br/>16000 × 768 = 12,288,000<br/>49,152,000 bytes"] --> Blocks
+
+    subgraph Blocks["12 blocks · 7,866,112 each · 94,393,344 params · 377,573,376 bytes"]
+        direction TB
+        LN1["ln1.weight<br/>768<br/>3,072 bytes"] --> Q
+        LN1 --> K
+        LN1 --> V
+        Q["attn.q.weight<br/>12 heads × 128 = 1536<br/>1536 × 768 = 1,179,648<br/>4,718,592 bytes"] --> QN
+        K["attn.k.weight<br/>4 heads × 128 = 512<br/>512 × 768 = 393,216<br/>1,572,864 bytes"] --> KN
+        V["attn.v.weight<br/>4 heads × 128 = 512<br/>512 × 768 = 393,216<br/>1,572,864 bytes"] --> Out
+        QN["attn.q_norm.weight<br/>128<br/>512 bytes"] --> Out
+        KN["attn.k_norm.weight<br/>128<br/>512 bytes"] --> Out
+        Out["attn.out.weight<br/>1536 × 768 = 1,179,648<br/>4,718,592 bytes"] --> LN2
+        LN2["ln2.weight<br/>768<br/>3,072 bytes"] --> FC1
+        FC1["fc1.weight<br/>SwiGLU 2 × 2048 = 4096<br/>4096 × 768 = 3,145,728<br/>12,582,912 bytes"] --> FC2
+        FC2["fc2.weight<br/>768 × 2048 = 1,572,864<br/>6,291,456 bytes"]
+    end
+
+    Blocks --> Final["final_ln.weight<br/>768<br/>3,072 bytes"]
+    Final --> LM["lm_head.weight<br/>16000 × 768 = 12,288,000<br/>49,152,000 bytes"]
+    LM --> Total["float32 weights<br/>118,970,112 parameters<br/>475,880,448 bytes<br/>475.88 MB"]
+
+    classDef spec fill:#e1f5fe,stroke:#01579b,stroke-width:2px
+    class Tok,Q,K,V,QN,KN,Out,FC1,FC2,LM,Total spec
+```
+
+One block is `768 + 1,179,648 + 2 × 393,216 + 1,179,648 + 128 + 128 + 768 + 3,145,728 + 1,572,864 = 7,866,112` parameters. Twelve blocks are 94,393,344. The token table and the LM head are 12,288,000 each, and the final RMSNorm is 768. The sum is 118,970,112 parameters, 475,880,448 bytes, 475.88 MB. Q is wider than `d_model` because each of the 12 heads has dimension 128. K and V stay at 4 heads of that same dimension.
+
 See also:
 - [preset-qwen.md](preset-qwen.md) — usage, benefits, and applications
 - [README.md](../README.md) — preset table and parameter counts
