@@ -4,6 +4,7 @@
 #   ./build.sh opencl   sibling ../nnCL    (OpenCL)
 #   ./build.sh amd      sibling ../nnROCm  (ROCm, architecture gfx1152 unless CMAKE_HIP_ARCHITECTURES is set)
 #   ./build.sh arc      sibling ../nnArc   (Intel Arc, SYCL via icpx, JIT SPIR-V)
+#   ./build.sh agx      sibling ../nnAGX   (Apple AGX, Metal; macOS only)
 # With no argument, NN_SOURCE is used when set. Otherwise OpenCL is chosen when
 # ../nnCL is present and nvcc is not, and CUDA is chosen otherwise.
 set -eu
@@ -14,7 +15,7 @@ backend="${1:-}"
 nn_source="${NN_SOURCE:-}"
 
 usage() {
-  echo "usage: ./build.sh [cuda|opencl|amd|arc]" >&2
+  echo "usage: ./build.sh [cuda|opencl|amd|arc|agx]" >&2
   exit 1
 }
 
@@ -30,6 +31,9 @@ case "$backend" in
     ;;
   arc|intel|nnarc|nnArc)
     nn_source="$(CDPATH= cd ../nnArc && pwd)"
+    ;;
+  agx|apple|nnagx|nnAGX)
+    nn_source="$(CDPATH= cd ../nnAGX && pwd)"
     ;;
   "")
     if [ -z "$nn_source" ]; then
@@ -74,6 +78,13 @@ if [ -f "$nn_source/src/elementwise.cpp" ] && [ ! -f "$nn_source/src/kernels.cl"
   fi
 fi
 
+# Refuse before touching build/. A non-Apple host must not clear a cache that
+# was configured for another backend.
+if [ -f "$nn_source/src/kernels.metal" ] && [ "$(uname -s)" != "Darwin" ]; then
+  echo "llm: nnAGX needs Apple Metal. This host is $(uname -s)." >&2
+  exit 1
+fi
+
 if [ -f build/CMakeCache.txt ]; then
   cached="$(sed -n 's/^NN_SOURCE:[A-Z]*=//p' build/CMakeCache.txt)"
   if [ -n "$cached" ] && [ "$cached" != "$nn_source" ]; then
@@ -94,6 +105,9 @@ elif [ -f "$nn_source/src/elementwise.cpp" ]; then
   echo "llm backend: Arc ($nn_source)"
   cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DNN_SOURCE="$nn_source" \
     -DCMAKE_CXX_COMPILER="$arc_cxx"
+elif [ -f "$nn_source/src/kernels.metal" ]; then
+  echo "llm backend: AGX ($nn_source)"
+  cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DNN_SOURCE="$nn_source"
 else
   # C++ sources in nn include CUDA headers. The HPC SDK nvcc rejects GCC later than 15.
   host_cxx="${CXX:-}"

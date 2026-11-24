@@ -10,7 +10,7 @@ cmake --build build -j --target train_bert_chat
 ./build/train_bert_chat
 ```
 
-For the CUDA backend, `CMAKE_CUDA_ARCHITECTURES` defaults to `86`. Set it to the GPU you have before `./build.sh cuda`. For ROCm, `CMAKE_HIP_ARCHITECTURES` defaults to `gfx1152`. Set it before `./build.sh amd`. For Arc, `./build.sh arc` uses `icpx` and JIT SPIR-V. There is no architecture flag.
+For the CUDA backend, `CMAKE_CUDA_ARCHITECTURES` defaults to `86`. Set it to the GPU you have before `./build.sh cuda`. For ROCm, `CMAKE_HIP_ARCHITECTURES` defaults to `gfx1152`. Set it before `./build.sh amd`. For Arc, `./build.sh arc` uses `icpx` and JIT SPIR-V. There is no architecture flag. For Apple AGX, `./build.sh agx` uses Metal and exits on a non-Apple host.
 
 ## What it trains on
 

@@ -1,6 +1,6 @@
 # Usage
 
-Programmer's guide to the tokenizer in namespace `llm`. Headers under `include/llm/` are C++17 and do not include CUDA, HIP, or OpenCL. Link the CMake target `llm`. It links `nn` and pthread publicly, so a program that links `libllm.a` by hand also needs `nn`, pthread, and the backend libraries that tree was built against (CUDA and cuDNN, OpenCL, or hipBLAS and rocBLAS).
+Programmer's guide to the tokenizer in namespace `llm`. Headers under `include/llm/` are C++17 and do not include CUDA, HIP, OpenCL, or Metal. Link the CMake target `llm`. It links `nn` and pthread publicly, so a program that links `libllm.a` by hand also needs `nn`, pthread, and the backend libraries that tree was built against (CUDA and cuDNN, OpenCL, hipBLAS and rocBLAS, or Metal and Foundation).
 
 `train` throws `std::invalid_argument("vocab_size")` when `vocab_size` is below 259, does not fit in `int32`, or the corpus runs out of pairs before that vocab is full. `decode` throws `std::invalid_argument("id")` for an id outside `0 .. vocab_size-1`. `load` throws `std::runtime_error` for a missing file, a bad magic, or a file that does not match the layout below.
 
