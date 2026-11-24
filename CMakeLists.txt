@@ -7,23 +7,30 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Sibling checkout of CUDA nnCUDA (../nnCUDA), OpenCL nnCL (../nnCL),
-# ROCm nnROCm (../nnROCm), or Arc nnArc (../nnArc).
-# ./build.sh cuda|opencl|amd|arc sets this. The selected tree's own tests stay out of `all`.
-set(NN_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/../nnCUDA" CACHE PATH "path to CUDA nnCUDA, OpenCL nnCL, ROCm nnROCm, or Arc nnArc")
+# ROCm nnROCm (../nnROCm), Arc nnArc (../nnArc), or Apple nnAGX (../nnAGX).
+# ./build.sh cuda|opencl|amd|arc|agx sets this. The selected tree's own tests stay out of `all`.
+set(NN_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/../nnCUDA" CACHE PATH "path to CUDA nnCUDA, OpenCL nnCL, ROCm nnROCm, Arc nnArc, or Apple nnAGX")
 if(NOT EXISTS "${NN_SOURCE}/CMakeLists.txt")
   message(FATAL_ERROR "NN_SOURCE has no CMakeLists.txt: ${NN_SOURCE}")
 endif()
-# nnCL ships src/kernels.cl. nnROCm ships elementwise.hip. nnArc ships elementwise.cpp.
-# The CUDA tree has none of those.
+# nnAGX ships src/kernels.metal. nnCL ships src/kernels.cl.
+# nnROCm ships elementwise.hip. nnArc ships elementwise.cpp.
+# The CUDA tree has none of those. Check kernels.metal first.
+set(NN_IS_AGX FALSE)
 set(NN_IS_OPENCL FALSE)
 set(NN_IS_ROCM FALSE)
 set(NN_IS_ARC FALSE)
-if(EXISTS "${NN_SOURCE}/src/kernels.cl")
+if(EXISTS "${NN_SOURCE}/src/kernels.metal")
+  set(NN_IS_AGX TRUE)
+elseif(EXISTS "${NN_SOURCE}/src/kernels.cl")
   set(NN_IS_OPENCL TRUE)
 elseif(EXISTS "${NN_SOURCE}/src/elementwise.hip")
   set(NN_IS_ROCM TRUE)
 elseif(EXISTS "${NN_SOURCE}/src/elementwise.cpp")
   set(NN_IS_ARC TRUE)
+endif()
+if(NN_IS_AGX)
+  enable_language(OBJCXX)
 endif()
 if(NN_IS_ROCM)
   if(NOT DEFINED CMAKE_HIP_COMPILER)
@@ -35,11 +42,13 @@ if(NN_IS_ROCM)
   # Enable HIP in this directory so executables can link nnROCm device code.
   # The nested project() call does not publish CMAKE_HIP_LINK_EXECUTABLE here.
   enable_language(HIP)
-elseif(NOT NN_IS_OPENCL AND NOT NN_IS_ARC AND NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+elseif(NOT NN_IS_OPENCL AND NOT NN_IS_ARC AND NOT NN_IS_AGX AND NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
   set(CMAKE_CUDA_ARCHITECTURES 86)
 endif()
 add_subdirectory(${NN_SOURCE} nn_build EXCLUDE_FROM_ALL)
-if(NN_IS_OPENCL)
+if(NN_IS_AGX)
+  message(STATUS "llm backend: AGX (${NN_SOURCE})")
+elseif(NN_IS_OPENCL)
   message(STATUS "llm backend: OpenCL (${NN_SOURCE})")
 elseif(NN_IS_ROCM)
   message(STATUS "llm backend: ROCm (${NN_SOURCE})")
@@ -58,8 +67,8 @@ target_include_directories(llm PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 add_executable(llm_tests tests/test_bpe.cpp tests/test_data.cpp tests/test_train.cpp)
 target_link_libraries(llm_tests PRIVATE llm)
-# CUDA IndexTensor is read with cudaMemcpy. OpenCL, ROCm, and Arc use IndexTensor::to_host().
-if(NOT NN_IS_OPENCL AND NOT NN_IS_ROCM AND NOT NN_IS_ARC)
+# CUDA IndexTensor is read with cudaMemcpy. OpenCL, ROCm, Arc, and AGX use IndexTensor::to_host().
+if(NOT NN_IS_OPENCL AND NOT NN_IS_ROCM AND NOT NN_IS_ARC AND NOT NN_IS_AGX)
   target_compile_definitions(llm_tests PRIVATE LLM_NN_CUDA)
 endif()
 

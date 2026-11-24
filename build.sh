@@ -4,8 +4,10 @@
 #   ./build.sh opencl   sibling ../nnCL    (OpenCL)
 #   ./build.sh amd      sibling ../nnROCm  (ROCm, architecture gfx1152 unless CMAKE_HIP_ARCHITECTURES is set)
 #   ./build.sh arc      sibling ../nnArc   (Intel Arc, SYCL via icpx, JIT SPIR-V)
-# With no argument, NN_SOURCE is used when set. Otherwise OpenCL is chosen when
-# ../nnCL is present and nvcc is not, and CUDA is chosen otherwise.
+#   ./build.sh agx      sibling ../nnAGX   (Apple Metal)
+# With no argument, NN_SOURCE is used when set. On macOS, ../nnAGX is chosen when
+# its Metal kernels are present. Otherwise OpenCL is chosen when ../nnCL is
+# present and nvcc is not, and CUDA is chosen otherwise.
 set -eu
 
 cd "$(dirname "$0")"
@@ -14,7 +16,7 @@ backend="${1:-}"
 nn_source="${NN_SOURCE:-}"
 
 usage() {
-  echo "usage: ./build.sh [cuda|opencl|amd|arc]" >&2
+  echo "usage: ./build.sh [cuda|opencl|amd|arc|agx]" >&2
   exit 1
 }
 
@@ -31,9 +33,14 @@ case "$backend" in
   arc|intel|nnarc|nnArc)
     nn_source="$(CDPATH= cd ../nnArc && pwd)"
     ;;
+  agx|apple|nnagx|nnAGX)
+    nn_source="$(CDPATH= cd ../nnAGX && pwd)"
+    ;;
   "")
     if [ -z "$nn_source" ]; then
-      if [ -f ../nnCL/src/kernels.cl ] && ! command -v nvcc >/dev/null 2>&1; then
+      if [ "$(uname)" = "Darwin" ] && [ -f ../nnAGX/src/kernels.metal ]; then
+        nn_source="$(CDPATH= cd ../nnAGX && pwd)"
+      elif [ -f ../nnCL/src/kernels.cl ] && ! command -v nvcc >/dev/null 2>&1; then
         nn_source="$(CDPATH= cd ../nnCL && pwd)"
       else
         nn_source="$(CDPATH= cd ../nnCUDA && pwd)"
@@ -49,7 +56,7 @@ esac
 # that was configured for another backend.
 arc_cxx=""
 if [ -f "$nn_source/src/elementwise.cpp" ] && [ ! -f "$nn_source/src/kernels.cl" ] &&
-   [ ! -f "$nn_source/src/elementwise.hip" ]; then
+   [ ! -f "$nn_source/src/kernels.metal" ] && [ ! -f "$nn_source/src/elementwise.hip" ]; then
   if [ -n "${CMAKE_CXX_COMPILER:-}" ] && [ -x "${CMAKE_CXX_COMPILER}" ] &&
      [ "$(basename "${CMAKE_CXX_COMPILER}")" = "icpx" ]; then
     arc_cxx="${CMAKE_CXX_COMPILER}"
@@ -82,7 +89,10 @@ if [ -f build/CMakeCache.txt ]; then
   fi
 fi
 
-if [ -f "$nn_source/src/kernels.cl" ]; then
+if [ -f "$nn_source/src/kernels.metal" ]; then
+  echo "llm backend: AGX ($nn_source)"
+  cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DNN_SOURCE="$nn_source"
+elif [ -f "$nn_source/src/kernels.cl" ]; then
   echo "llm backend: OpenCL ($nn_source)"
   cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DNN_SOURCE="$nn_source"
 elif [ -f "$nn_source/src/elementwise.hip" ]; then
