@@ -20,6 +20,23 @@ void validate(const GenerateConfig& cfg) {
   if (!std::isfinite(cfg.temperature) || cfg.temperature < 0.f) throw std::invalid_argument("temperature");
   if (cfg.top_k < 0) throw std::invalid_argument("top_k");
   if (!(cfg.top_p > 0.f && cfg.top_p <= 1.f)) throw std::invalid_argument("top_p");
+  if (!std::isfinite(cfg.repetition_penalty) || cfg.repetition_penalty <= 0.f) {
+    throw std::invalid_argument("repetition_penalty");
+  }
+}
+
+void apply_repetition(std::vector<float>& logits, float penalty, const int32_t* seen, size_t n_seen) {
+  if (penalty == 1.f || seen == nullptr || n_seen == 0) return;
+  std::vector<char> used(logits.size(), 0);
+  for (size_t i = 0; i < n_seen; ++i) {
+    const int32_t id = seen[i];
+    if (id < 0 || static_cast<size_t>(id) >= logits.size()) continue;
+    if (used[static_cast<size_t>(id)]) continue;
+    used[static_cast<size_t>(id)] = 1;
+    float& logit = logits[static_cast<size_t>(id)];
+    if (logit > 0.f) logit /= penalty;
+    else logit *= penalty;
+  }
 }
 
 int argmax_id(const std::vector<float>& logits) {
@@ -97,7 +114,12 @@ int sample_id(const std::vector<double>& probs, std::mt19937& rng) {
   return last;
 }
 
-int pick_id(std::vector<float> logits, const GenerateConfig& cfg, std::mt19937& rng) {
+int pick_id(std::vector<float> logits, const GenerateConfig& cfg, std::mt19937& rng,
+           const int32_t* seen, size_t n_seen) {
+  if (!std::isfinite(cfg.repetition_penalty) || cfg.repetition_penalty <= 0.f) {
+    throw std::invalid_argument("repetition_penalty");
+  }
+  apply_repetition(logits, cfg.repetition_penalty, seen, n_seen);
   if (cfg.temperature == 0.f) return argmax_id(logits);
   for (float& value : logits) value /= cfg.temperature;
   mask_top_k(logits, cfg.top_k);
@@ -119,6 +141,7 @@ std::string generate_masked(nn::Context& ctx, nn::Transformer& model, const Toke
   for (size_t i = 0; i < encoded.size(); ++i) host[i] = int64_t{encoded[i]};
 
   std::vector<int32_t> generated;
+  std::vector<int32_t> seen = encoded;
   generated.reserve(static_cast<size_t>(cfg.max_new_tokens));
   for (int n = 0; n < cfg.max_new_tokens; ++n) {
     host.push_back(int64_t{mask_id});
@@ -132,10 +155,12 @@ std::string generate_masked(nn::Context& ctx, nn::Transformer& model, const Toke
     const size_t row = (host.size() - 1) * static_cast<size_t>(vocab);
     std::vector<float> logits(all.begin() + static_cast<std::ptrdiff_t>(row),
                               all.begin() + static_cast<std::ptrdiff_t>(row + static_cast<size_t>(vocab)));
-    const int32_t id = static_cast<int32_t>(sample_token(std::move(logits), cfg, rng));
+    const int32_t id = static_cast<int32_t>(
+        sample_token(std::move(logits), cfg, rng, seen.data(), seen.size()));
     host.pop_back();
     if (cfg.eos_id >= 0 && id == cfg.eos_id) break;
     generated.push_back(id);
+    seen.push_back(id);
     host.push_back(int64_t{id});
   }
   return tok.decode(generated);
@@ -143,8 +168,9 @@ std::string generate_masked(nn::Context& ctx, nn::Transformer& model, const Toke
 
 }  // namespace
 
-int sample_token(std::vector<float> logits, const GenerateConfig& cfg, std::mt19937& rng) {
-  return pick_id(std::move(logits), cfg, rng);
+int sample_token(std::vector<float> logits, const GenerateConfig& cfg, std::mt19937& rng,
+                 const int32_t* seen, size_t n_seen) {
+  return pick_id(std::move(logits), cfg, rng, seen, n_seen);
 }
 
 Generator::Generator(nn::Context& ctx, nn::Transformer& model, const Tokenizer& tok)
@@ -178,11 +204,14 @@ std::string Generator::generate(std::string_view prompt, GenerateConfig cfg, std
   const nn::Tensor* logits = &model_->prefill(prompt_ids, state, t_max);
 
   std::vector<int32_t> generated;
+  std::vector<int32_t> seen = encoded;
   generated.reserve(static_cast<size_t>(cfg.max_new_tokens));
   for (int n = 0; n < cfg.max_new_tokens; ++n) {
-    const int32_t id = static_cast<int32_t>(sample_token(logits->to_host(), cfg, rng));
+    const int32_t id = static_cast<int32_t>(
+        sample_token(logits->to_host(), cfg, rng, seen.data(), seen.size()));
     if (cfg.eos_id >= 0 && id == cfg.eos_id) break;
     generated.push_back(id);
+    seen.push_back(id);
     if (n + 1 == cfg.max_new_tokens) break;
 
     std::vector<int64_t> one{int64_t{id}};

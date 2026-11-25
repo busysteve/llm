@@ -258,7 +258,7 @@ int main(int argc, char** argv) {
 
     bool encoder = false;
     {
-      llm::TextDataset data(bin_path, meta_path);
+      llm::TextDataset data(bin_path, meta_path, tok->eos_id());
       nn::Context ctx;
       nn::Transformer::Loaded loaded = nn::Transformer::load(
           ctx, from_model, opt.resume ? nn::LoadMode::Resume : nn::LoadMode::Inference);

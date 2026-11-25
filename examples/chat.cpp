@@ -24,6 +24,7 @@ struct Options {
   float temperature = 0.8f;
   int top_k = 40;
   float top_p = 0.9f;
+  float repetition_penalty = 1.f;
   int seed = 1;
   std::optional<std::string> once;
   bool plain = false;
@@ -53,6 +54,7 @@ void usage() {
       "  --temperature FLOAT        default 0.8 (0 is greedy)\n"
       "  --top-k N                  default 40 (0 disables)\n"
       "  --top-p FLOAT              default 0.9\n"
+      "  --repeat-penalty FLOAT     default 1 (1 disables)\n"
       "  --seed N                   default 1\n"
       "  --once TEXT                one reply, then exit\n"
       "  --plain                    no User:/Assistant: tags\n"
@@ -106,6 +108,7 @@ Options parse(int argc, char** argv) {
     else if (flag == "--temperature") opt.temperature = need_float(i, argc, argv);
     else if (flag == "--top-k") opt.top_k = need_int(i, argc, argv);
     else if (flag == "--top-p") opt.top_p = need_float(i, argc, argv);
+    else if (flag == "--repeat-penalty") opt.repetition_penalty = need_float(i, argc, argv);
     else if (flag == "--seed") opt.seed = need_int(i, argc, argv);
     else if (flag == "--once") opt.once = need(i, argc, argv);
     else if (flag == "--plain") opt.plain = true;
@@ -240,6 +243,7 @@ int main(int argc, char** argv) {
     cfg.temperature = opt.temperature;
     cfg.top_k = opt.top_k;
     cfg.top_p = opt.top_p;
+    cfg.repetition_penalty = opt.repetition_penalty;
     cfg.eos_id = tok->eos_id();
     std::mt19937 rng(static_cast<uint32_t>(opt.seed));
 

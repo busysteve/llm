@@ -203,8 +203,14 @@ void check_sample_token() {
   llm::GenerateConfig cfg;
   cfg.temperature = 0.f;
   std::mt19937 rng(1);
-  const std::vector<float> logits = {0.1f, 3.f, -1.f};
+  const std::vector<float> logits = {1.f, 3.f, -1.f};
   CHECK(llm::sample_token(logits, cfg, rng) == 1);
+  cfg.repetition_penalty = 4.f;
+  const int32_t seen = 1;
+  // 3 / 4 = 0.75, which loses to the untouched logit 1.
+  CHECK(llm::sample_token(logits, cfg, rng, &seen, 1) == 0);
+  cfg.repetition_penalty = 0.f;
+  check_invalid([&] { llm::sample_token(logits, cfg, rng, &seen, 1); }, "repetition_penalty");
 }
 
 uint32_t read_u32(const std::filesystem::path& path) {

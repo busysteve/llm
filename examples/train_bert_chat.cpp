@@ -147,7 +147,7 @@ int main() {
     const std::vector<std::string> exchanges(std::begin(kExchanges), std::end(kExchanges));
     const std::unique_ptr<llm::BpeTokenizer> tok = llm::BpeTokenizer::train(exchanges, kVocabSize);
     const std::vector<int32_t> ids = encode_corpus(*tok);
-    llm::TextDataset data(ids, static_cast<int32_t>(tok->vocab_size()));
+    llm::TextDataset data(ids, static_cast<int32_t>(tok->vocab_size()), tok->eos_id());
 
     const std::filesystem::path dir = std::filesystem::temp_directory_path() / "llm-train-bert-chat";
     std::filesystem::remove_all(dir);

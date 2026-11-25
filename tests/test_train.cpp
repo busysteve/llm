@@ -480,6 +480,9 @@ void check_generate(nn::Context& ctx) {
   bad = cfg;
   bad.top_p = 0.f;
   check_invalid([&] { generator.generate("ab", bad, first); }, "top_p");
+  bad = cfg;
+  bad.repetition_penalty = 0.f;
+  check_invalid([&] { generator.generate("ab", bad, first); }, "repetition_penalty");
 
   {
     nn::TransformerConfig config = tiny_config(tok->vocab_size());

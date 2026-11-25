@@ -269,5 +269,58 @@ void run_data_tests() {
     check_invalid([&] { empty_mem.next(ctx, 1, 1, rng); }, "short corpus");
   }
 
+  {
+    check_invalid([&] { llm::TextDataset(std::vector<int32_t>{0, 1}, 4, 4); }, "eos_id");
+    check_invalid([&] { llm::TextDataset(std::vector<int32_t>{0, 1}, 4, -2); }, "eos_id");
+    const int32_t eos = 9;
+    const std::vector<int32_t> docs = {0, 1, 2, 3, eos, 4, 5, 6, 7, 8, eos};
+    llm::TextDataset bounded(docs, 10, eos);
+    std::mt19937 bounded_rng(3);
+    for (int n = 0; n < 32; ++n) {
+      llm::Batch batch = bounded.next(ctx, 4, 3, bounded_rng);
+      const std::vector<int64_t> input = index_to_host(batch.input_ids);
+      const std::vector<int64_t> labels = index_to_host(batch.labels);
+      CHECK(input.size() == 12);
+      for (int row = 0; row < 4; ++row) {
+        const size_t base = static_cast<size_t>(row) * 3;
+        for (int t = 0; t < 3; ++t) CHECK(input[base + static_cast<size_t>(t)] != eos);
+        bool found = false;
+        for (size_t s = 0; s + 3 < docs.size(); ++s) {
+          bool match = true;
+          for (int t = 0; t < 3; ++t) {
+            if (input[base + static_cast<size_t>(t)] != docs[s + static_cast<size_t>(t)]) match = false;
+            if (labels[base + static_cast<size_t>(t)] != docs[s + static_cast<size_t>(t) + 1]) {
+              match = false;
+            }
+          }
+          if (match) {
+            found = true;
+            for (int t = 0; t < 3; ++t) CHECK(docs[s + static_cast<size_t>(t)] != eos);
+          }
+        }
+        CHECK(found);
+      }
+    }
+    const std::vector<int32_t> short_docs = {1, eos, 2, eos, 3, eos};
+    llm::TextDataset too_short(short_docs, 10, eos);
+    check_invalid([&] { too_short.next(ctx, 1, 2, bounded_rng); }, "short corpus");
+
+    const std::vector<int32_t> files = {1, 1, 1, eos, 2, 2, 2, 2, eos, 3, 3, 3, eos};
+    const llm::TokenHoldout tail = llm::holdout_documents(files, 2, 0.1f, eos);
+    CHECK(tail.train_files == 2);
+    CHECK(tail.valid_files == 1);
+    CHECK(tail.train == std::vector<int32_t>({1, 1, 1, eos, 2, 2, 2, 2, eos}));
+    CHECK(tail.valid == std::vector<int32_t>({3, 3, 3, eos}));
+    const llm::TokenHoldout half = llm::holdout_documents(files, 2, 0.5f, eos);
+    CHECK(half.train_files == 1);
+    CHECK(half.valid_files == 2);
+    CHECK(half.train == std::vector<int32_t>({1, 1, 1, eos}));
+    CHECK(half.valid == std::vector<int32_t>({2, 2, 2, 2, eos, 3, 3, 3, eos}));
+    check_runtime([&] { llm::holdout_documents(files, 2, 0.1f, -1); }, "short valid");
+    check_runtime([&] { llm::holdout_documents({1, 1, 1, eos}, 2, 0.1f, eos); }, "short valid");
+    check_runtime([&] { llm::holdout_documents({1, 1, 1, eos, 2, eos}, 2, 0.1f, eos); },
+                  "short valid");
+  }
+
   std::filesystem::remove_all(dir);
 }

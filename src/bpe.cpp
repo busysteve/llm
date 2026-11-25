@@ -13,10 +13,12 @@
 #include <functional>
 #include <limits>
 #include <mutex>
+#include <queue>
 #include <stdexcept>
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -356,8 +358,57 @@ std::unique_ptr<BpeTokenizer> BpeTokenizer::train(const std::vector<std::string>
     }
   }
 
+  if (words.size() > static_cast<size_t>(std::numeric_limits<uint32_t>::max())) {
+    throw std::runtime_error("tokenizer");
+  }
   RangePool pool(choose_thread_count(n_threads, words.size()));
-  std::vector<std::unordered_map<uint64_t, int64_t>> locals(pool.n_threads());
+
+  // counts is the weighted number of times a pair is adjacent. where lists the
+  // pieces that still contain it. A later merge edits only those pieces.
+  struct HeapEntry {
+    int64_t count;
+    uint64_t key;
+  };
+  struct HeapOrder {
+    bool operator()(const HeapEntry& a, const HeapEntry& b) const {
+      if (a.count != b.count) return a.count < b.count;
+      return a.key > b.key;
+    }
+  };
+  struct Local {
+    std::unordered_map<uint64_t, int64_t> counts;
+    std::unordered_map<uint64_t, std::vector<uint32_t>> where;
+  };
+  std::vector<Local> locals(pool.n_threads());
+  pool.for_ranges(words.size(), [&](unsigned worker, size_t begin, size_t end) {
+    Local& local = locals[worker];
+    for (size_t w = begin; w < end; ++w) {
+      const std::vector<int32_t>& ids = words[w].ids;
+      std::unordered_set<uint64_t> seen;
+      for (size_t j = 0; j + 1 < ids.size(); ++j) {
+        const uint64_t key = pack_pair(ids[j], ids[j + 1]);
+        local.counts[key] += words[w].frequency;
+        if (seen.insert(key).second) local.where[key].push_back(static_cast<uint32_t>(w));
+      }
+    }
+  });
+
+  std::unordered_map<uint64_t, int64_t> counts;
+  std::unordered_map<uint64_t, std::unordered_set<uint32_t>> where;
+  for (Local& local : locals) {
+    for (const auto& [key, count] : local.counts) counts[key] += count;
+    for (auto& [key, idxs] : local.where) where[key].insert(idxs.begin(), idxs.end());
+  }
+  locals.clear();
+
+  std::priority_queue<HeapEntry, std::vector<HeapEntry>, HeapOrder> heap;
+  for (const auto& [key, count] : counts) heap.push(HeapEntry{count, key});
+
+  struct Delta {
+    std::unordered_map<uint64_t, int64_t> counts;
+    std::unordered_map<uint64_t, std::vector<uint32_t>> add;
+    std::unordered_map<uint64_t, std::vector<uint32_t>> remove;
+  };
 
   std::vector<Merge> merges;
   merges.reserve(static_cast<size_t>(n_merges));
@@ -366,49 +417,87 @@ std::unique_ptr<BpeTokenizer> BpeTokenizer::train(const std::vector<std::string>
     // Learned ids occupy 256 .. vocab_size-4. Pad, bos, and eos stay reserved.
     if (new_id > static_cast<int32_t>(vocab_size) - 4) throw std::invalid_argument("vocab_size");
 
-    for (auto& local : locals) local.clear();
-    // Count inside each piece. A pair that crosses whitespace, punctuation, or two
-    // training strings is not a pair. Workers fill disjoint slices; the maps
-    // are summed before the winner is chosen.
-    pool.for_ranges(words.size(), [&](unsigned worker, size_t begin, size_t end) {
-      auto& counts = locals[worker];
-      for (size_t w = begin; w < end; ++w) {
-        const std::vector<int32_t>& word = words[w].ids;
-        for (size_t j = 0; j + 1 < word.size(); ++j) {
-          counts[pack_pair(word[j], word[j + 1])] += words[w].frequency;
+    bool found = false;
+    HeapEntry best{};
+    while (!heap.empty()) {
+      const HeapEntry entry = heap.top();
+      heap.pop();
+      const auto it = counts.find(entry.key);
+      if (it == counts.end() || it->second != entry.count) continue;
+      best = entry;
+      found = true;
+      break;
+    }
+    if (!found) throw std::invalid_argument("vocab_size");
+
+    const int32_t best_left = static_cast<int32_t>(best.key >> 32);
+    const int32_t best_right = static_cast<int32_t>(static_cast<uint32_t>(best.key));
+    merges.push_back(Merge{best_left, best_right});
+
+    const auto located = where.find(best.key);
+    std::vector<uint32_t> affected;
+    if (located != where.end()) {
+      affected.assign(located->second.begin(), located->second.end());
+      where.erase(located);
+    }
+
+    std::vector<Delta> deltas(pool.n_threads());
+    pool.for_ranges(affected.size(), [&](unsigned worker, size_t begin, size_t end) {
+      Delta& delta = deltas[worker];
+      for (size_t a = begin; a < end; ++a) {
+        const uint32_t w = affected[a];
+        Word& word = words[w];
+        std::unordered_map<uint64_t, int> before;
+        for (size_t j = 0; j + 1 < word.ids.size(); ++j) {
+          before[pack_pair(word.ids[j], word.ids[j + 1])] += 1;
+        }
+        merge_pair(word.ids, best_left, best_right, new_id);
+        std::unordered_map<uint64_t, int> after;
+        for (size_t j = 0; j + 1 < word.ids.size(); ++j) {
+          after[pack_pair(word.ids[j], word.ids[j + 1])] += 1;
+        }
+        for (const auto& [key, count] : before) {
+          const auto now_it = after.find(key);
+          const int now = now_it == after.end() ? 0 : now_it->second;
+          const int diff = now - count;
+          if (diff != 0) delta.counts[key] += static_cast<int64_t>(diff) * word.frequency;
+          if (now == 0) delta.remove[key].push_back(w);
+        }
+        for (const auto& [key, count] : after) {
+          if (before.find(key) != before.end()) continue;
+          delta.counts[key] += static_cast<int64_t>(count) * word.frequency;
+          delta.add[key].push_back(w);
         }
       }
     });
 
-    std::unordered_map<uint64_t, int64_t> counts;
-    for (auto& local : locals) {
-      if (local.empty()) continue;
-      if (counts.empty()) {
-        counts = std::move(local);
-        continue;
+    std::unordered_set<uint64_t> changed;
+    for (Delta& delta : deltas) {
+      for (const auto& [key, diff] : delta.counts) {
+        if (diff == 0) continue;
+        const auto it = counts.find(key);
+        const int64_t next = (it == counts.end() ? 0 : it->second) + diff;
+        if (next == 0) {
+          if (it != counts.end()) counts.erase(it);
+        } else if (it == counts.end()) {
+          counts.emplace(key, next);
+        } else {
+          it->second = next;
+        }
+        changed.insert(key);
       }
-      for (const auto& [key, count] : local) counts[key] += count;
+      for (auto& [key, idxs] : delta.remove) {
+        const auto it = where.find(key);
+        if (it == where.end()) continue;
+        for (uint32_t w : idxs) it->second.erase(w);
+        if (it->second.empty()) where.erase(it);
+      }
+      for (auto& [key, idxs] : delta.add) where[key].insert(idxs.begin(), idxs.end());
     }
-    if (counts.empty()) throw std::invalid_argument("vocab_size");
-
-    uint64_t best = 0;
-    int64_t best_count = -1;
-    for (const auto& [key, count] : counts) {
-      // Higher count wins. Equal counts take the smaller packed (left, right).
-      if (count > best_count || (count == best_count && key < best)) {
-        best = key;
-        best_count = count;
-      }
+    for (uint64_t key : changed) {
+      const auto it = counts.find(key);
+      if (it != counts.end() && it->second > 0) heap.push(HeapEntry{it->second, key});
     }
-
-    const int32_t best_left = static_cast<int32_t>(best >> 32);
-    const int32_t best_right = static_cast<int32_t>(static_cast<uint32_t>(best));
-    merges.push_back(Merge{best_left, best_right});
-    pool.for_ranges(words.size(), [&](unsigned, size_t begin, size_t end) {
-      for (size_t w = begin; w < end; ++w) {
-        merge_pair(words[w].ids, best_left, best_right, new_id);
-      }
-    });
   }
 
   return std::unique_ptr<BpeTokenizer>(new BpeTokenizer(vocab_size, std::move(merges)));

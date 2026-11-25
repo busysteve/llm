@@ -119,6 +119,8 @@ Completed turns are stored as `User: ...\nAssistant:...\n`. The next prompt is t
 
 Sampling stops on the tokenizer eos id. That id is not appended. If the decoded reply contains a newline followed by `User:`, the turn is cut there so the model cannot start the next user line.
 
+`--repeat-penalty` defaults to 1, which leaves the logits unchanged. A value above 1 is applied before temperature, including a greedy pick, once per distinct id in the prompt and the reply so far. A positive logit is divided by the penalty. Any other logit is multiplied by it.
+
 With `--plain`, a completed turn is the line, the reply, and a newline. The next prompt is that transcript then the line. A decoded newline and `User:` does not end the reply. One leading space stays on screen.
 
 Each call encodes the whole prompt. A causal model prefills it. A bidirectional model runs `forward` once per new token. Nothing is kept in the KV cache between turns.
@@ -136,6 +138,7 @@ Most presets use `max_seq_len` 1024. Every `gpt3-*` preset uses 2048. Every `ber
 | `--temperature FLOAT` | 0.8 | `0` is greedy |
 | `--top-k N` | 40 | `0` disables top-k |
 | `--top-p FLOAT` | 0.9 | nucleus threshold |
+| `--repeat-penalty FLOAT` | 1 | `1` leaves logits unchanged. Above 1 discourages ids already in the prompt and the reply |
 | `--seed N` | 1 | sampling rng |
 | `--once TEXT` | | one reply, then exit |
 | `--plain` | | prompt is the line, with no `User:` / `Assistant:` tags |
@@ -151,6 +154,6 @@ Errors print `chat: <reason>` on stderr. In an interactive session the process s
 | `max_seq_len` | the line plus `--max-new-tokens` is longer than the model allows |
 | `mask_token` | a bidirectional checkpoint has a pad id outside the model vocabulary |
 | `logits` | `forward` did not return one row per token |
-| `max_new_tokens`, `temperature`, `top_k`, `top_p` | that flag is out of range |
+| `max_new_tokens`, `temperature`, `top_k`, `top_p`, `repetition_penalty` | that flag is out of range |
 
 Training flags stay on `train_data`. See [train_data](train_data.md) and [USAGE.md](../USAGE.md). To keep training a dialogue checkpoint on more exchanges, see [finetune](finetune.md).

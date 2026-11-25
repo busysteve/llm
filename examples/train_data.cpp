@@ -155,9 +155,9 @@ void usage() {
       "                             step.\n"
       "  --eval-every N             default 0, or min(50, --steps) when\n"
       "                             --early-stop is positive\n"
-      "  --valid-fraction FLOAT     default 0.1. Suffix held out for that\n"
-      "                             validation loss. Used when --early-stop\n"
-      "                             is positive.\n"
+      "  --valid-fraction FLOAT     default 0.1. Fraction of tokens held\n"
+      "                             out as whole files. Used when\n"
+      "                             --early-stop is positive.\n"
       "  --lr FLOAT                 default 3e-4\n"
       "  --prompt TEXT              default: opening of the first book,\n"
       "                             or of the stdin document\n"
@@ -183,8 +183,9 @@ void usage() {
       "                             instead of --files or --dir.\n"
       "\n"
       "Each book is one tokenizer string, then encoded with an eos token appended.\n"
-      "Tokenizer training scans the corpus once per merge, so a large vocab on\n"
-      "long books is the slow part. --vocab 1024 is a faster first run.\n"
+      "A training window stays inside one file. Tokenizer training updates the\n"
+      "pairs a merge touches, so a large vocab on long books is still the slow\n"
+      "part. --vocab 1024 is a faster first run.\n"
       "tiny fits in 12 GB at this default batch and length. small prefers 24 GB.\n"
       "base is a 24 GB model; prefer --seq-len 512 or less on a smaller card.\n"
       "base-medium is 18 layers at the base width. base-large is 20 layers\n"
@@ -407,26 +408,12 @@ std::string opening_of(const std::string& book) {
   return book.substr(i, end - i);
 }
 
-struct Holdout {
-  std::vector<int32_t> train;
-  std::vector<int32_t> valid;
-};
-
-// Suffix of the token stream. Both spans still hold one window of seq_len.
-Holdout holdout_suffix(const std::vector<int32_t>& ids, int seq_len, float fraction) {
-  const int64_t n = static_cast<int64_t>(ids.size());
-  const int64_t min_span = static_cast<int64_t>(seq_len) + 1;
-  if (min_span < 2 || n < min_span * 2) throw std::runtime_error("short valid");
-  int64_t valid_n =
-      static_cast<int64_t>(std::llround(static_cast<double>(n) * static_cast<double>(fraction)));
-  if (valid_n < min_span) valid_n = min_span;
-  if (n - valid_n < min_span) valid_n = n - min_span;
-  if (valid_n < min_span || n - valid_n < min_span) throw std::runtime_error("short valid");
-  const size_t cut = static_cast<size_t>(n - valid_n);
-  Holdout out;
-  out.train.assign(ids.begin(), ids.begin() + static_cast<std::ptrdiff_t>(cut));
-  out.valid.assign(ids.begin() + static_cast<std::ptrdiff_t>(cut), ids.end());
-  return out;
+void report_pass(int64_t tokens, int batch, int seq) {
+  if (tokens < 1 || batch < 1 || seq < 1) return;
+  const int64_t per = static_cast<int64_t>(batch) * static_cast<int64_t>(seq);
+  const int64_t steps = (tokens + per - 1) / per;
+  std::fprintf(stderr, "one pass is %lld steps at batch %d seq %d\n",
+               static_cast<long long>(steps), batch, seq);
 }
 
 nn::TransformerConfig preset_config(const std::string& name, int vocab) {
@@ -545,7 +532,7 @@ int main(int argc, char** argv) {
     if (keep_tokens) {
       tok = llm::Tokenizer::load(tok_path);
       if (tok->vocab_size() != opt.vocab) throw std::runtime_error("vocab_size");
-      resume_tokens.emplace(bin_path, meta_path);
+      resume_tokens.emplace(bin_path, meta_path, tok->eos_id());
       if (resume_tokens->vocab_size() != tok->vocab_size()) throw std::runtime_error("vocab_size");
       if (resume_tokens->numel() < static_cast<int64_t>(opt.seq_len) + 1) {
         throw std::runtime_error("short corpus");
@@ -588,6 +575,7 @@ int main(int argc, char** argv) {
                                                        static_cast<int64_t>(opt.seq_len) + 1,
                                                        encode_books);
         std::fprintf(stderr, "encoded %lld tokens\n", static_cast<long long>(count));
+        report_pass(count, opt.batch, opt.seq_len);
         bpe->save(tok_path);
         std::fprintf(stderr, "saved %s\n", tok_path.string().c_str());
         std::fprintf(stderr, "tokenize only\n");
@@ -609,16 +597,25 @@ int main(int argc, char** argv) {
 
     std::vector<int32_t> train_ids;
     std::vector<int32_t> valid_ids;
+    int64_t trained_tokens = 0;
     if (opt.early_stop > 0) {
       if (opt.seq_len < 1) throw std::runtime_error("seq_len");
       const std::vector<int32_t>& source = keep_tokens ? resume_tokens->ids() : ids;
-      Holdout held = holdout_suffix(source, opt.seq_len, opt.valid_fraction);
-      std::fprintf(stderr, "holdout train=%zu valid=%zu early_stop=%d eval_every=%d\n",
-                   held.train.size(), held.valid.size(), opt.early_stop, opt.eval_every);
-      train_ids = std::move(held.train);
-      valid_ids = std::move(held.valid);
+      const llm::TokenHoldout held =
+          llm::holdout_documents(source, opt.seq_len, opt.valid_fraction, tok->eos_id());
+      std::fprintf(stderr, "holdout train=%zu valid=%zu files=%zu+%zu early_stop=%d eval_every=%d\n",
+                   held.train.size(), held.valid.size(), held.train_files, held.valid_files,
+                   opt.early_stop, opt.eval_every);
+      trained_tokens = static_cast<int64_t>(held.train.size());
+      train_ids = held.train;
+      valid_ids = held.valid;
       resume_tokens.reset();
+    } else if (keep_tokens) {
+      trained_tokens = resume_tokens->numel();
+    } else {
+      trained_tokens = static_cast<int64_t>(ids.size());
     }
+    report_pass(trained_tokens, opt.batch, opt.seq_len);
 
     if (!keep_tokens) {
       llm::write_token_file(bin_path, meta_path, ids, static_cast<int32_t>(tok->vocab_size()));
@@ -639,8 +636,8 @@ int main(int argc, char** argv) {
       llm::TextDataset* valid_data = nullptr;
       if (opt.early_stop > 0) {
         const int32_t vocab = static_cast<int32_t>(tok->vocab_size());
-        train_mem.emplace(std::move(train_ids), vocab);
-        valid_mem.emplace(std::move(valid_ids), vocab);
+        train_mem.emplace(std::move(train_ids), vocab, tok->eos_id());
+        valid_mem.emplace(std::move(valid_ids), vocab, tok->eos_id());
         train_data = &*train_mem;
         valid_data = &*valid_mem;
       } else if (resume_tokens) {
@@ -648,7 +645,7 @@ int main(int argc, char** argv) {
         resume_tokens.reset();
         train_data = &*file_data;
       } else {
-        file_data.emplace(bin_path, meta_path);
+        file_data.emplace(bin_path, meta_path, tok->eos_id());
         train_data = &*file_data;
       }
 

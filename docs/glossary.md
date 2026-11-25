@@ -76,7 +76,7 @@ Beginning of sequence. The id is `vocab_size - 2`. `encode` writes it only when 
 
 ### BPE
 
-Byte-pair encoding. Training repeatedly merges the most frequent adjacent pair inside a [piece](#piece) until the [vocab](#vocab) is full. The learned merges are the vocabulary. `BpeTokenizer::train` counts pairs on every CPU thread, and an equal count keeps the smaller `(left, right)` pair, so one thread and many threads learn the same merges.
+Byte-pair encoding. Training repeatedly merges the most frequent adjacent pair inside a [piece](#piece) until the [vocab](#vocab) is full. The learned merges are the vocabulary. `BpeTokenizer::train` counts pairs on every CPU thread. Each merge rewrites only the pieces that contain the winning pair and updates those counts. An equal count keeps the smaller `(left, right)` pair, so one thread and many threads learn the same merges.
 
 ### Byte
 
@@ -186,11 +186,11 @@ A learned row for each [token](#token) id, of width [d_model](#d_model). The [fo
 
 ### EOS
 
-End of sequence. The id is `vocab_size - 1`. Generation stops when this id is sampled, and the returned string does not contain it. In [RlTrainer](#reinforcement-learning-step) the sampled eos is stored in `Episode::token_ids` and is trained. The reward text omits it.
+End of sequence. The id is `vocab_size - 1`. Generation stops when this id is sampled, and the returned string does not contain it. When `TextDataset` is given this id, a window stays inside the document that ends on it. The id may be the last label. The input tokens of that window come from earlier in the document. In [RlTrainer](#reinforcement-learning-step) the sampled eos is stored in `Episode::token_ids` and is trained. The reward text omits it.
 
 ### Epoch
 
-One pass through the corpus. `Trainer::fit` does not count epochs. It runs a fixed number of [training steps](#training-step), and each step draws new random windows from the token array.
+One pass through the corpus. `Trainer::fit` does not count epochs. It runs a fixed number of [training steps](#training-step), and each step draws new random windows from the token array. `train_data` prints `one pass is K steps at batch B seq S`, where `K` is the training token count divided by `batch * seq_len`, rounded up.
 
 ### Eval mode
 
@@ -522,6 +522,10 @@ The float a caller returns for one [completion](#completion). `RlTrainer` turns 
 
 One `RlTrainer::fit` update. The policy is set to [eval mode](#eval-mode) and its gradients are cleared. The step draws prompts with replacement, samples `group_size` completions through [prefill](#prefill) and [decode_step](#decode_step), scores the [reward](#reward), builds a right-padded batch, and runs a full [forward](#forward). An optional [reference model](#reference-model) is forwarded first. `policy_gradient` writes a float32 logit gradient, `backward` runs, the gradient is [clipped](#gradient-clipping), and [AdamW](#adamw) steps. A step with no completion tokens is counted and does not step the optimizer. `Trainer::fit` is a separate loop.
 
+### Repetition penalty
+
+`GenerateConfig::repetition_penalty`. The default is 1, which leaves the logits unchanged. A value above 1 is applied before temperature, once per distinct id in the prompt and the ids already sampled. A positive logit is divided by the penalty. Any other logit is multiplied by it. The value has to be finite and greater than 0. `chat --repeat-penalty` sets it. `RlTrainer` samples with the default.
+
 ### RMSNorm
 
 Root-mean-square normalization. Each position is divided by the root of the mean square plus epsilon, then scaled. There is no shift. The llama presets use epsilon `1e-5` and [RoPE](#rope) base 10000. The qwen presets use epsilon `1e-6` and base `1e6`.
@@ -538,7 +542,7 @@ Rotary position embedding. Pairs of neighboring coordinates in the [query](#quer
 
 ### Sampling
 
-Drawing the next id from one logit row. `sample_token` does the draw, and `Generator::generate` calls it. Temperature 0 returns the argmax. Any other temperature divides the logits, keeps the [top-k](#top-k) entries when `top_k > 0`, applies [softmax](#softmax), applies [nucleus sampling](#nucleus-sampling) when `top_p < 1`, and draws with the caller's `std::mt19937`.
+Drawing the next id from one logit row. `sample_token` does the draw, and `Generator::generate` calls it. A [repetition penalty](#repetition-penalty) above 1 is applied first. Temperature 0 returns the argmax. Any other temperature divides the logits, keeps the [top-k](#top-k) entries when `top_k > 0`, applies [softmax](#softmax), applies [nucleus sampling](#nucleus-sampling) when `top_p < 1`, and draws with the caller's `std::mt19937`.
 
 ### Seed
 
@@ -550,7 +554,7 @@ A learned row added from a token-type id. `type_vocab_size` of 0 omits the table
 
 ### Sequence
 
-The ordered tokens of one example. `seq_len` is the training window. The dataset needs at least `seq_len + 1` tokens. Spans are chosen uniformly. A document boundary is an [eos](#eos) only where the example program appended one. A span can otherwise cross from one concatenated document into the next.
+The ordered tokens of one example. `seq_len` is the training window. The dataset needs at least `seq_len + 1` tokens. With `eos_id` left at -1, spans are chosen uniformly from `[0, numel - seq_len)`. Passing the eos id keeps each window inside one document. The document ends on that id, or on the last token when the tail has none. Eos may be the last label. The input tokens stay earlier in the document. A document shorter than `seq_len + 1` contributes no starts, and `next` throws `short corpus` when no start remains. `train_data`, `finetune`, `train_chat`, and `train_bert_chat` pass the tokenizer eos id.
 
 ### Softmax
 

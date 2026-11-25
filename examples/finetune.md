@@ -21,7 +21,7 @@ notes/fog.txt
 notes/pier.txt
 ```
 
-Each file is read in full and encoded with the existing tokenizer. An eos token is appended so a file boundary is a token. The tokenizer is not trained again. A corpus shorter than `--seq-len + 1` tokens fails with `finetune: short corpus`.
+Each file is read in full and encoded with the existing tokenizer. An eos token is appended so a file boundary is a token. A training window stays inside that file. The tokenizer is not trained again. A corpus shorter than `--seq-len + 1` tokens fails with `finetune: short corpus`. A set of files where none is that long fails the same way.
 
 Use text you have the rights to train on.
 
