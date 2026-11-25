@@ -69,7 +69,7 @@ sequenceDiagram
     participant Train as Trainer
     participant Model as nn::Transformer
     participant Loss as sequence_cross_entropy
-    participant Opt as nn::AdamW
+    participant Adam as AdamW
 
     Train->>Data: next(batch, seq_len)
     Train->>Model: zero_grad
@@ -77,7 +77,7 @@ sequenceDiagram
     Train->>Loss: logits, labels, ignore -100
     Loss-->>Train: LossResult
     Train->>Model: backward(grad_logits)
-    Train->>Opt: step
+    Train->>Adam: step
 ```
 
 `fit` repeats that step for `max_steps`. Micro-batches scale the gradient by `1 / grad_accum_steps` before one clip and one `step`. A positive `early_stop_patience` restores the best step, including AdamW moments. A finite `min_loss` of at least 0 keeps the step that reached it. `checkpoint_path` is `Transformer::save` with the AdamW pointer. When `masked_lm` is set, the labels are the original ids at the chosen positions and `-100` elsewhere.
