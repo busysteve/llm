@@ -23,9 +23,9 @@ An `export` or `import` file does not contain `tokenizer.bpe`. Keep that file ne
 
 The GPT-2 tokenizer in the GGUF is remapped to this library's LPB1 layout: ids `0..255` are raw bytes, later ids are merges in learn order, and the last three ids are pad, bos, and eos. Extra special tokens are dropped. Embedding and `lm_head` rows follow that map. `tokens.bin` is the encoded string `User: hello\nAssistant: hello\n` plus eos, so the directory matches a `train_data` run. `chat` reads only `tokenizer.bpe` and `model.bin`.
 
-Quantized tensors (float16, bfloat16, Q8_0, Q8_1, Q4_0, Q4_1, Q5_0, Q5_1, Q4_K, Q5_K, Q6_K, Q8_K) expand to float32. The written `model.bin` is version 1, or version 3 when the block is Qwen-style. Grouped-query attention keeps the native K and V width, `num_kv_heads * head_dim`. A head dim other than `d_model / heads` is stored as that width, so Q is `(num_heads * head_dim, d_model)`. QK-norm weights are kept. The file's `rope.freq_base` and `attention.layer_norm_rms_epsilon` are stored in the checkpoint. A base other than 10000 prints that fact and still converts. Tied embeddings copy `token_embd` onto `lm_head`. `--context N` sets `max_seq_len`. The default is `min(source context, 1024)`.
+Quantized tensors (float16, bfloat16, Q8_0, Q8_1, Q4_0, Q4_1, Q5_0, Q5_1, Q4_K, Q5_K, Q6_K, Q8_K) expand to float32. The written `model.bin` is version 1, version 3 when the block is Qwen-style, or version 7 when Q, K, and V have a bias and the other linears do not. Grouped-query attention keeps the native K and V width, `num_kv_heads * head_dim`. A head dim other than `d_model / heads` is stored as that width, so Q is `(num_heads * head_dim, d_model)`. QK-norm weights are kept. The file's `rope.freq_base` and `attention.layer_norm_rms_epsilon` are stored in the checkpoint. A base other than 10000 prints that fact and still converts. Tied embeddings copy `token_embd` onto `lm_head`. `--context N` sets `max_seq_len`. The default is `min(source context, 1024)`.
 
-Partial RoPE (`rope.dimension_count` other than the key length), MoE expert tensors, a fused QKV matrix, GELU, and linear bias stop the conversion. SentencePiece tokenizers stop it too. GPT-2 BPE, which is what Qwen2 and Qwen3 publish, is accepted.
+Partial RoPE (`rope.dimension_count` other than the key length), MoE expert tensors, a fused QKV matrix, GELU, attention-output bias, MLP bias, an LM-head bias, and a partial set of Q, K, and V biases stop the conversion. Q, K, and V bias together are copied as stored. SentencePiece tokenizers stop it too. GPT-2 BPE, which is what Qwen2 and Qwen3 publish, is accepted.
 
 ## The nnllm architecture
 
@@ -50,7 +50,7 @@ The file is little-endian. `general.alignment` is 32. `export` writes float32, s
 | `nnllm.rope.freq_base` | RoPE base, `1e6` for Qwen |
 | `nnllm.attention.layer_norm_rms_epsilon` | RMSNorm epsilon, `1e-6` for Qwen |
 | `nnllm.dropout` | dropout stored in the checkpoint |
-| `nnllm.bias` | whether the linear layers have a bias |
+| `nnllm.bias` | whether every linear follows one bias flag. `nnllm.qkv_bias`, `nnllm.attn_out_bias`, `nnllm.mlp_bias`, and `nnllm.lm_head_bias` are written only when that projection differs. A missing key follows `nnllm.bias` |
 | `nnllm.tie_embeddings` | always false |
 | `nnllm.activation` | `swiglu` or `gelu` |
 | `nnllm.positional` | `learned_absolute` or `rope` |
@@ -151,11 +151,11 @@ gguf: llama.cpp applies RoPE and RMSNorm. This checkpoint was trained with learn
 
 `import` accepts an `nnllm` file whose positions are `learned_absolute` or `rope`. It rejects a GGUF whose `general.architecture` is `llama`, `gpt2`, or anything other than `nnllm` with `gguf: architecture`. Quantized tensor types on that path are rejected with `gguf: quantized`. `llama.cpp` does not implement the `nnllm` architecture, so it will not run an `export` file.
 
-`from` accepts architecture `nnllm` when a sibling `tokenizer.bpe` is present, and accepts llama.cpp files whose tensors match the RoPE / RMSNorm / SwiGLU block, including Qwen2 and Qwen3. It expands the quantized types listed above. A SentencePiece tokenizer, partial RoPE, MoE, a fused QKV matrix, GELU, and linear bias stop that conversion.
+`from` accepts architecture `nnllm` when a sibling `tokenizer.bpe` is present, and accepts llama.cpp files whose tensors match the RoPE / RMSNorm / SwiGLU block, including Qwen2 and Qwen3. It expands the quantized types listed above. A SentencePiece tokenizer, partial RoPE, MoE, a fused QKV matrix, GELU, attention-output bias, MLP bias, an LM-head bias, and a partial QKV bias set stop that conversion. Q, K, and V bias together are copied as stored and the checkpoint is version 7.
 
 ## Check the converter
 
-`gguf self-test` builds a small checkpoint, writes GGUF, reads it back, and checks a float16 round trip. It also writes the llama.cpp file from both the checkpoint and the `nnllm` GGUF, checks the `fc1` split, and checks that GELU and linear bias are rejected. It writes a tiny bidirectional checkpoint with a segment table, checks that the file is version 5 and that `type_emb.weight` reloads, and checks that `gguf llama` rejects it with `causal`. It embeds a 260-id `tokenizer.bpe` with one merge and checks the GPT-2 token list. `from` round-trips that llama.cpp file, and a small Qwen3 file, into a chat directory. The test checks Q8_0 dequant, the GQA repeat helper, and GPT-2 byte remapping. It does not need a GPU.
+`gguf self-test` builds a small checkpoint, writes GGUF, reads it back, and checks a float16 round trip. It also writes the llama.cpp file from both the checkpoint and the `nnllm` GGUF, checks the `fc1` split, and checks that GELU and linear bias are rejected by `llama`. It checks a version-7 QKV-bias round trip through `nnllm` and through `from`, and checks that a partial QKV set, an attention-output bias, an MLP bias, and an LM-head bias are rejected. It writes a tiny bidirectional checkpoint with a segment table, checks that the file is version 5 and that `type_emb.weight` reloads, and checks that `gguf llama` rejects it with `causal`. It embeds a 260-id `tokenizer.bpe` with one merge and checks the GPT-2 token list. `from` round-trips that llama.cpp file, and a small Qwen3 file, into a chat directory. The test checks Q8_0 dequant, the GQA repeat helper, and GPT-2 byte remapping. It does not need a GPU.
 
 ```bash
 ./build/gguf self-test
@@ -168,7 +168,7 @@ Errors print `gguf: <reason>` on stderr and the process exits 1.
 | Reason | Meaning |
 |---|---|
 | `magic` | the file is not a checkpoint or a GGUF |
-| `version` | the checkpoint version is outside 1..6, or the GGUF version is not 3 |
+| `version` | the checkpoint version is outside 1..8, or the GGUF version is not 3 |
 | `family` | the checkpoint is not a transformer |
 | `architecture` | `import` saw a `general.architecture` other than `nnllm` |
 | `quantized` | `import` saw a tensor that is neither float32 nor float16, or `from` saw an unsupported quant type |
@@ -183,7 +183,7 @@ Errors print `gguf: <reason>` on stderr and the process exits 1.
 | `rope_dim` | `rope.dimension_count` is not the key length |
 | `head_count_kv` | KV heads do not divide query heads |
 | `gelu` | `from` did not find `ffn_gate.weight` |
-| `bias` | `from` saw a linear bias, or `gguf llama` was given linear biases |
+| `bias` | `from` saw a partial QKV bias, an attention-output bias, an MLP bias, or an LM-head bias, or `gguf llama` was given any linear bias |
 | `causal` | `gguf llama` was given bidirectional attention or a segment table |
 | `type_vocab` | a segment-table size is negative |
 | `moe` | `from` saw expert tensors |

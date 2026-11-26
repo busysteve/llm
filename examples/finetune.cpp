@@ -233,6 +233,7 @@ int main(int argc, char** argv) {
     const std::string prompt = opt.prompt.empty() ? opening_of(books.front()) : opt.prompt;
 
     llm::EncodeOptions encode_opt;
+    encode_opt.add_bos = tok->add_bos_default();
     encode_opt.add_eos = true;
     std::vector<int32_t> ids;
     for (const std::string& book : books) {
@@ -324,6 +325,7 @@ int main(int argc, char** argv) {
     gen.top_k = opt.top_k;
     gen.top_p = opt.top_p;
     gen.eos_id = loaded_tok->eos_id();
+    gen.stop_ids = loaded_tok->stop_ids();
     std::mt19937 rng(static_cast<uint32_t>(opt.seed) + 1);
     const std::string text = generator.generate(prompt, gen, rng);
     std::printf("prompt: %s\ncontinuation: %s\n", prompt.c_str(), text.c_str());

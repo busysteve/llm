@@ -158,7 +158,7 @@ std::string generate_masked(nn::Context& ctx, nn::Transformer& model, const Toke
     const int32_t id = static_cast<int32_t>(
         sample_token(std::move(logits), cfg, rng, seen.data(), seen.size()));
     host.pop_back();
-    if (cfg.eos_id >= 0 && id == cfg.eos_id) break;
+    if (is_stop_id(cfg, id)) break;
     generated.push_back(id);
     seen.push_back(id);
     host.push_back(int64_t{id});
@@ -180,7 +180,10 @@ std::string Generator::generate(std::string_view prompt, GenerateConfig cfg, std
   validate(cfg);
   model_->eval();
 
-  const std::vector<int32_t> encoded = tok_->encode(prompt);
+  EncodeOptions opt;
+  opt.add_bos = tok_->add_bos_default();
+  opt.add_eos = tok_->add_eos_default();
+  const std::vector<int32_t> encoded = tok_->encode(prompt, opt);
   if (encoded.empty()) throw std::invalid_argument("prompt");
   if (encoded.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
     throw std::invalid_argument("max_seq_len");
@@ -209,7 +212,7 @@ std::string Generator::generate(std::string_view prompt, GenerateConfig cfg, std
   for (int n = 0; n < cfg.max_new_tokens; ++n) {
     const int32_t id = static_cast<int32_t>(
         sample_token(logits->to_host(), cfg, rng, seen.data(), seen.size()));
-    if (cfg.eos_id >= 0 && id == cfg.eos_id) break;
+    if (is_stop_id(cfg, id)) break;
     generated.push_back(id);
     seen.push_back(id);
     if (n + 1 == cfg.max_new_tokens) break;

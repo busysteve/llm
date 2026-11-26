@@ -1,6 +1,6 @@
 # How to converse with a trained model
 
-`chat` is the dialogue example in [`chat.cpp`](chat.cpp). It loads `tokenizer.bpe` and `model.bin` from a directory written by [`train_data`](train_data.md) or [`gguf from`](gguf.md) and continues a `User:` / `Assistant:` transcript. `--plain` continues the line as a prompt with those tags left off, which matches a book checkpoint. It does not train. It is a separate program from `llm_tests`.
+`chat` is the dialogue example in [`chat.cpp`](chat.cpp). It loads `model.bin` and a tokenizer from a directory written by [`train_data`](train_data.md), [`gguf from`](gguf.md), or [`hf import`](hf.md), and continues a `User:` / `Assistant:` transcript. `--plain` continues the line as a prompt with those tags left off, which matches a book checkpoint. It does not train. It is a separate program from `llm_tests`.
 
 Build from the repository root. Requirements are in the [README](../README.md).
 
@@ -54,7 +54,9 @@ The same file list trains an encoder. `--seq-len` must be at most 512. `train_da
 
 [train_bert_chat](train_bert_chat.md) is the short in-process run of that objective.
 
-`chat-run/` must contain `tokenizer.bpe` and `model.bin`. The other `train_data` files are not read by `chat`. A public llama.cpp GGUF, including Qwen2 and Qwen3, becomes that directory with `gguf from MODEL.GGUF chat-run`. A model trained with `--preset qwen-tiny`, `qwen-small`, or `qwen-base` loads the same way. See [gguf](gguf.md).
+`chat-run/` must contain `model.bin` and `tokenizer.bpe`. The other `train_data` files are not read by `chat`. A public llama.cpp GGUF, including Qwen2 and Qwen3, becomes that directory with `gguf from MODEL.GGUF chat-run`. A model trained with `--preset qwen-tiny`, `qwen-small`, or `qwen-base` loads the same way. See [gguf](gguf.md).
+
+An `hf import` directory is loaded when it has `model.bin` and `tokenizer.json`. `tokenizer.bpe` wins when both files are present. The Hugging Face ids stay as they are. `tokenizer_config.json` supplies the default bos and eos flags, and `generation_config.json` supplies the stop ids. `add_bos_token` prepends bos on each prompt. Sampling stops on every id in `eos_token_id`, which may be one integer or a list, and that id is left off the reply. A directory that has only `tokenizer.model` is not a chat directory yet.
 
 ## Talk
 
@@ -117,7 +119,7 @@ model> <continuation>
 
 Completed turns are stored as `User: ...\nAssistant:...\n`. The next prompt is that transcript, then `User: `, the line you typed, a newline, and `Assistant:`. The model generates the reply, including the space after the colon.
 
-Sampling stops on the tokenizer eos id. That id is not appended. If the decoded reply contains a newline followed by `User:`, the turn is cut there so the model cannot start the next user line.
+Sampling stops on the tokenizer eos id. A Hugging Face directory with `eos_token_id` stops on each id in that list instead. The stopping id is not appended. If the decoded reply contains a newline followed by `User:`, the turn is cut there so the model cannot start the next user line.
 
 `--repeat-penalty` defaults to 1, which leaves the logits unchanged. A value above 1 is applied before temperature, including a greedy pick, once per distinct id in the prompt and the reply so far. A positive logit is divided by the penalty. Any other logit is multiplied by it.
 
@@ -133,7 +135,7 @@ Most presets use `max_seq_len` 1024. Every `gpt3-*` preset uses 2048. Every `ber
 
 | Flag | Default | Role |
 |---|---|---|
-| `--model DIR` | | directory with `tokenizer.bpe` and `model.bin` |
+| `--model DIR` | | directory with `model.bin` and `tokenizer.bpe`, or `model.bin` and `tokenizer.json` |
 | `--max-new-tokens N` | 128 | tokens to sample for the reply |
 | `--temperature FLOAT` | 0.8 | `0` is greedy |
 | `--top-k N` | 40 | `0` disables top-k |
@@ -149,7 +151,8 @@ Errors print `chat: <reason>` on stderr. In an interactive session the process s
 
 | Reason | Meaning |
 |---|---|
-| `model` | `--model` is missing, or the directory has no `tokenizer.bpe` or no `model.bin` |
+| `model` | `--model` is missing, `model.bin` is missing, or the directory has neither `tokenizer.bpe` nor `tokenizer.json` |
+| `tokenizer` | `tokenizer.json` is not a byte-level BPE this build accepts |
 | `prompt` | `--once` was given an empty string |
 | `max_seq_len` | the line plus `--max-new-tokens` is longer than the model allows |
 | `mask_token` | a bidirectional checkpoint has a pad id outside the model vocabulary |

@@ -90,7 +90,7 @@ A position may attend only to itself and to earlier positions. `TransformerConfi
 
 ### Checkpoint
 
-`model.bin`, written by `Transformer::save`. A bidirectional block, or a block with a [segment embedding](#segment-embedding) table, is version 5, or version 6 when [AdamW](#adamw) moments are stored. Otherwise a wide [head](#head), grouped KV heads, [QK-norm](#qk-norm), a [RoPE](#rope) base other than 10000, or an [RMSNorm](#rmsnorm) epsilon other than `1e-5` is version 3, or version 4 with moments. Every other block is version 1, or version 2 with moments. The default, llama, GPT-2, and GPT-3 presets take version 2. Qwen takes version 4. BERT takes version 6. The file holds the token table, the position table when the block has one, the block weights, and the [LM head](#lm-head). `LoadMode::Resume` restores the moments. `LoadMode::Inference` loads weights for generation.
+`model.bin`, written by `Transformer::save`. A file whose Q, K, V, attention-output, MLP, or [LM head](#lm-head) bias differs from that single bias flag is version 7, or version 8 with [AdamW](#adamw) moments. An imported Qwen2 file sets the bias on Q, K, and V only. Otherwise a bidirectional block, or a block with a [segment embedding](#segment-embedding) table, is version 5, or version 6 when moments are stored. Otherwise a wide [head](#head), grouped KV heads, [QK-norm](#qk-norm), a [RoPE](#rope) base other than 10000, or an [RMSNorm](#rmsnorm) epsilon other than `1e-5` is version 3, or version 4 with moments. Every other block is version 1, or version 2 with moments. The default, llama, GPT-2, and GPT-3 presets take version 2. Qwen takes version 4. BERT takes version 6. The file holds the token table, the position table when the block has one, the block weights, and the [LM head](#lm-head). `LoadMode::Resume` restores the moments. `LoadMode::Inference` loads weights for generation.
 
 ### Completion
 
@@ -234,7 +234,7 @@ Gaussian Error Linear Unit, the nonlinearity in the GPT-2, GPT-3, and BERT feed-
 
 ### Generate
 
-`Generator::generate`. It encodes the [prompt](#prompt) with bos and eos off. A causal model [prefills](#prefill) and then samples with [decode_step](#decode_step). A bidirectional model appends [pad](#pad) and samples that position from [forward](#forward). The return value is [decode](#decode-tokenizer) of the new ids. A sampled [eos](#eos) stops the loop and is not appended.
+`Generator::generate`. It encodes the [prompt](#prompt) with `add_bos_default()` and `add_eos_default()`. Both are false for an [LPB1](#lpb1) tokenizer. A causal model [prefills](#prefill) and then samples with [decode_step](#decode_step). A bidirectional model appends [pad](#pad) and samples that position from [forward](#forward). The return value is [decode](#decode-tokenizer) of the new ids. Sampling stops when the id is in `stop_ids`. An empty `stop_ids` stops on [eos](#eos) when that id is non-negative. The stopping id is not appended.
 
 ### GGUF
 
@@ -484,7 +484,7 @@ The split of a string into [pieces](#piece) before [BPE](#bpe). It is a class ru
 
 ### Prompt
 
-The text the model is given before it writes. `generate` encodes it with bos and eos off. `RlTrainer` leaves prompt targets on the [ignore index](#ignore-index). The last prompt position is kept, because its logit predicts the first completion token.
+The text the model is given before it writes. `generate` encodes it with `add_bos_default()` and `add_eos_default()`. Both are false for an [LPB1](#lpb1) tokenizer. `RlTrainer` leaves prompt targets on the [ignore index](#ignore-index). The last prompt position is kept, because its logit predicts the first completion token.
 
 ## Q
 
@@ -608,7 +608,7 @@ One integer id the model reads or writes. A byte, a [merge](#merge), [pad](#pad)
 
 ### Tokenizer
 
-The map between text and ids. `BpeTokenizer` is the implementation. `tokenizer.bpe` is the [LPB1](#lpb1) file. The checkpoint vocab and this file are a pair. `finetune` and `chat` load the file that was trained with the weights.
+The map between text and ids. `BpeTokenizer` trains and loads the [LPB1](#lpb1) file `tokenizer.bpe`. `HfTokenizer` loads a Hugging Face `tokenizer.json` byte-level BPE and keeps that file's ids. `chat` loads `tokenizer.bpe` when the directory has one, and `tokenizer.json` otherwise. The checkpoint vocab and the tokenizer are a pair.
 
 ### Top-k
 

@@ -21,7 +21,20 @@ struct GenerateConfig {
   // and multiplies a negative one, once per distinct id.
   float repetition_penalty = 1.f;
   int32_t eos_id = -1;
+  // Empty stops on eos_id. A non-empty list stops on those ids and leaves them
+  // out of the decoded string.
+  std::vector<int32_t> stop_ids;
 };
+
+inline bool is_stop_id(const GenerateConfig& cfg, int32_t id) {
+  if (!cfg.stop_ids.empty()) {
+    for (int32_t stop : cfg.stop_ids) {
+      if (stop == id) return true;
+    }
+    return false;
+  }
+  return cfg.eos_id >= 0 && id == cfg.eos_id;
+}
 
 // Temperature 0 returns the argmax. Otherwise logits are divided by temperature,
 // restricted to top_k (0 skips that cut), softmaxed, nucleus-filtered, and drawn.

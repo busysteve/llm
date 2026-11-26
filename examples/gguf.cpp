@@ -77,7 +77,47 @@ struct Config {
   float rms_eps = 1e-5f;
   bool causal = true;
   int type_vocab = 0;
+  bool qkv_bias = false;
+  bool attn_out_bias = false;
+  bool mlp_bias = false;
+  bool lm_head_bias = false;
+  bool split_bias = false;
+  bool gelu_tanh = false;
+  int rope_dims = 0;
+  int sliding_window = 0;
+  uint32_t rope_scaling = 0;
+  float rope_factor = 0.f;
+  float rope_low_freq_factor = 0.f;
+  float rope_high_freq_factor = 0.f;
+  int rope_original_context = 0;
+  bool post_norm = false;
+  bool embed_norm = false;
+  float embed_norm_eps = 1e-5f;
+  bool final_norm = true;
+  bool mlm_head = false;
 };
+
+void effective_bias(const Config& config, bool& qkv, bool& attn_out, bool& mlp, bool& lm_head) {
+  if (!config.split_bias) {
+    qkv = attn_out = mlp = lm_head = config.bias;
+  } else {
+    qkv = config.qkv_bias;
+    attn_out = config.attn_out_bias;
+    mlp = config.mlp_bias;
+    lm_head = config.lm_head_bias;
+  }
+}
+
+bool config_v7(const Config& config) {
+  bool qkv = false;
+  bool attn_out = false;
+  bool mlp = false;
+  bool lm_head = false;
+  effective_bias(config, qkv, attn_out, mlp, lm_head);
+  if (qkv != config.bias || attn_out != config.bias || mlp != config.bias || lm_head != config.bias) return true;
+  if (config.gelu_tanh || config.rope_dims != 0 || config.sliding_window != 0 || config.rope_scaling != 0) return true;
+  return config.post_norm || config.embed_norm || !config.final_norm || config.mlm_head;
+}
 
 int config_head_dim(const Config& config) {
   return config.head_dim > 0 ? config.head_dim : config.d_model / config.heads;
@@ -120,7 +160,9 @@ void usage() {
       "Tensor bytes stay in this library's row-major order. The GGUF dimension\n"
       "list stores the contiguous dimension first. import reads that file back,\n"
       "including float16 tensors, and writes a checkpoint with no optimizer.\n"
-      "That file is version 1, or version 3 for a Qwen-style block. AdamW\n"
+      "That file is version 1, version 3 for a Qwen-style block, version 5\n"
+      "when attention is bidirectional or a segment table is present, or\n"
+      "version 7 when a projection bias differs from the bias flag. AdamW\n"
       "moments are not stored.\n"
       "\n"
       "llama reads a transformer checkpoint or an nnllm GGUF and writes a GGUF\n"
@@ -132,7 +174,8 @@ void usage() {
       "A RoPE checkpoint already uses that block, and the file keeps every\n"
       "tensor. A tokenizer.bpe next to the checkpoint, or a path passed after\n"
       "the output, is written into the file so llama-cli can encode a prompt.\n"
-      "GELU, linear bias, bidirectional attention, and a segment table are rejected.\n"
+      "GELU, any linear bias (including QKV-only), bidirectional attention, and a\n"
+      "segment table are rejected.\n"
       "\n"
       "from reads a public llama.cpp GGUF (architecture llama, qwen2, qwen3,\n"
       "mistral, and the same tensor layout) and writes a chat directory:\n"
@@ -141,8 +184,10 @@ void usage() {
       "pad/bos/eos). Quantized tensors are expanded to float32. Grouped-query\n"
       "attention, a head dim other than d_model/heads, and QK-norm are kept.\n"
       "Tied embeddings copy token_embd onto lm_head. --context N sets\n"
-      "max_seq_len (default min(source, 1024)). MoE, GELU, linear bias, and a\n"
-      "partial RoPE dimension are rejected.\n"
+      "max_seq_len (default min(source, 1024)). MoE, GELU, a partial RoPE\n"
+      "dimension, attention-output bias, MLP bias, and an LM-head bias are\n"
+      "rejected. Q, K, and V bias are copied as stored and the checkpoint is\n"
+      "version 7.\n"
       "\n"
       "import rejects a GGUF whose architecture is not nnllm, and rejects\n"
       "quantized tensors.\n",
@@ -334,9 +379,14 @@ std::vector<Tensor> expected_tensors(const Config& config) {
   auto add = [&](std::string name, std::vector<int> shape) {
     tensors.push_back(Tensor{std::move(name), std::move(shape), {}});
   };
-  auto linear = [&](const std::string& name, int out, int in) {
+  bool qkv = false;
+  bool attn_out = false;
+  bool mlp = false;
+  bool lm_head_bias = false;
+  effective_bias(config, qkv, attn_out, mlp, lm_head_bias);
+  auto linear = [&](const std::string& name, int out, int in, bool use_bias) {
     add(name + ".weight", {out, in});
-    if (config.bias) add(name + ".bias", {out});
+    if (use_bias) add(name + ".bias", {out});
   };
   auto norm = [&](const std::string& name) {
     add(name + ".weight", {d});
@@ -352,20 +402,20 @@ std::vector<Tensor> expected_tensors(const Config& config) {
   for (int layer = 0; layer < config.layers; ++layer) {
     const std::string prefix = "blocks." + std::to_string(layer) + ".";
     norm(prefix + "ln1");
-    linear(prefix + "attn.q", q_dim, d);
-    linear(prefix + "attn.k", kv_dim, d);
-    linear(prefix + "attn.v", kv_dim, d);
-    linear(prefix + "attn.out", d, q_dim);
+    linear(prefix + "attn.q", q_dim, d, qkv);
+    linear(prefix + "attn.k", kv_dim, d, qkv);
+    linear(prefix + "attn.v", kv_dim, d, qkv);
+    linear(prefix + "attn.out", d, q_dim, attn_out);
     if (config.qk_norm) {
       add(prefix + "attn.q_norm.weight", {dh});
       add(prefix + "attn.k_norm.weight", {dh});
     }
     norm(prefix + "ln2");
-    linear(prefix + "fc1", fc1, d);
-    linear(prefix + "fc2", d, config.d_ff);
+    linear(prefix + "fc1", fc1, d, mlp);
+    linear(prefix + "fc2", d, config.d_ff, mlp);
   }
   norm("final_ln");
-  linear("lm_head", config.vocab, d);
+  linear("lm_head", config.vocab, d, lm_head_bias);
   return tensors;
 }
 
@@ -389,13 +439,30 @@ void require_config(const Config& config) {
   if (!(config.dropout >= 0.f) || !(config.dropout < 1.f)) throw std::runtime_error("dropout");
   if (config.swiglu && config.d_ff > 0x7fffffff / 2) throw std::runtime_error("d_ff");
   if (config.type_vocab < 0) throw std::runtime_error("type_vocab");
+  if (config.rope_dims < 0 || (config.rope_dims != 0 && (config.rope_dims % 2 != 0 || config.rope_dims > dh))) {
+    throw std::runtime_error("rope_dims");
+  }
+  if (config.sliding_window < 0) throw std::runtime_error("window");
+  if (config.rope_scaling > 1u) throw std::runtime_error("rope");
+  if (config.rope_scaling == 1u && (!(config.rope_factor > 0.f) || !std::isfinite(config.rope_factor))) {
+    throw std::runtime_error("rope_factor");
+  }
+  if (config.mlm_head && config.causal) throw std::runtime_error("mlm_head");
+  if (config.gelu_tanh) throw std::runtime_error("gelu_tanh");
+  if (config.rope_dims != 0) throw std::runtime_error("rope_dims");
+  if (config.sliding_window != 0) throw std::runtime_error("window");
+  if (config.rope_scaling != 0) throw std::runtime_error("rope");
+  if (config.post_norm) throw std::runtime_error("post_norm");
+  if (config.embed_norm) throw std::runtime_error("embed_norm");
+  if (!config.final_norm) throw std::runtime_error("final_norm");
+  if (config.mlm_head) throw std::runtime_error("mlm_head");
 }
 
 Model read_checkpoint(const std::filesystem::path& path) {
   Reader reader(read_file(path));
   if (reader.u32() != kCheckpointMagic) throw std::runtime_error("magic");
   const uint32_t version = reader.u32();
-  if (version < 1 || version > 6) throw std::runtime_error("version");
+  if (version < 1 || version > 8) throw std::runtime_error("version");
   if (reader.u32() != 6) throw std::runtime_error("family");
   const uint32_t training = reader.u32();
   reader.u64();
@@ -412,6 +479,10 @@ Model read_checkpoint(const std::filesystem::path& path) {
   config.dropout = reader.f32();
   if (reader.u32() != 0) throw std::runtime_error("tie_embeddings");
   config.bias = reader.u32() != 0;
+  config.qkv_bias = config.bias;
+  config.attn_out_bias = config.bias;
+  config.mlp_bias = config.bias;
+  config.lm_head_bias = config.bias;
   const uint32_t activation = reader.u32();
   const uint32_t positional = reader.u32();
   if (activation == 1) config.swiglu = false;
@@ -419,7 +490,33 @@ Model read_checkpoint(const std::filesystem::path& path) {
   else throw std::runtime_error("activation");
   if (positional == 2) config.rope = true;
   else if (positional != 1) throw std::runtime_error("positional");
-  if (version >= 5) {
+  if (version >= 7) {
+    config.head_dim = reader.i32();
+    config.kv_heads = reader.i32();
+    config.qk_norm = reader.u32() != 0;
+    config.rope_theta = reader.f32();
+    config.rms_eps = reader.f32();
+    config.causal = reader.u32() != 0;
+    config.type_vocab = reader.i32();
+    config.qkv_bias = reader.u32() != 0;
+    config.attn_out_bias = reader.u32() != 0;
+    config.mlp_bias = reader.u32() != 0;
+    config.lm_head_bias = reader.u32() != 0;
+    config.gelu_tanh = reader.u32() != 0;
+    config.rope_dims = reader.i32();
+    config.sliding_window = reader.i32();
+    config.rope_scaling = reader.u32();
+    config.rope_factor = reader.f32();
+    config.rope_low_freq_factor = reader.f32();
+    config.rope_high_freq_factor = reader.f32();
+    config.rope_original_context = reader.i32();
+    config.post_norm = reader.u32() != 0;
+    config.embed_norm = reader.u32() != 0;
+    config.embed_norm_eps = reader.f32();
+    config.final_norm = reader.u32() != 0;
+    config.mlm_head = reader.u32() != 0;
+    config.split_bias = true;
+  } else if (version >= 5) {
     config.head_dim = reader.i32();
     config.kv_heads = reader.i32();
     config.qk_norm = reader.u32() != 0;
@@ -478,7 +575,9 @@ void write_checkpoint(const std::filesystem::path& path, const Model& model) {
   Bytes out;
   out.u32(kCheckpointMagic);
   const bool bert = !model.config.causal || model.config.type_vocab != 0;
-  out.u32(bert ? 5u : (config_extended(model.config) ? 3u : 1u));
+  const bool v7 = config_v7(model.config);
+  const uint32_t version = v7 ? 7u : (bert ? 5u : (config_extended(model.config) ? 3u : 1u));
+  out.u32(version);
   out.u32(6);
   out.u32(0);
   out.u64(0);
@@ -496,16 +595,40 @@ void write_checkpoint(const std::filesystem::path& path, const Model& model) {
   out.u32(config.bias ? 1u : 0u);
   out.u32(config.swiglu ? 2u : 1u);
   out.u32(config.rope ? 2u : 1u);
-  if (bert || config_extended(config)) {
+  if (v7 || bert || config_extended(config)) {
     out.i32(config.head_dim);
     out.i32(config.kv_heads);
     out.u32(config.qk_norm ? 1u : 0u);
     out.f32(config.rope_theta);
     out.f32(config.rms_eps);
   }
-  if (bert) {
+  if (v7 || bert) {
     out.u32(config.causal ? 1u : 0u);
     out.i32(config.type_vocab);
+  }
+  if (v7) {
+    bool qkv = false;
+    bool attn_out = false;
+    bool mlp = false;
+    bool lm_head = false;
+    effective_bias(config, qkv, attn_out, mlp, lm_head);
+    out.u32(qkv ? 1u : 0u);
+    out.u32(attn_out ? 1u : 0u);
+    out.u32(mlp ? 1u : 0u);
+    out.u32(lm_head ? 1u : 0u);
+    out.u32(config.gelu_tanh ? 1u : 0u);
+    out.i32(config.rope_dims);
+    out.i32(config.sliding_window);
+    out.u32(config.rope_scaling);
+    out.f32(config.rope_factor);
+    out.f32(config.rope_low_freq_factor);
+    out.f32(config.rope_high_freq_factor);
+    out.i32(config.rope_original_context);
+    out.u32(config.post_norm ? 1u : 0u);
+    out.u32(config.embed_norm ? 1u : 0u);
+    out.f32(config.embed_norm_eps);
+    out.u32(config.final_norm ? 1u : 0u);
+    out.u32(config.mlm_head ? 1u : 0u);
   }
   out.pad8();
   out.u32(static_cast<uint32_t>(model.tensors.size()));
@@ -679,6 +802,32 @@ void write_gguf(const std::filesystem::path& path, const Model& model, bool half
   }
   kv.f32("nnllm.dropout", config.dropout);
   kv.boolean("nnllm.bias", config.bias);
+  bool qkv = false;
+  bool attn_out = false;
+  bool mlp = false;
+  bool lm_head = false;
+  effective_bias(config, qkv, attn_out, mlp, lm_head);
+  if (qkv != config.bias) kv.boolean("nnllm.qkv_bias", qkv);
+  if (attn_out != config.bias) kv.boolean("nnllm.attn_out_bias", attn_out);
+  if (mlp != config.bias) kv.boolean("nnllm.mlp_bias", mlp);
+  if (lm_head != config.bias) kv.boolean("nnllm.lm_head_bias", lm_head);
+  if (config.gelu_tanh) kv.boolean("nnllm.gelu_tanh", true);
+  if (config.rope_dims != 0) kv.u32("nnllm.rope_dims", static_cast<uint32_t>(config.rope_dims));
+  if (config.sliding_window != 0) kv.u32("nnllm.sliding_window", static_cast<uint32_t>(config.sliding_window));
+  if (config.rope_scaling != 0) {
+    kv.u32("nnllm.rope_scaling", config.rope_scaling);
+    kv.f32("nnllm.rope.factor", config.rope_factor);
+    kv.f32("nnllm.rope.low_freq_factor", config.rope_low_freq_factor);
+    kv.f32("nnllm.rope.high_freq_factor", config.rope_high_freq_factor);
+    if (config.rope_original_context > 0) {
+      kv.u32("nnllm.rope.original_context", static_cast<uint32_t>(config.rope_original_context));
+    }
+  }
+  if (config.post_norm) kv.boolean("nnllm.post_norm", true);
+  if (config.embed_norm) kv.boolean("nnllm.embed_norm", true);
+  if (config.embed_norm && config.embed_norm_eps != 1e-5f) kv.f32("nnllm.embed_norm_eps", config.embed_norm_eps);
+  if (!config.final_norm) kv.boolean("nnllm.final_norm", false);
+  if (config.mlm_head) kv.boolean("nnllm.mlm_head", true);
   kv.boolean("nnllm.tie_embeddings", false);
   kv.str("nnllm.activation", config.swiglu ? "swiglu" : "gelu");
   kv.str("nnllm.positional", config.rope ? "rope" : "learned_absolute");
@@ -875,7 +1024,12 @@ void write_llama_gguf(const std::filesystem::path& path, const Model& model, con
   require_config(model.config);
   if (!model.config.causal || model.config.type_vocab != 0) throw std::runtime_error("causal");
   if (!model.config.swiglu) throw std::runtime_error("activation");
-  if (model.config.bias) throw std::runtime_error("bias");
+  bool qkv = false;
+  bool attn_out = false;
+  bool mlp = false;
+  bool lm_head = false;
+  effective_bias(model.config, qkv, attn_out, mlp, lm_head);
+  if (model.config.bias || qkv || attn_out || mlp || lm_head) throw std::runtime_error("bias");
   if (tokenizer != nullptr && tokenizer->vocab != model.config.vocab) throw std::runtime_error("vocab");
   const std::vector<Tensor> tensors = llama_tensors(model);
   const Config& config = model.config;
@@ -1126,6 +1280,29 @@ Model read_gguf(const std::filesystem::path& path) {
   if (has_key("nnllm.type_vocab_size")) {
     config.type_vocab = static_cast<int>(u32_at("nnllm.type_vocab_size"));
   }
+  config.qkv_bias = has_key("nnllm.qkv_bias") ? bool_at("nnllm.qkv_bias") : config.bias;
+  config.attn_out_bias = has_key("nnllm.attn_out_bias") ? bool_at("nnllm.attn_out_bias") : config.bias;
+  config.mlp_bias = has_key("nnllm.mlp_bias") ? bool_at("nnllm.mlp_bias") : config.bias;
+  config.lm_head_bias = has_key("nnllm.lm_head_bias") ? bool_at("nnllm.lm_head_bias") : config.bias;
+  if (has_key("nnllm.gelu_tanh")) config.gelu_tanh = bool_at("nnllm.gelu_tanh");
+  if (has_key("nnllm.rope_dims")) config.rope_dims = static_cast<int>(u32_at("nnllm.rope_dims"));
+  if (has_key("nnllm.sliding_window")) config.sliding_window = static_cast<int>(u32_at("nnllm.sliding_window"));
+  if (has_key("nnllm.rope_scaling")) config.rope_scaling = u32_at("nnllm.rope_scaling");
+  if (has_key("nnllm.rope.factor")) config.rope_factor = f32_at("nnllm.rope.factor");
+  if (has_key("nnllm.rope.low_freq_factor")) config.rope_low_freq_factor = f32_at("nnllm.rope.low_freq_factor");
+  if (has_key("nnllm.rope.high_freq_factor")) config.rope_high_freq_factor = f32_at("nnllm.rope.high_freq_factor");
+  if (has_key("nnllm.rope.original_context")) {
+    config.rope_original_context = static_cast<int>(u32_at("nnllm.rope.original_context"));
+  }
+  if (has_key("nnllm.post_norm")) config.post_norm = bool_at("nnllm.post_norm");
+  if (has_key("nnllm.embed_norm")) config.embed_norm = bool_at("nnllm.embed_norm");
+  if (has_key("nnllm.embed_norm_eps")) config.embed_norm_eps = f32_at("nnllm.embed_norm_eps");
+  if (has_key("nnllm.final_norm")) config.final_norm = bool_at("nnllm.final_norm");
+  if (has_key("nnllm.mlm_head")) config.mlm_head = bool_at("nnllm.mlm_head");
+  config.split_bias = config.qkv_bias != config.bias || config.attn_out_bias != config.bias ||
+                      config.mlp_bias != config.bias || config.lm_head_bias != config.bias || config.gelu_tanh ||
+                      config.rope_dims != 0 || config.sliding_window != 0 || config.rope_scaling != 0 ||
+                      config.post_norm || config.embed_norm || !config.final_norm || config.mlm_head;
   require_config(config);
 
   struct Stored {
@@ -2123,13 +2300,24 @@ Model public_to_nnllm(const PublicGguf& view, const uint8_t* data, size_t size, 
     require_no_tensor(view, blk + "ffn_gate_exps.weight", "moe");
     require_no_tensor(view, blk + "attn_qkv.weight", "qkv");
     if (!has_tensor(view, blk + "ffn_gate.weight")) throw std::runtime_error("gelu");
-    require_no_tensor(view, blk + "attn_q.bias", "bias");
-    require_no_tensor(view, blk + "attn_k.bias", "bias");
-    require_no_tensor(view, blk + "attn_v.bias", "bias");
+    const bool q_bias = has_tensor(view, blk + "attn_q.bias");
+    const bool k_bias = has_tensor(view, blk + "attn_k.bias");
+    const bool v_bias = has_tensor(view, blk + "attn_v.bias");
+    if (q_bias != k_bias || k_bias != v_bias) throw std::runtime_error("bias");
+    if (layer == 0) config.qkv_bias = q_bias;
+    else if (q_bias != config.qkv_bias) throw std::runtime_error("bias");
     require_no_tensor(view, blk + "attn_output.bias", "bias");
     require_no_tensor(view, blk + "ffn_gate.bias", "bias");
     require_no_tensor(view, blk + "ffn_up.bias", "bias");
     require_no_tensor(view, blk + "ffn_down.bias", "bias");
+  }
+  require_no_tensor(view, "output.bias", "bias");
+  if (config.qkv_bias) {
+    config.bias = false;
+    config.split_bias = true;
+    config.attn_out_bias = false;
+    config.mlp_bias = false;
+    config.lm_head_bias = false;
   }
 
   const int src_vocab = has_tensor(view, "token_embd.weight") ? view.tensors.at("token_embd.weight").shape[0]
@@ -2160,14 +2348,29 @@ Model public_to_nnllm(const PublicGguf& view, const uint8_t* data, size_t size, 
     Tensor q = load_public_tensor(view, data, size, src + "attn_q.weight", {q_dim, config.d_model});
     q.name = dst + "attn.q.weight";
     model.tensors.push_back(std::move(q));
+    if (config.qkv_bias) {
+      Tensor qb = load_public_tensor(view, data, size, src + "attn_q.bias", {q_dim});
+      qb.name = dst + "attn.q.bias";
+      model.tensors.push_back(std::move(qb));
+    }
 
     Tensor k = load_public_tensor(view, data, size, src + "attn_k.weight", {kv_dim, config.d_model});
     k.name = dst + "attn.k.weight";
     model.tensors.push_back(std::move(k));
+    if (config.qkv_bias) {
+      Tensor kb = load_public_tensor(view, data, size, src + "attn_k.bias", {kv_dim});
+      kb.name = dst + "attn.k.bias";
+      model.tensors.push_back(std::move(kb));
+    }
 
     Tensor v = load_public_tensor(view, data, size, src + "attn_v.weight", {kv_dim, config.d_model});
     v.name = dst + "attn.v.weight";
     model.tensors.push_back(std::move(v));
+    if (config.qkv_bias) {
+      Tensor vb = load_public_tensor(view, data, size, src + "attn_v.bias", {kv_dim});
+      vb.name = dst + "attn.v.bias";
+      model.tensors.push_back(std::move(vb));
+    }
 
     Tensor o = load_public_tensor(view, data, size, src + "attn_output.weight", {config.d_model, q_dim});
     o.name = dst + "attn.out.weight";
@@ -2764,6 +2967,187 @@ int self_test() {
   if (qwen2_view.tensors.find("blk.0.attn_q_norm.weight") != qwen2_view.tensors.end()) {
     throw std::runtime_error("self-test qwen2 norm");
   }
+
+  Config split = qwen2;
+  split.bias = false;
+  split.split_bias = true;
+  split.qkv_bias = true;
+  split.attn_out_bias = false;
+  split.mlp_bias = false;
+  split.lm_head_bias = false;
+  Model split_model;
+  split_model.config = split;
+  split_model.tensors = expected_tensors(split);
+  uint32_t split_n = 1;
+  for (Tensor& tensor : split_model.tensors) {
+    const int64_t numel = product(tensor.shape);
+    tensor.data.resize(static_cast<size_t>(numel));
+    for (int64_t i = 0; i < numel; ++i) {
+      tensor.data[static_cast<size_t>(i)] = static_cast<float>(split_n) + 0.01f * static_cast<float>(i);
+    }
+    ++split_n;
+  }
+  const auto split_bin = dir / "split.bin";
+  write_checkpoint(split_bin, split_model);
+  {
+    Reader ver(read_file(split_bin));
+    if (ver.u32() != kCheckpointMagic || ver.u32() != 7u) throw std::runtime_error("self-test split version");
+  }
+  const Model split_loaded = read_checkpoint(split_bin);
+  if (!split_loaded.config.split_bias || !split_loaded.config.qkv_bias || split_loaded.config.bias ||
+      split_loaded.config.attn_out_bias || split_loaded.config.mlp_bias || split_loaded.config.lm_head_bias) {
+    throw std::runtime_error("self-test split flags");
+  }
+  bool saw_q_bias = false;
+  for (const Tensor& tensor : split_loaded.tensors) {
+    if (tensor.name == "blocks.0.attn.q.bias" || tensor.name == "blocks.0.attn.k.bias" ||
+        tensor.name == "blocks.0.attn.v.bias") {
+      if (tensor.name == "blocks.0.attn.q.bias") saw_q_bias = true;
+    } else if (tensor.name.size() >= 5 && tensor.name.compare(tensor.name.size() - 5, 5, ".bias") == 0) {
+      throw std::runtime_error("self-test split bias " + tensor.name);
+    }
+  }
+  if (!saw_q_bias) throw std::runtime_error("self-test split q bias");
+  const auto split_gguf = dir / "split.gguf";
+  write_gguf(split_gguf, split_loaded);
+  const GgufView split_view = read_gguf_view(split_gguf);
+  const auto split_qkv = split_view.bools.find("nnllm.qkv_bias");
+  if (split_qkv == split_view.bools.end() || !split_qkv->second ||
+      split_view.bools.find("nnllm.attn_out_bias") != split_view.bools.end() ||
+      split_view.bools.find("nnllm.mlp_bias") != split_view.bools.end() ||
+      split_view.bools.find("nnllm.lm_head_bias") != split_view.bools.end()) {
+    throw std::runtime_error("self-test split gguf");
+  }
+  const GgufView rope_keys = read_gguf_view(dir / "rope.gguf");
+  if (rope_keys.bools.find("nnllm.qkv_bias") != rope_keys.bools.end()) {
+    throw std::runtime_error("self-test split rope keys");
+  }
+  const Model split_from = read_gguf(split_gguf);
+  if (!split_from.config.split_bias || !split_from.config.qkv_bias || split_from.config.bias ||
+      split_from.config.attn_out_bias || split_from.config.mlp_bias || split_from.config.lm_head_bias ||
+      split_from.tensors.size() != split_loaded.tensors.size()) {
+    throw std::runtime_error("self-test split import");
+  }
+  for (size_t i = 0; i < split_loaded.tensors.size(); ++i) {
+    if (split_from.tensors[i].name != split_loaded.tensors[i].name ||
+        split_from.tensors[i].shape != split_loaded.tensors[i].shape ||
+        split_from.tensors[i].data != split_loaded.tensors[i].data) {
+      throw std::runtime_error("self-test split round " + split_loaded.tensors[i].name);
+    }
+  }
+  const auto split_back = dir / "split-back.bin";
+  write_checkpoint(split_back, split_from);
+  {
+    Reader ver(read_file(split_back));
+    if (ver.u32() != kCheckpointMagic || ver.u32() != 7u) throw std::runtime_error("self-test split back");
+  }
+  bool split_llama = false;
+  try {
+    write_llama_gguf(dir / "split-llama.gguf", split_model);
+  } catch (const std::runtime_error& error) {
+    split_llama = std::string(error.what()) == "bias";
+  }
+  if (!split_llama) throw std::runtime_error("self-test split llama");
+
+  const int split_dh = config_head_dim(split);
+  const int split_kv = config_kv_heads(split);
+  const int split_q = split.heads * split_dh;
+  const int split_k = split_kv * split_dh;
+  std::vector<Tensor> public_tensors = llama_tensors(split_model);
+  public_tensors.push_back(copy_tensor(split_model, "blocks.0.attn.q.bias", {split_q}, "blk.0.attn_q.bias"));
+  public_tensors.push_back(copy_tensor(split_model, "blocks.0.attn.k.bias", {split_k}, "blk.0.attn_k.bias"));
+  public_tensors.push_back(copy_tensor(split_model, "blocks.0.attn.v.bias", {split_k}, "blk.0.attn_v.bias"));
+  Kv pub;
+  const std::string prefix = "qwen2.";
+  pub.str("general.architecture", "qwen2");
+  pub.str("general.name", kArchitecture);
+  pub.u32("general.alignment", kDefaultAlign);
+  pub.u32("general.file_type", 0);
+  pub.str("general.description", "qwen2 qkv bias");
+  pub.str("tokenizer.ggml.model", "gpt2");
+  pub.str("tokenizer.ggml.pre", "superbpe");
+  pub.boolean("tokenizer.ggml.add_bos_token", false);
+  pub.boolean("tokenizer.ggml.add_eos_token", false);
+  pub.boolean("tokenizer.ggml.add_space_prefix", false);
+  pub.u32("tokenizer.ggml.bos_token_id", static_cast<uint32_t>(tok.bos));
+  pub.u32("tokenizer.ggml.eos_token_id", static_cast<uint32_t>(tok.eos));
+  pub.u32("tokenizer.ggml.padding_token_id", static_cast<uint32_t>(tok.pad));
+  pub.strs("tokenizer.ggml.tokens", tok.tokens);
+  pub.strs("tokenizer.ggml.merges", tok.merges);
+  pub.i32s("tokenizer.ggml.token_type", tok.types);
+  pub.u32(prefix + "vocab_size", static_cast<uint32_t>(split.vocab));
+  pub.u32(prefix + "context_length", static_cast<uint32_t>(split.max_seq));
+  pub.u32(prefix + "embedding_length", static_cast<uint32_t>(split.d_model));
+  pub.u32(prefix + "block_count", static_cast<uint32_t>(split.layers));
+  pub.u32(prefix + "feed_forward_length", static_cast<uint32_t>(split.d_ff));
+  pub.u32(prefix + "attention.head_count", static_cast<uint32_t>(split.heads));
+  pub.u32(prefix + "attention.head_count_kv", static_cast<uint32_t>(split_kv));
+  pub.u32(prefix + "attention.key_length", static_cast<uint32_t>(split_dh));
+  pub.u32(prefix + "attention.value_length", static_cast<uint32_t>(split_dh));
+  pub.f32(prefix + "attention.layer_norm_rms_epsilon", split.rms_eps);
+  pub.f32(prefix + "rope.freq_base", split.rope_theta);
+  pub.u32(prefix + "rope.dimension_count", static_cast<uint32_t>(split_dh));
+  const auto public_path = dir / "qwen2-bias.gguf";
+  write_gguf_container(public_path, public_tensors, pub, false);
+  convert_from_public(public_path, dir / "qwen2-bias-out", 16);
+  const auto public_bin = dir / "qwen2-bias-out" / "model.bin";
+  {
+    Reader ver(read_file(public_bin));
+    if (ver.u32() != kCheckpointMagic || ver.u32() != 7u) throw std::runtime_error("self-test qwen2 from version");
+  }
+  const Model public_loaded = read_checkpoint(public_bin);
+  if (!public_loaded.config.split_bias || !public_loaded.config.qkv_bias || public_loaded.config.bias ||
+      public_loaded.config.attn_out_bias || public_loaded.config.mlp_bias || public_loaded.config.lm_head_bias) {
+    throw std::runtime_error("self-test qwen2 from flags");
+  }
+  auto bias_of = [](const Model& model, const std::string& name) -> const std::vector<float>& {
+    for (const Tensor& tensor : model.tensors) {
+      if (tensor.name == name) return tensor.data;
+    }
+    throw std::runtime_error("self-test qwen2 from " + name);
+  };
+  if (bias_of(public_loaded, "blocks.0.attn.q.bias") != bias_of(split_model, "blocks.0.attn.q.bias") ||
+      bias_of(public_loaded, "blocks.0.attn.k.bias") != bias_of(split_model, "blocks.0.attn.k.bias") ||
+      bias_of(public_loaded, "blocks.0.attn.v.bias") != bias_of(split_model, "blocks.0.attn.v.bias")) {
+    throw std::runtime_error("self-test qwen2 from bias");
+  }
+  auto reject_bias_file = [&](std::vector<Tensor> tensors, const char* label) {
+    const auto path = dir / (std::string("qwen2-") + label + ".gguf");
+    write_gguf_container(path, tensors, pub, false);
+    bool thrown = false;
+    try {
+      convert_from_public(path, dir / (std::string("qwen2-") + label), 16);
+    } catch (const std::runtime_error& error) {
+      thrown = std::string(error.what()) == "bias";
+    }
+    if (!thrown) throw std::runtime_error(std::string("self-test qwen2 ") + label);
+  };
+  std::vector<Tensor> partial;
+  for (const Tensor& tensor : public_tensors) {
+    if (tensor.name != "blk.0.attn_v.bias") partial.push_back(tensor);
+  }
+  reject_bias_file(std::move(partial), "partial");
+  std::vector<Tensor> with_output = public_tensors;
+  Tensor output_bias;
+  output_bias.name = "output.bias";
+  output_bias.shape = {4};
+  output_bias.data = {1.f, 2.f, 3.f, 4.f};
+  with_output.push_back(std::move(output_bias));
+  reject_bias_file(std::move(with_output), "output");
+  std::vector<Tensor> with_attn = public_tensors;
+  Tensor attn_bias;
+  attn_bias.name = "blk.0.attn_output.bias";
+  attn_bias.shape = {8};
+  attn_bias.data.assign(8, 1.f);
+  with_attn.push_back(std::move(attn_bias));
+  reject_bias_file(std::move(with_attn), "attn");
+  std::vector<Tensor> with_ffn = public_tensors;
+  Tensor ffn_bias;
+  ffn_bias.name = "blk.0.ffn_down.bias";
+  ffn_bias.shape = {8};
+  ffn_bias.data.assign(8, 1.f);
+  with_ffn.push_back(std::move(ffn_bias));
+  reject_bias_file(std::move(with_ffn), "ffn");
 
   std::vector<float> q8_src(32);
   for (int i = 0; i < 32; ++i) q8_src[static_cast<size_t>(i)] = static_cast<float>(i - 8) * 0.25f;

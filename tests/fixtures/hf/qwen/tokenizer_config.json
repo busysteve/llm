@@ -1,0 +1,7 @@
+{
+  "add_bos_token": true,
+  "add_eos_token": false,
+  "bos_token": "<|bos|>",
+  "eos_token": "<|end|>",
+  "pad_token": "<|end|>"
+}

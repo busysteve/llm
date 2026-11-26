@@ -45,12 +45,13 @@ graph TD
     Presets --> NN
 ```
 
-`BpeTokenizer` is the only `Tokenizer`. `Tokenizer::load` reads an `LPB1` file and returns it. Token ids stay on the host until `TextDataset::next` uploads an `nn::IndexTensor`.
+`BpeTokenizer` trains and loads `LPB1`. `HfTokenizer` loads a Hugging Face `tokenizer.json` byte-level BPE. `Tokenizer::load` still reads `LPB1` only. Token ids stay on the host until `TextDataset::next` uploads an `nn::IndexTensor`.
 
 | Header | Source | Owns |
 |---|---|---|
 | `include/llm/tokenizer.hpp` | `Tokenizer::load` is implemented in `src/bpe.cpp` | The abstract tokenizer and `EncodeOptions` |
 | `include/llm/bpe.hpp` | `src/bpe.cpp` | Byte-level BPE, merges, and the `LPB1` file |
+| `include/llm/hf_tokenizer.hpp` | `src/hf_tokenizer.cpp` | Hugging Face `tokenizer.json` byte-level BPE |
 | `include/llm/data.hpp` | `src/data.cpp` | `tokens.bin`, `tokens.meta`, and next-token batches |
 | `include/llm/presets.hpp` | `src/presets.cpp` | Preset `nn::TransformerConfig` values and `adamw_groups` |
 | `include/llm/train.hpp` | `src/train.cpp` | `learning_rate_at` and `Trainer::fit` |
@@ -128,8 +129,9 @@ The examples are separate executables. They link `llm`. They are not part of `li
 | `finetune` | `examples/finetune.cpp` | Keep training a checkpoint on a new file list |
 | `reinforce` | `examples/reinforce.cpp` | Update a causal checkpoint from a string reward |
 | `gguf` | `examples/gguf.cpp` | Convert `model.bin` and GGUF files |
+| `hf` | `examples/hf.cpp` | Convert a Hugging Face snapshot to `model.bin` |
 
-`gguf` reads and writes checkpoint bytes itself. It does not go through `Trainer`. On a CUDA build, `llm_tests` defines `LLM_NN_CUDA` and reads an `IndexTensor` with `cudaMemcpy`. The OpenCL, ROCm, Arc, and AGX builds use `IndexTensor::to_host()`.
+`gguf` and `hf` read and write checkpoint bytes themselves. They do not go through `Trainer`. On a CUDA build, `llm_tests` defines `LLM_NN_CUDA` and reads an `IndexTensor` with `cudaMemcpy`. The OpenCL, ROCm, Arc, and AGX builds use `IndexTensor::to_host()`.
 
 See also:
 

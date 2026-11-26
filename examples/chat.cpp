@@ -1,4 +1,5 @@
 #include "llm/generate.hpp"
+#include "llm/hf_tokenizer.hpp"
 #include "llm/tokenizer.hpp"
 
 #include "nn/transformer.hpp"
@@ -39,7 +40,8 @@ void usage() {
   std::fputs(
       "usage: chat --model DIR [options]\n"
       "\n"
-      "DIR is a train_data output directory with tokenizer.bpe and model.bin.\n"
+      "DIR has model.bin and tokenizer.bpe, or model.bin and tokenizer.json\n"
+      "from hf import. tokenizer.bpe is used when that file is present.\n"
       "Train one exchange per file so that file's eos ends the assistant turn:\n"
       "\n"
       "  User: What is the harbor bell for?\n"
@@ -154,10 +156,17 @@ std::string make_prompt(const std::vector<Turn>& turns, const std::string& line,
   return prompt;
 }
 
+llm::EncodeOptions prompt_options(const llm::Tokenizer& tok) {
+  llm::EncodeOptions opt;
+  opt.add_bos = tok.add_bos_default();
+  opt.add_eos = tok.add_eos_default();
+  return opt;
+}
+
 bool exceeds_context(const llm::Tokenizer& tok, std::string_view prompt, int max_new_tokens,
                      int max_seq_len) {
   if (max_new_tokens < 1 || max_seq_len < 1) return false;
-  const size_t n = tok.encode(prompt).size();
+  const size_t n = tok.encode(prompt, prompt_options(tok)).size();
   return n + static_cast<size_t>(max_new_tokens) > static_cast<size_t>(max_seq_len);
 }
 
@@ -223,14 +232,18 @@ void interact(const llm::Tokenizer& tok, llm::Generator& generator, llm::Generat
 int main(int argc, char** argv) {
   try {
     const Options opt = parse(argc, argv);
-    const std::filesystem::path tok_path = opt.model / "tokenizer.bpe";
+    const std::filesystem::path bpe_path = opt.model / "tokenizer.bpe";
+    const std::filesystem::path hf_path = opt.model / "tokenizer.json";
     const std::filesystem::path model_path = opt.model / "model.bin";
-    if (!std::filesystem::is_regular_file(tok_path) || !std::filesystem::is_regular_file(model_path)) {
+    if (!std::filesystem::is_regular_file(model_path) ||
+        (!std::filesystem::is_regular_file(bpe_path) && !std::filesystem::is_regular_file(hf_path))) {
       throw std::runtime_error("model");
     }
 
     nn::Context ctx;
-    const std::unique_ptr<llm::Tokenizer> tok = llm::Tokenizer::load(tok_path);
+    const std::unique_ptr<llm::Tokenizer> tok = std::filesystem::is_regular_file(bpe_path)
+                                                    ? llm::Tokenizer::load(bpe_path)
+                                                    : llm::HfTokenizer::load(opt.model);
     nn::Transformer::Loaded loaded =
         nn::Transformer::load(ctx, model_path, nn::LoadMode::Inference);
     const nn::TransformerConfig& config =
@@ -245,6 +258,7 @@ int main(int argc, char** argv) {
     cfg.top_p = opt.top_p;
     cfg.repetition_penalty = opt.repetition_penalty;
     cfg.eos_id = tok->eos_id();
+    cfg.stop_ids = tok->stop_ids();
     std::mt19937 rng(static_cast<uint32_t>(opt.seed));
 
     if (opt.once) {

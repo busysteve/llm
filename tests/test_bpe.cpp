@@ -13,6 +13,7 @@
 void run_data_tests();
 void run_train_tests();
 void run_rl_tests();
+void run_hf_tokenizer_tests();
 
 namespace {
 
@@ -284,6 +285,7 @@ int main() {
   run_data_tests();
   run_train_tests();
   run_rl_tests();
+  run_hf_tokenizer_tests();
   std::printf("ok\n");
   return 0;
 }
