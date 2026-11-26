@@ -135,12 +135,19 @@ else
     -DCMAKE_CXX_COMPILER="$host_cxx" -DCMAKE_CUDA_HOST_COMPILER="$host_cxx"
 fi
 
-cmake --build build -j --target llm_tests
-cmake --build build -j --target gguf
+cmake --build build -j --target \
+  llm_tests \
+  train_tiny \
+  train_bench \
+  train_chat \
+  train_bert_chat \
+  train_data \
+  chat \
+  finetune \
+  reinforce \
+  gguf \
+  hf
 ./build/llm_tests
-cmake --build build -j --target train_tiny
 ./build/train_tiny
-cmake --build build -j --target train_data
-cmake --build build -j --target chat
 #time ./build/train_data --files books.txt --out llama.mod --preset llama-small --vocab 2048 --seq-len 256 --batch 6 --steps 5000 --prompt "moral goodness is"
 #./build/train_data --files ./conversation_data/dialogue.txt --out chat-test.mod --preset llama-small --vocab 2048 --seq-len 256 --batch 6 --steps 5000 --log-every 1 --prompt "How are you today?"
