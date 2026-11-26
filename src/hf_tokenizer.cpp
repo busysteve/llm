@@ -39,6 +39,10 @@ bool is_number(uint32_t cp) {
   return in_ranges(cp, kNumberRanges, sizeof(kNumberRanges) / sizeof(kNumberRanges[0]));
 }
 
+bool is_mark(uint32_t cp) {
+  return in_ranges(cp, kMarkRanges, sizeof(kMarkRanges) / sizeof(kMarkRanges[0]));
+}
+
 // Unicode White_Space, which is what the tokenizers regex calls \s.
 bool is_ws(uint32_t cp) {
   switch (cp) {
@@ -63,6 +67,12 @@ bool is_ws(uint32_t cp) {
 }
 
 bool is_other(uint32_t cp) { return !is_ws(cp) && !is_letter(cp) && !is_number(cp); }
+
+// Qwen 3.5 punctuation excludes combining marks. A mark is is_other, so the
+// GPT-2 and Qwen2 punctuation class would swallow it.
+bool is_punct_qwen35(uint32_t cp) {
+  return !is_ws(cp) && !is_letter(cp) && !is_mark(cp) && !is_number(cp);
+}
 
 bool is_word(uint32_t cp) { return cp == '_' || is_letter(cp) || is_number(cp); }
 
@@ -161,17 +171,19 @@ std::vector<Unit> units_of(std::string_view text) {
   return units;
 }
 
-// GPT-2, Llama 3, and Qwen2/Qwen3. The file's regex string selects one.
+// GPT-2, Llama 3, Qwen2/Qwen3, and Qwen 3.5. The file's regex string selects one.
 // Alternation is first-match, and \s+(?!\S) keeps every space but the last
-// when a non-space follows.
+// when a non-space follows. Qwen 3.5 letter runs also consume combining marks.
 constexpr char kGpt2[] =
     R"re('s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+)re";
 constexpr char kLlama3[] =
     R"re((?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+)re";
 constexpr char kQwen[] =
     R"re((?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+)re";
+constexpr char kQwen35[] =
+    R"re((?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+|\p{N}| ?[^\s\p{L}\p{M}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+)re";
 
-enum Kind { kKindGpt2 = 0, kKindLlama = 1, kKindQwen = 2 };
+enum Kind { kKindGpt2 = 0, kKindLlama = 1, kKindQwen = 2, kKindQwen35 = 3 };
 
 std::optional<size_t> contraction(const std::vector<Unit>& u, size_t i, bool fold) {
   if (i >= u.size() || u[i].cp != '\'') return std::nullopt;
@@ -214,6 +226,20 @@ std::optional<size_t> prefixed_letters(const std::vector<Unit>& u, size_t i) {
   return j;
 }
 
+// [^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+  The current scalar is always consumed when
+// the run starts. Following letters and marks stay in the same piece.
+std::optional<size_t> prefixed_letters_marks(const std::vector<Unit>& u, size_t i) {
+  if (i >= u.size()) return std::nullopt;
+  const uint32_t cp = u[i].cp;
+  if (cp == '\r' || cp == '\n' || is_number(cp)) return std::nullopt;
+  const bool cur = is_letter(cp) || is_mark(cp);
+  const bool next = i + 1 < u.size() && (is_letter(u[i + 1].cp) || is_mark(u[i + 1].cp));
+  if (!cur && !next) return std::nullopt;
+  size_t j = i + 1;
+  while (j < u.size() && (is_letter(u[j].cp) || is_mark(u[j].cp))) ++j;
+  return j;
+}
+
 std::optional<size_t> numbers(const std::vector<Unit>& u, size_t i, size_t cap) {
   if (i >= u.size() || !is_number(u[i].cp)) return std::nullopt;
   size_t j = i + 1;
@@ -221,13 +247,13 @@ std::optional<size_t> numbers(const std::vector<Unit>& u, size_t i, size_t cap) 
   return j;
 }
 
-std::optional<size_t> punct_then_newline(const std::vector<Unit>& u, size_t i) {
+std::optional<size_t> punct_then_newline(const std::vector<Unit>& u, size_t i, bool (*pred)(uint32_t)) {
   if (i >= u.size()) return std::nullopt;
   size_t k = i;
   if (u[k].cp == ' ') ++k;
-  if (k >= u.size() || !is_other(u[k].cp)) return std::nullopt;
+  if (k >= u.size() || !pred(u[k].cp)) return std::nullopt;
   ++k;
-  while (k < u.size() && is_other(u[k].cp)) ++k;
+  while (k < u.size() && pred(u[k].cp)) ++k;
   while (k < u.size() && (u[k].cp == '\r' || u[k].cp == '\n')) ++k;
   return k;
 }
@@ -269,9 +295,9 @@ size_t next_piece(int kind, const std::vector<Unit>& u, size_t i) {
     if (!end) end = run_with_space(u, i, is_other);
   } else {
     end = contraction(u, i, true);
-    if (!end) end = prefixed_letters(u, i);
-    if (!end) end = numbers(u, i, kind == kKindQwen ? 1 : 3);
-    if (!end) end = punct_then_newline(u, i);
+    if (!end) end = kind == kKindQwen35 ? prefixed_letters_marks(u, i) : prefixed_letters(u, i);
+    if (!end) end = numbers(u, i, kind == kKindLlama ? 3 : 1);
+    if (!end) end = punct_then_newline(u, i, kind == kKindQwen35 ? is_punct_qwen35 : is_other);
     if (!end) end = whitespace_through_newline(u, i);
   }
   if (!end) end = whitespace_not_before_graph(u, i);
@@ -608,6 +634,7 @@ int kind_from_regex(const std::string& pattern) {
   if (pattern == kGpt2) return kKindGpt2;
   if (pattern == kLlama3) return kKindLlama;
   if (pattern == kQwen) return kKindQwen;
+  if (pattern == kQwen35) return kKindQwen35;
   fail();
 }
 
@@ -713,7 +740,10 @@ std::unique_ptr<HfTokenizer> HfTokenizer::load(const std::filesystem::path& dir)
     const Json& pattern = need_key(split, "pattern");
     const int kind = kind_from_regex(as_string(need_key(pattern, "Regex")));
     tok->add_prefix_space_ = byte_level_prefix(parts.arr[1], false);
-    tok->pretok_ = kind == kKindLlama ? Pretok::Llama3 : kind == kKindQwen ? Pretok::Qwen : Pretok::Gpt2;
+    tok->pretok_ = kind == kKindLlama    ? Pretok::Llama3
+                   : kind == kKindQwen   ? Pretok::Qwen
+                   : kind == kKindQwen35 ? Pretok::Qwen35
+                                         : Pretok::Gpt2;
   } else {
     fail();
   }
@@ -876,7 +906,10 @@ void HfTokenizer::encode_gap(std::string_view gap, std::vector<int32_t>& ids) co
     owned.append(gap);
     work = owned;
   }
-  const int kind = pretok_ == Pretok::Gpt2 ? kKindGpt2 : pretok_ == Pretok::Llama3 ? kKindLlama : kKindQwen;
+  const int kind = pretok_ == Pretok::Gpt2     ? kKindGpt2
+                   : pretok_ == Pretok::Llama3  ? kKindLlama
+                   : pretok_ == Pretok::Qwen35  ? kKindQwen35
+                                                : kKindQwen;
   const std::vector<Unit> units = units_of(work);
   size_t i = 0;
   while (i < units.size()) {

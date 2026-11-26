@@ -1,4 +1,5 @@
 #include "llm/bpe.hpp"
+#include "llm/chat_template.hpp"
 #include "llm/generate.hpp"
 #include "llm/hf_tokenizer.hpp"
 
@@ -89,6 +90,50 @@ void run_hf_tokenizer_tests() {
   check_family("llama3", {11}, {12, 13});
   // Qwen keeps one digit per piece, so "1" and "2" never meet a merge.
   check_family("qwen", {1, 2}, {1, 2, 3, 4, 5});
+
+  // e + U+0301 is one piece when the letter run includes marks, and two when it does not.
+  const std::string accent = "e\xCC\x81";
+  const std::filesystem::path qwen35_dir = std::filesystem::path(LLM_FIXTURE_DIR) / "hf" / "qwen35";
+  const std::unique_ptr<llm::HfTokenizer> qwen35 = llm::HfTokenizer::load(qwen35_dir);
+  expect_ids(*qwen35, "12", {1, 2});
+  expect_ids(*qwen35, accent, {8});
+  expect_ids(*qwen35, "\xCC\x81", {7});
+  const std::filesystem::path qwen_mark = std::filesystem::temp_directory_path() / "llm-hf-qwen-mark";
+  std::filesystem::remove_all(qwen_mark);
+  std::filesystem::create_directories(qwen_mark);
+  std::ifstream qwen35_in(qwen35_dir / "tokenizer.json", std::ios::binary);
+  CHECK(static_cast<bool>(qwen35_in));
+  std::string qwen_text((std::istreambuf_iterator<char>(qwen35_in)), std::istreambuf_iterator<char>());
+  const std::string marks = "[\\\\p{L}\\\\p{M}]+";
+  const std::string letters = "\\\\p{L}+";
+  const size_t mark_at = qwen_text.find(marks);
+  CHECK(mark_at != std::string::npos);
+  qwen_text.replace(mark_at, marks.size(), letters);
+  const std::string punct_marks = "[^\\\\s\\\\p{L}\\\\p{M}\\\\p{N}]";
+  const std::string punct = "[^\\\\s\\\\p{L}\\\\p{N}]";
+  const size_t punct_at = qwen_text.find(punct_marks);
+  CHECK(punct_at != std::string::npos);
+  qwen_text.replace(punct_at, punct_marks.size(), punct);
+  write_file(qwen_mark / "tokenizer.json", qwen_text);
+  const std::unique_ptr<llm::HfTokenizer> qwen_split = llm::HfTokenizer::load(qwen_mark);
+  expect_ids(*qwen_split, "12", {1, 2});
+  expect_ids(*qwen_split, accent, {6, 7});
+  std::filesystem::remove_all(qwen_mark);
+
+  CHECK(llm::chat_prompt_suffix("hi", llm::ChatWrap::Qwen) ==
+        "<|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\n");
+  CHECK(llm::chat_completed_turn("hi", "ok", llm::ChatWrap::Qwen) ==
+        "<|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\nok<|im_end|>\n");
+  CHECK(llm::chat_completed_turn("hi", "ok", llm::ChatWrap::Qwen) +
+            llm::chat_prompt_suffix("next", llm::ChatWrap::Qwen) ==
+        "<|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\nok<|im_end|>\n"
+        "<|im_start|>user\nnext<|im_end|>\n<|im_start|>assistant\n");
+  CHECK(llm::chat_cut_reply("ok<|im_end|>\n<|im_start|>user\nno", llm::ChatWrap::Qwen) == "ok");
+  CHECK(llm::chat_cut_reply("ok\n<|im_start|>user\nno", llm::ChatWrap::Qwen) == "ok");
+  CHECK(llm::chat_shown_reply(" hi", llm::ChatWrap::Qwen) == " hi");
+  CHECK(llm::chat_shown_reply(" hi", llm::ChatWrap::Dialogue) == "hi");
+  CHECK(llm::chat_completed_turn("hi", " ok", llm::ChatWrap::Dialogue) == "User: hi\nAssistant: ok\n");
+  CHECK(llm::chat_prompt_suffix("hi", llm::ChatWrap::Dialogue) == "User: hi\nAssistant:");
 
   const std::filesystem::path qwen_dir = std::filesystem::path(LLM_FIXTURE_DIR) / "hf" / "qwen";
   const std::unique_ptr<llm::HfTokenizer> qwen = llm::HfTokenizer::load(qwen_dir);

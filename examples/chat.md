@@ -1,6 +1,6 @@
 # How to converse with a trained model
 
-`chat` is the dialogue example in [`chat.cpp`](chat.cpp). It loads `model.bin` and a tokenizer from a directory written by [`train_data`](train_data.md), [`gguf from`](gguf.md), or [`hf import`](hf.md), and continues a `User:` / `Assistant:` transcript. `--plain` continues the line as a prompt with those tags left off, which matches a book checkpoint. It does not train. It is a separate program from `llm_tests`.
+`chat` is the dialogue example in [`chat.cpp`](chat.cpp). It loads `model.bin` and a tokenizer from a directory written by [`train_data`](train_data.md), [`gguf from`](gguf.md), or [`hf import`](hf.md), and continues a `User:` / `Assistant:` transcript. `--plain` continues the line as a prompt with those tags left off, which matches a book checkpoint. `--template qwen` wraps each turn as ChatML for a Qwen directory from `gguf from`. It does not train. It is a separate program from `llm_tests`.
 
 Build from the repository root. Requirements are in the [README](../README.md).
 
@@ -125,6 +125,8 @@ Sampling stops on the tokenizer eos id. A Hugging Face directory with `eos_token
 
 With `--plain`, a completed turn is the line, the reply, and a newline. The next prompt is that transcript then the line. A decoded newline and `User:` does not end the reply. One leading space stays on screen.
 
+`--template qwen` writes a completed turn as `<|im_start|>user`, a newline, the line, `<|im_end|>`, a newline, `<|im_start|>assistant`, a newline, the reply, and `<|im_end|>`. The next prompt ends at `<|im_start|>assistant` and a newline, with no reply yet. The reply is cut at `<|im_end|>` or at a newline followed by `<|im_start|>`. One leading space stays on screen. `--plain` and `--template qwen` together fail with `template`. There is no Jinja template.
+
 Each call encodes the whole prompt. A causal model prefills it. A bidirectional model runs `forward` once per new token. Nothing is kept in the KV cache between turns.
 
 Most presets use `max_seq_len` 1024. Every `gpt3-*` preset uses 2048. Every `bert-*` preset is an encoder with context 512. A causal checkpoint prefills the prompt and samples with `decode_step`. A bidirectional checkpoint appends the pad id, which is the mask, and `forward` scores that position. Segment ids stay 0. The sampling flags are the same, and eos stops the reply. [train_bert_chat](train_bert_chat.md) trains `bert_tiny` on four exchanges and prints one reply through that path. [train_chat](train_chat.md) trains a `tiny` model for one reply and a `bert_tiny` model for one masked token in the same process. The encoded prompt plus `--max-new-tokens` has to fit. `chat` drops the oldest completed turn until it does. A line that still does not fit prints `chat: max_seq_len` and leaves the transcript unchanged. In `--once` mode that same case exits 1.
@@ -144,6 +146,7 @@ Most presets use `max_seq_len` 1024. Every `gpt3-*` preset uses 2048. Every `ber
 | `--seed N` | 1 | sampling rng |
 | `--once TEXT` | | one reply, then exit |
 | `--plain` | | prompt is the line, with no `User:` / `Assistant:` tags |
+| `--template qwen` | | ChatML `<|im_start|>user` / `<|im_start|>assistant` turns |
 
 ## When it fails
 
@@ -153,6 +156,7 @@ Errors print `chat: <reason>` on stderr. In an interactive session the process s
 |---|---|
 | `model` | `--model` is missing, `model.bin` is missing, or the directory has neither `tokenizer.bpe` nor `tokenizer.json` |
 | `tokenizer` | `tokenizer.json` is not a byte-level BPE this build accepts |
+| `template` | `--template` is not `qwen`, or it is combined with `--plain` |
 | `prompt` | `--once` was given an empty string |
 | `max_seq_len` | the line plus `--max-new-tokens` is longer than the model allows |
 | `mask_token` | a bidirectional checkpoint has a pad id outside the model vocabulary |

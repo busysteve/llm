@@ -177,17 +177,19 @@ void usage() {
       "GELU, any linear bias (including QKV-only), bidirectional attention, and a\n"
       "segment table are rejected.\n"
       "\n"
-      "from reads a public llama.cpp GGUF (architecture llama, qwen2, qwen3,\n"
-      "mistral, and the same tensor layout) and writes a chat directory:\n"
-      "model.bin, tokenizer.bpe, tokens.bin, and tokens.meta. GPT-2 BPE is\n"
-      "remapped to this library's LPB1 layout (bytes 0..255, merges, then\n"
-      "pad/bos/eos). Quantized tensors are expanded to float32. Grouped-query\n"
-      "attention, a head dim other than d_model/heads, and QK-norm are kept.\n"
-      "Tied embeddings copy token_embd onto lm_head. --context N sets\n"
-      "max_seq_len (default min(source, 1024)). MoE, GELU, a partial RoPE\n"
-      "dimension, attention-output bias, MLP bias, and an LM-head bias are\n"
-      "rejected. Q, K, and V bias are copied as stored and the checkpoint is\n"
-      "version 7.\n"
+      "from reads a public llama.cpp GGUF. Architecture must be llama, qwen2,\n"
+      "qwen3, or mistral. Anything else, including qwen35, stops before the\n"
+      "weights are read. tokenizer.ggml.pre qwen2 or qwen35 keeps the GGUF\n"
+      "token ids and writes tokenizer.json, tokenizer_config.json, and\n"
+      "generation_config.json. Other pre names are remapped to this library's\n"
+      "LPB1 layout (bytes 0..255, merges, then pad/bos/eos) and write\n"
+      "tokenizer.bpe, tokens.bin, and tokens.meta. Quantized tensors are\n"
+      "expanded to float32. Grouped-query attention, a head dim other than\n"
+      "d_model/heads, and QK-norm are kept. Tied embeddings copy token_embd\n"
+      "onto lm_head. --context N sets max_seq_len (default min(source, 1024)).\n"
+      "MoE, GELU, a partial RoPE dimension, attention-output bias, MLP bias,\n"
+      "and an LM-head bias are rejected. Q, K, and V bias are copied as stored\n"
+      "and the checkpoint is version 7.\n"
       "\n"
       "import rejects a GGUF whose architecture is not nnllm, and rejects\n"
       "quantized tensors.\n",
@@ -1856,6 +1858,7 @@ struct PublicGguf {
   std::map<std::string, float> f32s;
   std::map<std::string, bool> bools;
   std::map<std::string, std::vector<std::string>> strs;
+  std::map<std::string, std::vector<int32_t>> i32s;
   std::map<std::string, PublicTensor> tensors;
 };
 
@@ -2165,6 +2168,11 @@ PublicGguf parse_public_gguf(Reader& reader) {
         values.reserve(static_cast<size_t>(n));
         for (uint64_t j = 0; j < n; ++j) values.push_back(reader.str_u64_max(65535));
         view.strs.emplace(key, std::move(values));
+      } else if (elem == kI32) {
+        std::vector<int32_t> values;
+        values.reserve(static_cast<size_t>(n));
+        for (uint64_t j = 0; j < n; ++j) values.push_back(reader.i32());
+        view.i32s.emplace(key, std::move(values));
       } else {
         for (uint64_t j = 0; j < n; ++j) skip_meta(reader, elem, 1);
       }
@@ -2244,7 +2252,8 @@ void require_no_tensor(const PublicGguf& view, const std::string& name, const ch
   if (has_tensor(view, name)) throw std::runtime_error(reason);
 }
 
-Model public_to_nnllm(const PublicGguf& view, const uint8_t* data, size_t size, const BpePairs& bpe, int max_seq) {
+Model public_to_nnllm(const PublicGguf& view, const uint8_t* data, size_t size, const BpePairs* bpe, int max_seq,
+                      int keep_vocab) {
   if (view.architecture == "nnllm") throw std::runtime_error("architecture");
   const std::string p = view.architecture + ".";
   Config config;
@@ -2256,7 +2265,8 @@ Model public_to_nnllm(const PublicGguf& view, const uint8_t* data, size_t size, 
                                                         static_cast<uint32_t>(config.heads)));
   const int src_ctx = static_cast<int>(need_u32_key(view, p + "context_length"));
   config.max_seq = max_seq > 0 ? max_seq : (src_ctx > 1024 ? 1024 : src_ctx);
-  config.vocab = bpe.map.tok.vocab;
+  if (keep_vocab >= 0) config.vocab = keep_vocab;
+  else config.vocab = bpe->map.tok.vocab;
   config.dropout = 0.f;
   config.bias = false;
   config.swiglu = true;
@@ -2320,16 +2330,24 @@ Model public_to_nnllm(const PublicGguf& view, const uint8_t* data, size_t size, 
     config.lm_head_bias = false;
   }
 
-  const int src_vocab = has_tensor(view, "token_embd.weight") ? view.tensors.at("token_embd.weight").shape[0]
-                                                             : bpe.map.new_to_orig.size();
+  int src_vocab = 0;
+  if (keep_vocab >= 0) {
+    if (!has_tensor(view, "token_embd.weight") || view.tensors.at("token_embd.weight").shape[0] != keep_vocab) {
+      throw std::runtime_error("vocab");
+    }
+    src_vocab = keep_vocab;
+  } else {
+    src_vocab = has_tensor(view, "token_embd.weight") ? view.tensors.at("token_embd.weight").shape[0]
+                                                      : static_cast<int>(bpe->map.new_to_orig.size());
+  }
   Tensor tok = load_public_tensor(view, data, size, "token_embd.weight", {src_vocab, config.d_model});
-  tok = permute_rows(tok, bpe.map.new_to_orig, config.vocab);
+  if (keep_vocab < 0) tok = permute_rows(tok, bpe->map.new_to_orig, config.vocab);
   tok.name = "tok_emb.weight";
 
   Tensor head;
   if (has_tensor(view, "output.weight")) {
     head = load_public_tensor(view, data, size, "output.weight", {src_vocab, config.d_model});
-    head = permute_rows(head, bpe.map.new_to_orig, config.vocab);
+    if (keep_vocab < 0) head = permute_rows(head, bpe->map.new_to_orig, config.vocab);
   } else {
     head = tok;
   }
@@ -2409,6 +2427,157 @@ Model public_to_nnllm(const PublicGguf& view, const uint8_t* data, size_t size, 
   return model;
 }
 
+constexpr char kQwenRegex[] =
+    R"re((?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+)re";
+constexpr char kQwen35Regex[] =
+    R"re((?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+|\p{N}| ?[^\s\p{L}\p{M}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+)re";
+
+bool dense_architecture(const std::string& name) {
+  return name == "llama" || name == "qwen2" || name == "qwen3" || name == "mistral";
+}
+
+std::string json_escape(const std::string& text) {
+  std::string out;
+  out.reserve(text.size() + 8);
+  for (unsigned char c : text) {
+    switch (c) {
+      case '"':
+      case '\\':
+        out.push_back('\\');
+        out.push_back(static_cast<char>(c));
+        break;
+      case '\b':
+        out += "\\b";
+        break;
+      case '\f':
+        out += "\\f";
+        break;
+      case '\n':
+        out += "\\n";
+        break;
+      case '\r':
+        out += "\\r";
+        break;
+      case '\t':
+        out += "\\t";
+        break;
+      default:
+        if (c < 0x20) {
+          char buf[8];
+          std::snprintf(buf, sizeof(buf), "\\u%04x", c);
+          out += buf;
+        } else {
+          out.push_back(static_cast<char>(c));
+        }
+        break;
+    }
+  }
+  return out;
+}
+
+void write_text(const std::filesystem::path& path, const std::string& text) {
+  write_file(path, std::vector<uint8_t>(text.begin(), text.end()));
+}
+
+int need_token_index(const PublicGguf& view, const char* key, size_t n) {
+  const auto found = view.u32s.find(key);
+  if (found == view.u32s.end() || static_cast<size_t>(found->second) >= n) throw std::runtime_error("tokenizer");
+  return static_cast<int>(found->second);
+}
+
+void write_kept_ids(const PublicGguf& view, const uint8_t* data, size_t size, const std::filesystem::path& out_dir,
+                    int context) {
+  const auto tokens_it = view.strs.find("tokenizer.ggml.tokens");
+  const auto merges_it = view.strs.find("tokenizer.ggml.merges");
+  const auto types_it = view.i32s.find("tokenizer.ggml.token_type");
+  const auto pre_it = view.strings.find("tokenizer.ggml.pre");
+  if (tokens_it == view.strs.end() || merges_it == view.strs.end() || types_it == view.i32s.end() ||
+      pre_it == view.strings.end()) {
+    throw std::runtime_error("tokenizer");
+  }
+  const std::vector<std::string>& tokens = tokens_it->second;
+  const std::vector<std::string>& merges = merges_it->second;
+  const std::vector<int32_t>& types = types_it->second;
+  if (tokens.empty() || tokens.size() != types.size() || (pre_it->second != "qwen2" && pre_it->second != "qwen35")) {
+    throw std::runtime_error("tokenizer");
+  }
+  std::set<std::string> seen;
+  for (const std::string& token : tokens) {
+    if (token.empty() || !seen.insert(token).second) throw std::runtime_error("tokenizer");
+  }
+  for (int32_t type : types) {
+    if (type < 0 || type > 6) throw std::runtime_error("tokenizer");
+  }
+  for (const std::string& merge : merges) {
+    const size_t sp = merge.find(' ');
+    if (sp == std::string::npos || sp == 0 || sp + 1 >= merge.size() || merge.find(' ', sp + 1) != std::string::npos) {
+      throw std::runtime_error("tokenizer");
+    }
+  }
+  const int bos = need_token_index(view, "tokenizer.ggml.bos_token_id", tokens.size());
+  const int eos = need_token_index(view, "tokenizer.ggml.eos_token_id", tokens.size());
+  const int pad = need_token_index(view, "tokenizer.ggml.padding_token_id", tokens.size());
+  const auto bos_flag = view.bools.find("tokenizer.ggml.add_bos_token");
+  const auto eos_flag = view.bools.find("tokenizer.ggml.add_eos_token");
+  const bool add_bos = bos_flag != view.bools.end() && bos_flag->second;
+  const bool add_eos = eos_flag != view.bools.end() && eos_flag->second;
+  const char* regex = pre_it->second == "qwen35" ? kQwen35Regex : kQwenRegex;
+
+  const Model model = public_to_nnllm(view, data, size, nullptr, context, static_cast<int>(tokens.size()));
+  std::filesystem::create_directories(out_dir);
+
+  std::string tokenizer;
+  size_t bytes = 512 + std::strlen(regex);
+  for (const std::string& token : tokens) bytes += token.size() + 16;
+  for (const std::string& merge : merges) bytes += merge.size() + 8;
+  tokenizer.reserve(bytes);
+  tokenizer += "{\"version\":\"1.0\",\"truncation\":null,\"padding\":null,\"added_tokens\":[";
+  bool first_added = true;
+  for (size_t i = 0; i < tokens.size(); ++i) {
+    if (types[i] != 3 && types[i] != 4) continue;
+    if (!first_added) tokenizer += ',';
+    first_added = false;
+    tokenizer += "{\"id\":";
+    tokenizer += std::to_string(i);
+    tokenizer += ",\"content\":\"";
+    tokenizer += json_escape(tokens[i]);
+    tokenizer += "\",\"single_word\":false,\"lstrip\":false,\"rstrip\":false,\"normalized\":false,\"special\":true}";
+  }
+  tokenizer += "],\"normalizer\":null,\"pre_tokenizer\":{\"type\":\"Sequence\",\"pretokenizers\":[";
+  tokenizer += "{\"type\":\"Split\",\"pattern\":{\"Regex\":\"";
+  tokenizer += json_escape(regex);
+  tokenizer += "\"},\"behavior\":\"Isolated\",\"invert\":false},";
+  tokenizer += "{\"type\":\"ByteLevel\",\"add_prefix_space\":false,\"trim_offsets\":false,\"use_regex\":false}]},";
+  tokenizer += "\"decoder\":{\"type\":\"ByteLevel\",\"add_prefix_space\":false,\"trim_offsets\":false,\"use_regex\":false},";
+  tokenizer += "\"model\":{\"type\":\"BPE\",\"dropout\":null,\"unk_token\":null,\"continuing_subword_prefix\":null,";
+  tokenizer += "\"end_of_word_suffix\":null,\"fuse_unk\":false,\"byte_fallback\":false,\"ignore_merges\":false,\"vocab\":{";
+  for (size_t i = 0; i < tokens.size(); ++i) {
+    if (i != 0) tokenizer += ',';
+    tokenizer += '"';
+    tokenizer += json_escape(tokens[i]);
+    tokenizer += "\":";
+    tokenizer += std::to_string(i);
+  }
+  tokenizer += "},\"merges\":[";
+  for (size_t i = 0; i < merges.size(); ++i) {
+    if (i != 0) tokenizer += ',';
+    tokenizer += '"';
+    tokenizer += json_escape(merges[i]);
+    tokenizer += '"';
+  }
+  tokenizer += "]}}\n";
+  write_text(out_dir / "tokenizer.json", tokenizer);
+
+  std::string config = std::string("{\"add_bos_token\":") + (add_bos ? "true" : "false") +
+                       ",\"add_eos_token\":" + (add_eos ? "true" : "false") + ",\"bos_token\":\"" +
+                       json_escape(tokens[static_cast<size_t>(bos)]) + "\",\"eos_token\":\"" +
+                       json_escape(tokens[static_cast<size_t>(eos)]) + "\",\"pad_token\":\"" +
+                       json_escape(tokens[static_cast<size_t>(pad)]) + "\"}\n";
+  write_text(out_dir / "tokenizer_config.json", config);
+  write_text(out_dir / "generation_config.json", "{\"eos_token_id\":" + std::to_string(eos) + "}\n");
+  write_checkpoint(out_dir / "model.bin", model);
+}
+
 void convert_from_public(const std::filesystem::path& gguf_path, const std::filesystem::path& out_dir, int context) {
   MappedFile mapped(gguf_path);
   Reader reader(mapped.data(), mapped.size());
@@ -2442,8 +2611,15 @@ void convert_from_public(const std::filesystem::path& gguf_path, const std::file
     return;
   }
 
+  if (!dense_architecture(view.architecture)) throw std::runtime_error("architecture");
+
   const auto tok_model = view.strings.find("tokenizer.ggml.model");
   if (tok_model == view.strings.end() || tok_model->second != "gpt2") throw std::runtime_error("tokenizer");
+  const auto pre = view.strings.find("tokenizer.ggml.pre");
+  if (pre != view.strings.end() && (pre->second == "qwen2" || pre->second == "qwen35")) {
+    write_kept_ids(view, mapped.data(), mapped.size(), out_dir, context);
+    return;
+  }
   const auto tokens = view.strs.find("tokenizer.ggml.tokens");
   const auto merges = view.strs.find("tokenizer.ggml.merges");
   if (tokens == view.strs.end() || merges == view.strs.end()) throw std::runtime_error("tokenizer");
@@ -2454,7 +2630,7 @@ void convert_from_public(const std::filesystem::path& gguf_path, const std::file
   const int eos = static_cast<int>(optional_u32_key(view, "tokenizer.ggml.eos_token_id",
                                                    tokens->second.empty() ? 0 : static_cast<uint32_t>(tokens->second.size() - 1)));
   const BpePairs bpe = convert_gpt2_bpe(tokens->second, merges->second, pad, bos, eos);
-  Model model = public_to_nnllm(view, mapped.data(), mapped.size(), bpe, context);
+  Model model = public_to_nnllm(view, mapped.data(), mapped.size(), &bpe, context, -1);
   std::filesystem::create_directories(out_dir);
   write_bpe_file(out_dir / "tokenizer.bpe", bpe);
   const std::vector<int32_t> ids = encode_lpb1(bpe, "User: hello\nAssistant: hello\n", true);
@@ -3148,6 +3324,114 @@ int self_test() {
   ffn_bias.data.assign(8, 1.f);
   with_ffn.push_back(std::move(ffn_bias));
   reject_bias_file(std::move(with_ffn), "ffn");
+
+  {
+    const std::string nacute = "\xC5\x84";
+    const std::vector<std::string> pieces = {"!", "a", "b", "ab", "[PAD]", "<|im_start|>", "<|im_end|>",
+                                             "<|endoftext|>"};
+    for (const std::string& piece : pieces) {
+      if (piece == nacute) throw std::runtime_error("self-test qwen ids piece");
+    }
+    const int kept_n = static_cast<int>(pieces.size());
+    const int kept_d = split.d_model;
+    std::vector<Tensor> kept_tensors = public_tensors;
+    auto paint = [&](const char* name) {
+      bool found = false;
+      for (Tensor& tensor : kept_tensors) {
+        if (tensor.name != name) continue;
+        tensor.shape = {kept_n, kept_d};
+        tensor.data.assign(static_cast<size_t>(kept_n) * static_cast<size_t>(kept_d), 0.f);
+        for (int row = 0; row < kept_n; ++row) {
+          tensor.data[static_cast<size_t>(row) * static_cast<size_t>(kept_d)] = 1000.f + static_cast<float>(row);
+        }
+        found = true;
+      }
+      if (!found) throw std::runtime_error(std::string("self-test qwen ids ") + name);
+    };
+    paint("token_embd.weight");
+    paint("output.weight");
+    Kv kept;
+    const std::string kept_prefix = "qwen2.";
+    kept.str("general.architecture", "qwen2");
+    kept.str("general.name", kArchitecture);
+    kept.u32("general.alignment", kDefaultAlign);
+    kept.u32("general.file_type", 0);
+    kept.str("tokenizer.ggml.model", "gpt2");
+    kept.str("tokenizer.ggml.pre", "qwen2");
+    kept.boolean("tokenizer.ggml.add_bos_token", false);
+    kept.boolean("tokenizer.ggml.add_eos_token", false);
+    kept.u32("tokenizer.ggml.bos_token_id", 7);
+    kept.u32("tokenizer.ggml.eos_token_id", 6);
+    kept.u32("tokenizer.ggml.padding_token_id", 4);
+    kept.strs("tokenizer.ggml.tokens", pieces);
+    kept.strs("tokenizer.ggml.merges", {"a b"});
+    kept.i32s("tokenizer.ggml.token_type", {6, 1, 1, 1, 5, 3, 3, 3});
+    kept.u32(kept_prefix + "vocab_size", static_cast<uint32_t>(kept_n));
+    kept.u32(kept_prefix + "context_length", static_cast<uint32_t>(split.max_seq));
+    kept.u32(kept_prefix + "embedding_length", static_cast<uint32_t>(split.d_model));
+    kept.u32(kept_prefix + "block_count", static_cast<uint32_t>(split.layers));
+    kept.u32(kept_prefix + "feed_forward_length", static_cast<uint32_t>(split.d_ff));
+    kept.u32(kept_prefix + "attention.head_count", static_cast<uint32_t>(split.heads));
+    kept.u32(kept_prefix + "attention.head_count_kv", static_cast<uint32_t>(split_kv));
+    kept.u32(kept_prefix + "attention.key_length", static_cast<uint32_t>(split_dh));
+    kept.u32(kept_prefix + "attention.value_length", static_cast<uint32_t>(split_dh));
+    kept.f32(kept_prefix + "attention.layer_norm_rms_epsilon", split.rms_eps);
+    kept.f32(kept_prefix + "rope.freq_base", split.rope_theta);
+    kept.u32(kept_prefix + "rope.dimension_count", static_cast<uint32_t>(split_dh));
+    const auto kept_path = dir / "qwen2-ids.gguf";
+    write_gguf_container(kept_path, kept_tensors, kept, false);
+    const auto kept_dir = dir / "qwen2-ids-out";
+    convert_from_public(kept_path, kept_dir, 16);
+    {
+      Reader ver(read_file(kept_dir / "model.bin"));
+      if (ver.u32() != kCheckpointMagic || ver.u32() != 7u) throw std::runtime_error("self-test qwen ids version");
+    }
+    const Model kept_model = read_checkpoint(kept_dir / "model.bin");
+    if (kept_model.config.vocab != kept_n) throw std::runtime_error("self-test qwen ids vocab");
+    bool saw_row = false;
+    for (const Tensor& tensor : kept_model.tensors) {
+      if (tensor.name != "tok_emb.weight") continue;
+      if (tensor.shape != std::vector<int>{kept_n, kept_d} || tensor.data.size() < static_cast<size_t>(kept_d + 1) ||
+          tensor.data[0] != 1000.f || tensor.data[static_cast<size_t>(kept_d)] != 1001.f) {
+        throw std::runtime_error("self-test qwen ids row");
+      }
+      saw_row = true;
+    }
+    if (!saw_row) throw std::runtime_error("self-test qwen ids row");
+    if (std::filesystem::exists(kept_dir / "tokenizer.bpe") || std::filesystem::exists(kept_dir / "tokens.bin") ||
+        std::filesystem::exists(kept_dir / "tokens.meta")) {
+      throw std::runtime_error("self-test qwen ids files");
+    }
+    const std::vector<uint8_t> tok_bytes = read_file(kept_dir / "tokenizer.json");
+    const std::string tok_text(tok_bytes.begin(), tok_bytes.end());
+    if (tok_text.find(json_escape(kQwenRegex)) == std::string::npos || tok_text.find("<|im_start|>") == std::string::npos ||
+        tok_text.find("<|im_end|>") == std::string::npos || tok_text.find("<|endoftext|>") == std::string::npos ||
+        tok_text.find(json_escape(kQwen35Regex)) != std::string::npos) {
+      throw std::runtime_error("self-test qwen ids tokenizer");
+    }
+    const std::vector<uint8_t> gen_bytes = read_file(kept_dir / "generation_config.json");
+    const std::string gen_text(gen_bytes.begin(), gen_bytes.end());
+    if (gen_text.find("\"eos_token_id\":6") == std::string::npos) throw std::runtime_error("self-test qwen ids eos");
+  }
+
+  {
+    Kv hybrid;
+    hybrid.str("general.architecture", "qwen35");
+    hybrid.u32("general.alignment", kDefaultAlign);
+    Tensor ssm;
+    ssm.name = "blk.0.ssm_conv1d.weight";
+    ssm.shape = {1};
+    ssm.data = {1.f};
+    const auto hybrid_path = dir / "qwen35.gguf";
+    write_gguf_container(hybrid_path, {ssm}, hybrid, false);
+    bool hybrid_arch = false;
+    try {
+      convert_from_public(hybrid_path, dir / "qwen35-out", 16);
+    } catch (const std::runtime_error& error) {
+      hybrid_arch = std::string(error.what()) == "architecture";
+    }
+    if (!hybrid_arch) throw std::runtime_error("self-test qwen35 architecture");
+  }
 
   std::vector<float> q8_src(32);
   for (int i = 0; i < 32; ++i) q8_src[static_cast<size_t>(i)] = static_cast<float>(i - 8) * 0.25f;

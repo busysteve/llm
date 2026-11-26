@@ -30,7 +30,7 @@ class HfTokenizer : public Tokenizer {
   void save(const std::filesystem::path& path) const override;
 
  private:
-  enum class Pretok { Gpt2, Llama3, Qwen };
+  enum class Pretok { Gpt2, Llama3, Qwen, Qwen35 };
 
   struct Added {
     std::string content;
