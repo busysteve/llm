@@ -50,6 +50,7 @@ graph TD
 | Header | Source | Owns |
 |---|---|---|
 | `include/llm/tokenizer.hpp` | `Tokenizer::load` is implemented in `src/bpe.cpp` | The abstract tokenizer and `EncodeOptions` |
+| `include/llm/chat_template.hpp` | inline in the header | `ChatWrap` and the dialogue, plain, and ChatML prompt helpers |
 | `include/llm/bpe.hpp` | `src/bpe.cpp` | Byte-level BPE, merges, and the `LPB1` file |
 | `include/llm/hf_tokenizer.hpp` | `src/hf_tokenizer.cpp` | Hugging Face `tokenizer.json` byte-level BPE |
 | `include/llm/data.hpp` | `src/data.cpp` | `tokens.bin`, `tokens.meta`, and next-token batches |
@@ -119,13 +120,13 @@ The examples are separate executables. They link `llm`. They are not part of `li
 
 | Target | Source | Role |
 |---|---|---|
-| `llm_tests` | `tests/test_bpe.cpp`, `test_data.cpp`, `test_train.cpp`, `test_rl.cpp` | Tokenizer, dataset, presets, trainer, generator, policy gradient |
+| `llm_tests` | `tests/test_bpe.cpp`, `test_hf_tokenizer.cpp`, `test_data.cpp`, `test_train.cpp`, `test_rl.cpp` | Tokenizer, Hugging Face tokenizer, ChatML wrap, dataset, presets, trainer, generator, policy gradient |
 | `train_tiny` | `examples/train_tiny.cpp` | Acceptance train of `presets::tiny` |
 | `train_bench` | `examples/train_bench.cpp` | Time eight steps of `presets::tiny` |
 | `train_chat` | `examples/train_chat.cpp` | Train `tiny` and `bert_tiny` on one dialogue tokenizer |
 | `train_bert_chat` | `examples/train_bert_chat.cpp` | Train `bert_tiny` and print one reply |
 | `train_data` | `examples/train_data.cpp` | Train a preset from files, a directory, or stdin |
-| `chat` | `examples/chat.cpp` | Continue a transcript or a plain prompt |
+| `chat` | `examples/chat.cpp` | Continue a transcript, a plain prompt, or a ChatML prompt |
 | `finetune` | `examples/finetune.cpp` | Keep training a checkpoint on a new file list |
 | `reinforce` | `examples/reinforce.cpp` | Update a causal checkpoint from a string reward |
 | `gguf` | `examples/gguf.cpp` | Convert `model.bin` and GGUF files |

@@ -25,7 +25,7 @@ Head dim is 64. KV heads match the query heads. GELU's first linear writes `d_ff
 ## Usage
 
 ```bash
-./build.sh amd       # or: ./build.sh opencl, ./build.sh cuda, ./build.sh arc
+./build.sh amd       # or: ./build.sh opencl, ./build.sh cuda, ./build.sh arc, ./build.sh agx
 cmake --build build -j --target train_data
 
 ./build/train_data --files books.txt --out run \
@@ -33,7 +33,7 @@ cmake --build build -j --target train_data
   --prompt "The morning after"
 ```
 
-`--preset` is `gpt3-tiny`, `gpt3-small`, `gpt3-base`, `gpt3-base-medium`, `gpt3-base-large`, `gpt3-medium`, or `gpt3-large`. `--seq-len` must be at most 2048. `--vocab` must be at least 259. Attention memory grows with the length. The longer position table is cheap beside that. On a 12 GB GPU prefer `--seq-len` 512 or below for `gpt3-base`. `gpt3-base-medium` is 18 layers at the base width, and `gpt3-base-large` is 20 layers at the base width. `gpt3-medium` is 24 layers at width 1024, and `gpt3-large` is 36 layers at width 1280. `gpt3-base-medium`, `gpt3-base-large`, `gpt3-medium`, and `gpt3-large` are past these notes. `gpt3-tiny` is the width that can spend the extra context on a 12 GB card. The notes are one GPU, full attention, and no activation checkpointing. They were sized for float32 activations. Training stores retained activations as bfloat16 and keeps parameters, Adam state, and checkpoints in float32, so the activation working set is about half of these notes.
+`--preset` is `gpt3-tiny`, `gpt3-small`, `gpt3-base`, `gpt3-base-medium`, `gpt3-base-large`, `gpt3-medium`, or `gpt3-large`. `--seq-len` must be at most 2048. `--vocab` must be at least 259. Attention memory grows with the length. The longer position table is cheap beside that. On a 12 GB GPU prefer `--seq-len` 512 or below for `gpt3-base`. `gpt3-base-medium` is 18 layers at the base width, and `gpt3-base-large` is 20 layers at the base width. `gpt3-medium` is 24 layers at width 1024, and `gpt3-large` is 36 layers at width 1280. `gpt3-base-medium`, `gpt3-base-large`, `gpt3-medium`, and `gpt3-large` are past these notes. `gpt3-tiny` is the width that can spend the extra context on a 12 GB card. The notes are one GPU, full attention, and no activation checkpointing. They were sized for float32 activations. On nnCUDA, nnCL, and nnROCm, training stores retained activations as bfloat16 and keeps parameters, Adam state, and checkpoints in float32, so the activation working set is about half of these notes. nnArc keeps activations in float32.
 
 The run prints a continuation. `chat` uses the 2048-token window and drops the oldest `User:` / `Assistant:` turn until the prompt plus `--max-new-tokens` fits. `finetune` keeps training on a new file list. Its `--seq-len` must also stay at or below 2048.
 

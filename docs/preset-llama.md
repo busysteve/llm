@@ -23,7 +23,7 @@ SwiGLU's first linear writes `2 * d_ff`. Dropout is 0. Embeddings are untied. Bi
 ## Usage
 
 ```bash
-./build.sh amd       # or: ./build.sh opencl, ./build.sh cuda, ./build.sh arc
+./build.sh amd       # or: ./build.sh opencl, ./build.sh cuda, ./build.sh arc, ./build.sh agx
 cmake --build build -j --target train_data
 
 ./build/train_data --files books.txt --out run \
@@ -31,7 +31,7 @@ cmake --build build -j --target train_data
   --prompt "The morning after"
 ```
 
-`--preset` is `llama-tiny`, `llama-small`, `llama-base`, `llama-base-medium`, `llama-base-large`, `llama-medium`, or `llama-large`. `--seq-len` must be at most 1024. `--vocab` must be at least 259. Memory follows the matching default width: `llama-tiny` fits in 12 GB, `llama-small` prefers 24 GB at `(4, 512)`, and `llama-base` is a 24 GB target. On a 12 GB GPU keep the base width at `--seq-len` 512 or below. `llama-base-medium` is 18 layers at the base width, and `llama-base-large` is 20 layers at the base width. `llama-medium` is 24 layers at width 1024, and `llama-large` is 36 layers at width 1280. `llama-base-medium`, `llama-base-large`, `llama-medium`, and `llama-large` are past these notes. The notes are one GPU, full attention, and no activation checkpointing. They were sized for float32 activations. Training stores retained activations as bfloat16 and keeps parameters, Adam state, and checkpoints in float32, so the activation working set is about half of these notes.
+`--preset` is `llama-tiny`, `llama-small`, `llama-base`, `llama-base-medium`, `llama-base-large`, `llama-medium`, or `llama-large`. `--seq-len` must be at most 1024. `--vocab` must be at least 259. Memory follows the matching default width: `llama-tiny` fits in 12 GB, `llama-small` prefers 24 GB at `(4, 512)`, and `llama-base` is a 24 GB target. On a 12 GB GPU keep the base width at `--seq-len` 512 or below. `llama-base-medium` is 18 layers at the base width, and `llama-base-large` is 20 layers at the base width. `llama-medium` is 24 layers at width 1024, and `llama-large` is 36 layers at width 1280. `llama-base-medium`, `llama-base-large`, `llama-medium`, and `llama-large` are past these notes. The notes are one GPU, full attention, and no activation checkpointing. They were sized for float32 activations. On nnCUDA, nnCL, and nnROCm, training stores retained activations as bfloat16 and keeps parameters, Adam state, and checkpoints in float32, so the activation working set is about half of these notes. nnArc keeps activations in float32.
 
 The run prints a continuation. `chat` loads the directory and continues a `User:` / `Assistant:` transcript inside the 1024-token window. `finetune` keeps training on a new file list.
 

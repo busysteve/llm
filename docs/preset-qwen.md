@@ -23,7 +23,7 @@ Q is `num_heads * 128` wide, so the query projection is twice `d_model`. K and V
 ## Usage
 
 ```bash
-./build.sh amd       # or: ./build.sh opencl, ./build.sh cuda, ./build.sh arc
+./build.sh amd       # or: ./build.sh opencl, ./build.sh cuda, ./build.sh arc, ./build.sh agx
 cmake --build build -j --target train_data
 
 ./build/train_data --files books.txt --out run \
@@ -31,7 +31,7 @@ cmake --build build -j --target train_data
   --prompt "The morning after"
 ```
 
-`--preset` is `qwen-tiny`, `qwen-small`, `qwen-base`, `qwen-base-medium`, `qwen-base-large`, `qwen-medium`, or `qwen-large`. `--seq-len` must be at most 1024. `--vocab` must be at least 259. The extra parameters versus `llama-*` are the wider Q projection and the QK-norm weights. Treat memory as the matching default width, and give `qwen-base` 24 GB. On a 12 GB GPU keep that width at `--seq-len` 512 or below. `qwen-base-medium` is 18 layers at the base width with 4 KV heads, and `qwen-base-large` is 20 layers at the base width with 4 KV heads. `qwen-medium` is 24 layers at width 1024 with 4 KV heads, and `qwen-large` is 36 layers at width 1280 with 5 KV heads. `qwen-base-medium`, `qwen-base-large`, `qwen-medium`, and `qwen-large` are past these notes. The notes are one GPU, full attention, and no activation checkpointing. They were sized for float32 activations. Training stores retained activations as bfloat16 and keeps parameters, Adam state, and checkpoints in float32, so the activation working set is about half of these notes.
+`--preset` is `qwen-tiny`, `qwen-small`, `qwen-base`, `qwen-base-medium`, `qwen-base-large`, `qwen-medium`, or `qwen-large`. `--seq-len` must be at most 1024. `--vocab` must be at least 259. The extra parameters versus `llama-*` are the wider Q projection and the QK-norm weights. Treat memory as the matching default width, and give `qwen-base` 24 GB. On a 12 GB GPU keep that width at `--seq-len` 512 or below. `qwen-base-medium` is 18 layers at the base width with 4 KV heads, and `qwen-base-large` is 20 layers at the base width with 4 KV heads. `qwen-medium` is 24 layers at width 1024 with 4 KV heads, and `qwen-large` is 36 layers at width 1280 with 5 KV heads. `qwen-base-medium`, `qwen-base-large`, `qwen-medium`, and `qwen-large` are past these notes. The notes are one GPU, full attention, and no activation checkpointing. They were sized for float32 activations. On nnCUDA, nnCL, and nnROCm, training stores retained activations as bfloat16 and keeps parameters, Adam state, and checkpoints in float32, so the activation working set is about half of these notes. nnArc keeps activations in float32.
 
 The run prints a continuation. `chat` continues a transcript inside the 1024-token window. `finetune` keeps training on a new file list.
 

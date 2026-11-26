@@ -21,7 +21,7 @@ Head dim is 64. KV heads match the query heads. SwiGLU's first linear writes `2 
 ## Usage
 
 ```bash
-./build.sh amd       # or: ./build.sh opencl, ./build.sh cuda, ./build.sh arc
+./build.sh amd       # or: ./build.sh opencl, ./build.sh cuda, ./build.sh arc, ./build.sh agx
 cmake --build build -j --target train_data
 
 ./build/train_data --files books.txt --out run \
@@ -29,7 +29,7 @@ cmake --build build -j --target train_data
   --prompt "The morning after"
 ```
 
-`--preset` is `tiny`, `small`, `base`, `base-medium`, `base-large`, `medium`, or `large`. `--seq-len` must be at most 1024. `--vocab` must be at least 259. The notes below are one GPU, full attention, and no activation checkpointing. They were sized for float32 activations. Training stores retained activations as bfloat16 and keeps parameters, Adam state, and checkpoints in float32, so the activation working set is about half of these notes.
+`--preset` is `tiny`, `small`, `base`, `base-medium`, `base-large`, `medium`, or `large`. `--seq-len` must be at most 1024. `--vocab` must be at least 259. The notes below are one GPU, full attention, and no activation checkpointing. They were sized for float32 activations. On nnCUDA, nnCL, and nnROCm, training stores retained activations as bfloat16 and keeps parameters, Adam state, and checkpoints in float32, so the activation working set is about half of these notes. nnArc keeps activations in float32.
 
 `tiny` fits in 12 GB. Suggested batches are `(8, 512)` and `(16, 256)`. `small` is tight in 12 GB at `(4, 512)`; 24 GB is comfortable. `base` is a 24 GB target. On a 12 GB GPU keep `base` at `--seq-len` 512 or below. `base-medium` is 18 layers at the base width, and `base-large` is 20 layers at the base width. `medium` is 24 layers at width 1024, and `large` is 36 layers at width 1280. `base-medium`, `base-large`, `medium`, and `large` are past these notes.
 

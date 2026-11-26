@@ -3,7 +3,7 @@
 `hf` reads a Hugging Face model directory and writes a transformer `model.bin`. The source is [`hf.cpp`](hf.cpp). It does not link `llm` or a device backend. Configuring the tree still selects `nn`, the same way as the other targets.
 
 ```bash
-./build.sh cuda       # or opencl, amd, arc
+./build.sh cuda       # or opencl, amd, arc, agx
 cmake --build build -j --target hf
 ./build/hf import snapshot out
 ./build/hf import snapshot out --context 2048

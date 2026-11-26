@@ -5,7 +5,7 @@
 Build from the repository root. Requirements are in the [README](../README.md).
 
 ```bash
-./build.sh amd       # or: ./build.sh opencl, ./build.sh cuda, ./build.sh arc
+./build.sh amd       # or: ./build.sh opencl, ./build.sh cuda, ./build.sh arc, ./build.sh agx
 cmake --build build -j --target train_data
 ```
 
@@ -106,7 +106,7 @@ The pad id is the mask. `encode` does not insert it. About 15% of positions are 
 | `tokenizer.bpe` | byte-level BPE, magic `LPB1` |
 | `tokens.bin` | token ids, int32 little-endian |
 | `tokens.meta` | vocab size and length for `TextDataset` |
-| `model.bin` | version-2 façade checkpoint, version 4 for a `qwen-*` preset, or version 6 for a `bert-*` preset, including AdamW moments |
+| `model.bin` | version-2 façade checkpoint, version 4 for a `qwen-*` preset, version 6 for a `bert-*` preset, or version 8 for a projection-bias block, including AdamW moments |
 
 `--tokenize-only` writes the first three files and does not write `model.bin`. An existing `model.bin` is left in place.
 

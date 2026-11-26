@@ -14,7 +14,7 @@ Terms, acronyms, and processes for the models in this repository, the neural net
 
 ### Activation
 
-The number a layer writes for each position. Inside a block that is the residual stream of width [d_model](#d_model). At the end of the network the activation is the [logits](#logits). Retained activations use the context's [dtype](#dtype). The default is [bfloat16](#bfloat16).
+The number a layer writes for each position. Inside a block that is the residual stream of width [d_model](#d_model). At the end of the network the activation is the [logits](#logits). On nnCUDA, nnCL, and nnROCm, retained activations use the context's [dtype](#dtype). The default there is [bfloat16](#bfloat16). nnArc keeps activations in [float32](#float32).
 
 ### Activation checkpointing
 
@@ -60,7 +60,7 @@ An encoder with [bidirectional attention](#bidirectional-attention). The `bert-*
 
 ### BFloat16
 
-A 16-bit floating type with the exponent range of [float32](#float32) and a shorter fraction. `DType::BFloat16` is the default storage for retained [activations](#activation). `Tensor::to_host` widens it to float32. Parameters, Adam moments, and checkpoints stay float32.
+A 16-bit floating type with the exponent range of [float32](#float32) and a shorter fraction. On nnCUDA, nnCL, and nnROCm, `DType::BFloat16` is the default storage for retained [activations](#activation). `Tensor::to_host` widens it to float32. Parameters, Adam moments, and checkpoints stay float32. nnArc has no `DType` and keeps activations in float32.
 
 ### Bias
 
@@ -88,9 +88,13 @@ The base symbol of the tokenizer. Ids `0..255` are the raw bytes. A UTF-8 sequen
 
 A position may attend only to itself and to earlier positions. `TransformerConfig::causal` defaults to true. [Prefill](#prefill) and [decode_step](#decode_step) require a causal model that is in [eval mode](#eval-mode). [RlTrainer](#reinforcement-learning-step) rejects a non-causal policy.
 
+### Chat template
+
+`ChatWrap` in `llm/chat_template.hpp`. `Dialogue` is `User:` / `Assistant:`. `Plain` is the line alone. `Qwen` is ChatML (`<|im_start|>user` / `<|im_start|>assistant`). `chat` selects it with `--template qwen` or `--plain`. Those two flags together throw `template`. The helpers are `chat_prompt_suffix`, `chat_completed_turn`, `chat_cut_reply`, and `chat_shown_reply`.
+
 ### Checkpoint
 
-`model.bin`, written by `Transformer::save`. A file whose Q, K, V, attention-output, MLP, or [LM head](#lm-head) bias differs from that single bias flag is version 7, or version 8 with [AdamW](#adamw) moments. An imported Qwen2 file sets the bias on Q, K, and V only. Otherwise a bidirectional block, or a block with a [segment embedding](#segment-embedding) table, is version 5, or version 6 when moments are stored. Otherwise a wide [head](#head), grouped KV heads, [QK-norm](#qk-norm), a [RoPE](#rope) base other than 10000, or an [RMSNorm](#rmsnorm) epsilon other than `1e-5` is version 3, or version 4 with moments. Every other block is version 1, or version 2 with moments. The default, llama, GPT-2, and GPT-3 presets take version 2. Qwen takes version 4. BERT takes version 6. The file holds the token table, the position table when the block has one, the block weights, and the [LM head](#lm-head). `LoadMode::Resume` restores the moments. `LoadMode::Inference` loads weights for generation.
+`model.bin`, written by `Transformer::save`. A projection-bias block is version 7, or version 8 with [AdamW](#adamw) moments. That shape is a Q, K, V, attention-output, MLP, or [LM head](#lm-head) bias that differs from the single bias flag, or `gelu_tanh`, a nonzero `rope_dims`, `sliding_window`, or `rope_scaling`, `post_norm`, `embed_norm`, `final_norm` left off, or `mlm_head`. An imported Qwen2 file sets the bias on Q, K, and V only. Otherwise a bidirectional block, or a block with a [segment embedding](#segment-embedding) table, is version 5, or version 6 when moments are stored. Otherwise a wide [head](#head), grouped KV heads, [QK-norm](#qk-norm), a [RoPE](#rope) base other than 10000, or an [RMSNorm](#rmsnorm) epsilon other than `1e-5` is version 3, or version 4 with moments. Every other block is version 1, or version 2 with moments. The default, llama, GPT-2, and GPT-3 presets take version 2. Qwen takes version 4. BERT takes version 6. The file holds the token table, the position table when the block has one, the block weights, and the [LM head](#lm-head). `LoadMode::Resume` restores the moments. `LoadMode::Inference` loads weights for generation.
 
 ### Completion
 
@@ -168,7 +172,7 @@ A layer that, in [train mode](#train-mode), sets activations to zero with probab
 
 ### DType
 
-`nn::DType`. `Float32` is the storage of [parameters](#parameter), gradients, Adam moments, and checkpoints. `BFloat16` is the default storage of retained [activations](#activation). `Context::set_activation_dtype` accepts those two and throws `dtype` otherwise. Call it before creating tensors or layers.
+`nn::DType` on nnCUDA, nnCL, and nnROCm. `Float32` is the storage of [parameters](#parameter), gradients, Adam moments, and checkpoints. `BFloat16` is the default storage of retained [activations](#activation). `Context::set_activation_dtype` accepts those two and throws `dtype` otherwise. Call it before creating tensors or layers. nnArc has no `DType`. Its activations stay float32.
 
 ## E
 
@@ -246,7 +250,7 @@ The graphics processor that runs the network. One [context](#context-device) use
 
 ### GPU memory
 
-The storage on one [device](#device). A tensor allocated on one GPU is not in the memory of another. Training holds float32 [parameters](#parameter), float32 gradients, two float32 Adam moment buffers, and [bfloat16](#bfloat16) retained activations. The README's fit notes were sized for float32 activations, so the activation working set is about half of those notes.
+The storage on one [device](#device). A tensor allocated on one GPU is not in the memory of another. Training holds float32 [parameters](#parameter), float32 gradients, and two float32 Adam moment buffers. nnCUDA, nnCL, and nnROCm also hold [bfloat16](#bfloat16) retained activations, so the activation working set is about half of the README's float32 fit notes. nnArc keeps those activations in float32.
 
 ### Gradient
 

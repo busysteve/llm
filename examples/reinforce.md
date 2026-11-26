@@ -7,7 +7,7 @@ A bidirectional checkpoint, including `bert-*`, is rejected. The library call is
 Build from the repository root. Requirements are in the [README](../README.md).
 
 ```bash
-./build.sh amd       # or: ./build.sh opencl, ./build.sh cuda, ./build.sh arc
+./build.sh amd       # or: ./build.sh opencl, ./build.sh cuda, ./build.sh arc, ./build.sh agx
 cmake --build build -j --target reinforce
 ```
 
@@ -38,4 +38,6 @@ The default peak learning rate is `1e-5`. Warmup defaults to 0. The cosine floor
 
 `--kl 0` trains the policy alone. A positive `--kl` loads a second copy of `--from` and adds that coefficient times the full-vocabulary KL. That copy is not trained.
 
-The run builds a fresh AdamW. Weight decay defaults to `0.1`. The checkpoint's old moments are not kept.
+The run builds a fresh AdamW. Weight decay defaults to `0.1` (`--wd`). The checkpoint's old moments are not kept.
+
+`--batch-prompts` is how many prompts share one update. The default is 1. `--max-new` is the completion length. The default is 64. `--log-every` prints a line every N steps. The default is 1. `--temperature` defaults to 1, and 0 is greedy. `--top-k` defaults to 0, which leaves the distribution uncut. `--top-p` defaults to 1. `--seed` defaults to 1. `--help` prints the flags.
