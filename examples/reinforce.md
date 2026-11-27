@@ -1,6 +1,6 @@
 # How to update a model from a reward
 
-`reinforce` is the reinforcement-learning example in [`reinforce.cpp`](reinforce.cpp). It loads `tokenizer.bpe` and `model.bin` from a directory written by [`train_data`](train_data.md) or [`finetune`](finetune.md), samples completions for a prompt list, and keeps training a causal checkpoint. The reward is 1 when a completion contains a string you choose, and 0 otherwise. It writes a new directory. It is a separate program from `llm_tests`.
+`reinforce` is the reinforcement-learning example in [`reinforce.cpp`](reinforce.cpp). It loads `model.bin` and its tokenizer from [`train_data`](train_data.md), [`hf import`](hf.md), or [`finetune`](finetune.md), samples completions for a prompt list, and keeps training a causal checkpoint. The reward is 1 when a completion contains a string you choose, and 0 otherwise. It writes a new directory. It is a separate program from `llm_tests`.
 
 A bidirectional checkpoint, including `bert-*`, is rejected. The library call is `RlTrainer`. The string reward is only this program. A caller of `RlTrainer` passes its own reward function.
 
@@ -10,6 +10,8 @@ Build from the repository root. Requirements are in the [README](../README.md).
 ./build.sh amd       # or: ./build.sh opencl, ./build.sh cuda, ./build.sh arc, ./build.sh agx
 cmake --build build -j --target reinforce
 ```
+
+Imported Qwen models keep their token IDs, stop tokens, and chat-template files. Logit rows without tokenizer entries are excluded from sampling and from the policy and reference distributions.
 
 ## Prompts
 
@@ -25,7 +27,7 @@ Use text you have the rights to train on.
 
 ## Run
 
-`--from` is read only. `--out` has to be a different directory. The new directory receives `tokenizer.bpe` and `model.bin`, so [`chat`](chat.md) can load `--out`.
+`--from` is read only. `--out` has to be a different directory. The new directory receives the tokenizer files and `model.bin`, so [`chat`](chat.md) can load `--out`.
 
 ```bash
 ./build/reinforce --from run --prompts prompts.txt --contains "red" --out run-rl \

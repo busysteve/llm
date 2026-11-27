@@ -61,14 +61,18 @@ endif()
 
 set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
+find_package(ICU REQUIRED COMPONENTS uc)
 
-add_library(llm STATIC src/bpe.cpp src/hf_tokenizer.cpp src/data.cpp src/presets.cpp src/train.cpp src/generate.cpp src/rl.cpp)
-target_link_libraries(llm PUBLIC nn Threads::Threads)
+add_library(llm STATIC src/tokenizer.cpp src/bpe.cpp src/hf_tokenizer.cpp src/data.cpp src/presets.cpp src/train.cpp src/generate.cpp src/rl.cpp)
+target_link_libraries(llm PUBLIC nn Threads::Threads PRIVATE ICU::uc)
 target_include_directories(llm PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
-add_executable(llm_tests tests/test_bpe.cpp tests/test_hf_tokenizer.cpp tests/test_data.cpp tests/test_train.cpp tests/test_rl.cpp)
+add_executable(llm_tests tests/test_bpe.cpp tests/test_hf_tokenizer.cpp tests/hf_probe.cpp tests/test_data.cpp tests/test_train.cpp tests/test_rl.cpp)
 target_link_libraries(llm_tests PRIVATE llm)
 target_compile_definitions(llm_tests PRIVATE LLM_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+if(NOT NN_IS_ARC AND NOT NN_IS_AGX)
+  target_compile_definitions(llm_tests PRIVATE LLM_NN_ACTIVATION_DTYPE)
+endif()
 # CUDA IndexTensor is read with cudaMemcpy. OpenCL, ROCm, Arc, and AGX use IndexTensor::to_host().
 if(NOT NN_IS_OPENCL AND NOT NN_IS_ROCM AND NOT NN_IS_ARC AND NOT NN_IS_AGX)
   target_compile_definitions(llm_tests PRIVATE LLM_NN_CUDA)

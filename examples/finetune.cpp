@@ -48,7 +48,7 @@ void usage() {
   std::fputs(
       "usage: finetune --from DIR --files LIST --out DIR [options]\n"
       "\n"
-      "DIR is a train_data or finetune directory with tokenizer.bpe and model.bin.\n"
+      "DIR contains model.bin and tokenizer.bpe or tokenizer.json.\n"
       "LIST is one text path per line. Blank lines and lines starting with # are\n"
       "ignored. A relative path is resolved from the directory that contains LIST.\n"
       "\n"
@@ -210,9 +210,8 @@ std::string opening_of(const std::string& book) {
 int main(int argc, char** argv) {
   try {
     const Options opt = parse(argc, argv);
-    const std::filesystem::path tok_path = opt.from / "tokenizer.bpe";
     const std::filesystem::path from_model = opt.from / "model.bin";
-    if (!std::filesystem::is_regular_file(tok_path) || !std::filesystem::is_regular_file(from_model)) {
+    if (!std::filesystem::is_regular_file(from_model)) {
       throw std::runtime_error("from");
     }
     std::filesystem::create_directories(opt.out);
@@ -221,7 +220,7 @@ int main(int argc, char** argv) {
     }
 
     const std::vector<std::filesystem::path> paths = read_list(opt.files);
-    const std::unique_ptr<llm::Tokenizer> tok = llm::Tokenizer::load(tok_path);
+    const std::unique_ptr<llm::Tokenizer> tok = llm::Tokenizer::load_directory(opt.from);
     std::vector<std::string> books;
     books.reserve(paths.size());
     int64_t bytes = 0;
@@ -232,6 +231,7 @@ int main(int argc, char** argv) {
     }
     const std::string prompt = opt.prompt.empty() ? opening_of(books.front()) : opt.prompt;
 
+    if (tok->eos_id() < 0) throw std::runtime_error("eos_id");
     llm::EncodeOptions encode_opt;
     encode_opt.add_bos = tok->add_bos_default();
     encode_opt.add_eos = true;
@@ -248,24 +248,18 @@ int main(int argc, char** argv) {
       throw std::runtime_error("short corpus");
     }
 
-    const std::filesystem::path out_tok = opt.out / "tokenizer.bpe";
     const std::filesystem::path model_path = opt.out / "model.bin";
     const std::filesystem::path bin_path = opt.out / "tokens.bin";
     const std::filesystem::path meta_path = opt.out / "tokens.meta";
-    llm::write_token_file(bin_path, meta_path, ids, static_cast<int32_t>(tok->vocab_size()));
-    ids.clear();
-    ids.shrink_to_fit();
-    tok->save(out_tok);
 
     bool encoder = false;
     {
-      llm::TextDataset data(bin_path, meta_path, tok->eos_id());
       nn::Context ctx;
       nn::Transformer::Loaded loaded = nn::Transformer::load(
           ctx, from_model, opt.resume ? nn::LoadMode::Resume : nn::LoadMode::Inference);
       const nn::TransformerConfig& config =
           std::get<nn::TransformerConfig>(loaded.model.network().config());
-      if (tok->vocab_size() != config.vocab_size) throw std::runtime_error("vocab_size");
+      tok->unavailable_ids(config.vocab_size);
       if (opt.seq_len > config.max_seq_len) throw std::runtime_error("seq_len");
       encoder = !config.causal;
       std::fprintf(stderr, "loaded vocab=%d max_seq_len=%d layers=%d d_model=%d\n",
@@ -283,6 +277,12 @@ int main(int argc, char** argv) {
         optimizer = &*fresh;
         std::fprintf(stderr, "fresh AdamW\n");
       }
+
+      llm::Tokenizer::copy_directory(opt.from, opt.out);
+      llm::write_token_file(bin_path, meta_path, ids, config.vocab_size);
+      ids.clear();
+      ids.shrink_to_fit();
+      llm::TextDataset data(bin_path, meta_path, tok->eos_id());
 
       llm::TrainConfig cfg;
       cfg.learning_rate = opt.lr;
@@ -315,7 +315,7 @@ int main(int argc, char** argv) {
     }
 
     nn::Context ctx;
-    const std::unique_ptr<llm::Tokenizer> loaded_tok = llm::Tokenizer::load(out_tok);
+    const std::unique_ptr<llm::Tokenizer> loaded_tok = llm::Tokenizer::load_directory(opt.out);
     nn::Transformer::Loaded loaded =
         nn::Transformer::load(ctx, model_path, nn::LoadMode::Inference);
     llm::Generator generator(ctx, loaded.model, *loaded_tok);

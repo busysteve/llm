@@ -134,6 +134,12 @@ void run_hf_tokenizer_tests() {
   CHECK(llm::chat_shown_reply(" hi", llm::ChatWrap::Dialogue) == "hi");
   CHECK(llm::chat_completed_turn("hi", " ok", llm::ChatWrap::Dialogue) == "User: hi\nAssistant: ok\n");
   CHECK(llm::chat_prompt_suffix("hi", llm::ChatWrap::Dialogue) == "User: hi\nAssistant:");
+  CHECK(llm::chat_prompt({}, "hi", llm::ChatWrap::Qwen25).find("<|im_start|>system\n") == 0);
+  CHECK(llm::chat_prompt({{"hi", "<think>\nReasoning\n</think>\n\nAnswer"}}, "next",
+                         llm::ChatWrap::Qwen3, false) ==
+        "<|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\nAnswer<|im_end|>\n"
+        "<|im_start|>user\nnext<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n");
+
 
   const std::filesystem::path qwen_dir = std::filesystem::path(LLM_FIXTURE_DIR) / "hf" / "qwen";
   const std::unique_ptr<llm::HfTokenizer> qwen = llm::HfTokenizer::load(qwen_dir);
@@ -184,6 +190,36 @@ void run_hf_tokenizer_tests() {
   write_file(temp / "single" / "generation_config.json", "{\"eos_token_id\": 100}\n");
   const std::unique_ptr<llm::HfTokenizer> one = llm::HfTokenizer::load(temp / "single");
   CHECK((one->stop_ids() == std::vector<int32_t>{100}));
+  auto unavailable = one->unavailable_ids(104);
+  CHECK(unavailable.front() == 0 && unavailable.back() == 103);
+  check_invalid([&] { one->unavailable_ids(101); }, "vocab_size");
+  std::mt19937 rng(1);
+  llm::GenerateConfig greedy;
+  greedy.temperature = 0;
+  CHECK(llm::sample_token({100.f, 2.f, 1.f, 99.f}, greedy, rng, nullptr, 0, {0, 3}) == 1);
+  write_file(temp / "single" / "generation_config.json", R"({"eos_token_id":[100, 103]})");
+  const auto invalid_stop = llm::Tokenizer::load_directory(temp / "single");
+  check_invalid([&] { invalid_stop->unavailable_ids(104); }, "stop token id");
+
+  write_file(temp / "single" / "generation_config.json", R"({"eos_token_id":[100, 14]})");
+  write_file(temp / "single" / "chat_template.jinja", "{{ messages[0].content }}");
+  std::filesystem::create_directories(temp / "copy");
+  llm::Tokenizer::copy_directory(temp / "single", temp / "copy");
+  const auto copied = llm::Tokenizer::load_directory(temp / "copy");
+  CHECK((copied->stop_ids() == std::vector<int32_t>{100, 14}));
+  CHECK(std::filesystem::is_regular_file(temp / "copy" / "chat_template.jinja"));
+
+  std::ifstream source(qwen_dir / "tokenizer.json");
+  std::string nfc_json((std::istreambuf_iterator<char>(source)), std::istreambuf_iterator<char>());
+  const std::string no_normalizer = "\"normalizer\": null";
+  const size_t normalizer_pos = nfc_json.find(no_normalizer);
+  CHECK(normalizer_pos != std::string::npos);
+  nfc_json.replace(normalizer_pos, no_normalizer.size(), R"("normalizer": {"type":"NFC"})");
+  write_file(temp / "nfc" / "tokenizer.json", nfc_json);
+  const auto nfc = llm::Tokenizer::load_directory(temp / "nfc");
+  CHECK((nfc->encode(accent) == std::vector<int32_t>{8, 9}));
+  CHECK(nfc->decode(nfc->encode(accent)) == "\xC3\xA9");
+
 
   write_file(temp / "pairs" / "tokenizer.json",
              "{"

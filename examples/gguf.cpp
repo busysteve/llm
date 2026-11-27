@@ -1,3 +1,5 @@
+#include "json.hpp"
+
 #include <array>
 #include <cmath>
 #include <cstdint>
@@ -19,6 +21,9 @@
 #include <vector>
 
 namespace {
+
+using llm_example::Json;
+using llm_example::parse_json;
 
 constexpr uint32_t kCheckpointMagic = 0x314E4E43u;
 constexpr uint32_t kGgufMagic = 0x46554747u;
@@ -42,6 +47,8 @@ constexpr uint32_t kDefaultAlign = 32u;
 constexpr int kQK = 32;
 constexpr int kQK_K = 256;
 constexpr char kArchitecture[] = "nnllm";
+constexpr char kLegacyRopeDescription[] =
+    "Converted from an nnllm checkpoint trained with RoPE and RMSNorm. llama.cpp runs the same block.";
 
 enum Meta : uint32_t {
   kU8 = 0,
@@ -134,6 +141,10 @@ bool config_extended(const Config& config) {
   return wide || grouped || config.qk_norm || config.rope_theta != 10000.f || config.rms_eps != 1e-5f;
 }
 
+bool exports_qwen(const Config& config) {
+  return config_extended(config) || (config.rope && config.split_bias && config.qkv_bias);
+}
+
 struct Tensor {
   std::string name;
   std::vector<int> shape;
@@ -152,7 +163,7 @@ void usage() {
   std::fputs(
       "usage: gguf export MODEL.BIN MODEL.GGUF\n"
       "       gguf import MODEL.GGUF MODEL.BIN\n"
-      "       gguf llama MODEL MODEL.GGUF [TOKENIZER.BPE]\n"
+      "       gguf llama MODEL MODEL.GGUF [TOKENIZER.BPE|TOKENIZER.JSON]\n"
       "       gguf from MODEL.GGUF OUTDIR [--context N]\n"
       "       gguf self-test\n"
       "\n"
@@ -172,10 +183,11 @@ void usage() {
       "A learned-position checkpoint omits the position table and LayerNorm\n"
       "biases. llama.cpp then applies RoPE and RMSNorm, so those tokens differ.\n"
       "A RoPE checkpoint already uses that block, and the file keeps every\n"
-      "tensor. A tokenizer.bpe next to the checkpoint, or a path passed after\n"
-      "the output, is written into the file so llama-cli can encode a prompt.\n"
-      "GELU, any linear bias (including QKV-only), bidirectional attention, and a\n"
-      "segment table are rejected.\n"
+      "tensor. A tokenizer.bpe or Qwen tokenizer.json next to the checkpoint\n"
+      "is embedded. You can also pass its path after the output. Qwen JSON\n"
+      "keeps the original token ids and embeds any chat template. Qwen2 QKV\n"
+      "biases are supported. GELU, other linear biases, bidirectional attention,\n"
+      "and a segment table are rejected.\n"
       "\n"
       "from reads a public llama.cpp GGUF. Architecture must be llama, qwen2,\n"
       "qwen3, or mistral. Anything else, including qwen35, stops before the\n"
@@ -188,8 +200,8 @@ void usage() {
       "d_model/heads, and QK-norm are kept. Tied embeddings copy token_embd\n"
       "onto lm_head. --context N sets max_seq_len (default min(source, 1024)).\n"
       "MoE, GELU, a partial RoPE dimension, attention-output bias, MLP bias,\n"
-      "and an LM-head bias are rejected. Q, K, and V bias are copied as stored\n"
-      "and the checkpoint is version 7.\n"
+      "and an LM-head bias are rejected. A QKV bias set writes version 7. Qwen\n"
+      "Q/K rows and Q/K norm scales are reordered for adjacent-pair RoPE.\n"
       "\n"
       "import rejects a GGUF whose architecture is not nnllm, and rejects\n"
       "quantized tensors.\n",
@@ -222,6 +234,7 @@ class Bytes {
   }
   void raw(const uint8_t* data, size_t n) { bytes_.insert(bytes_.end(), data, data + n); }
   void zeros(size_t n) { bytes_.insert(bytes_.end(), n, 0); }
+  void clear() { bytes_.clear(); }
   const std::vector<uint8_t>& bytes() const { return bytes_; }
 
  private:
@@ -461,7 +474,8 @@ void require_config(const Config& config) {
 }
 
 Model read_checkpoint(const std::filesystem::path& path) {
-  Reader reader(read_file(path));
+  const MappedFile mapped(path);
+  Reader reader(mapped.data(), mapped.size());
   if (reader.u32() != kCheckpointMagic) throw std::runtime_error("magic");
   const uint32_t version = reader.u32();
   if (version < 1 || version > 8) throw std::runtime_error("version");
@@ -728,7 +742,7 @@ struct Kv {
   }
 };
 
-void append_gguf_tensors(Bytes& header, const std::vector<Tensor>& tensors, bool half) {
+void append_gguf_tensor_info(Bytes& header, const std::vector<Tensor>& tensors, bool half) {
   const uint32_t dtype = half ? kGgmlF16 : kGgmlF32;
   const uint64_t width = half ? 2u : 4u;
   for (const Tensor& tensor : tensors) {
@@ -753,17 +767,6 @@ void append_gguf_tensors(Bytes& header, const std::vector<Tensor>& tensors, bool
   const size_t info_end = header.bytes().size();
   const size_t data_begin = static_cast<size_t>(align_up(info_end, kDefaultAlign));
   header.zeros(data_begin - info_end);
-
-  data_offset = 0;
-  for (const Tensor& tensor : tensors) {
-    const uint64_t aligned = align_up(data_offset, kDefaultAlign);
-    header.zeros(static_cast<size_t>(aligned - data_offset));
-    for (float value : tensor.data) {
-      if (half) header.u16(f32_to_f16(value));
-      else header.f32(value);
-    }
-    data_offset = aligned + static_cast<uint64_t>(tensor.data.size()) * width;
-  }
 }
 
 void write_gguf_container(const std::filesystem::path& path, const std::vector<Tensor>& tensors, const Kv& kv,
@@ -774,8 +777,36 @@ void write_gguf_container(const std::filesystem::path& path, const std::vector<T
   header.u64(tensors.size());
   header.u64(kv.count);
   header.raw(kv.body.bytes().data(), kv.body.bytes().size());
-  append_gguf_tensors(header, tensors, half);
-  write_file(path, header.bytes());
+  append_gguf_tensor_info(header, tensors, half);
+
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  if (!out) throw std::runtime_error("write");
+  auto write = [&](const Bytes& bytes) {
+    out.write(reinterpret_cast<const char*>(bytes.bytes().data()),
+              static_cast<std::streamsize>(bytes.bytes().size()));
+    if (!out) throw std::runtime_error("write");
+  };
+  write(header);
+
+  Bytes chunk;
+  uint64_t offset = 0;
+  const uint64_t width = half ? 2u : 4u;
+  for (const Tensor& tensor : tensors) {
+    const uint64_t aligned = align_up(offset, kDefaultAlign);
+    chunk.zeros(static_cast<size_t>(aligned - offset));
+    for (float value : tensor.data) {
+      if (half) chunk.u16(f32_to_f16(value));
+      else chunk.f32(value);
+      if (chunk.bytes().size() >= (1u << 16)) {
+        write(chunk);
+        chunk.clear();
+      }
+    }
+    offset = aligned + static_cast<uint64_t>(tensor.data.size()) * width;
+  }
+  if (!chunk.bytes().empty()) write(chunk);
+  out.close();
+  if (!out) throw std::runtime_error("write");
 }
 
 void write_gguf(const std::filesystem::path& path, const Model& model, bool half = false) {
@@ -873,7 +904,24 @@ Tensor split_rows(const Tensor& src, int row0, int rows, std::string out_name) {
   return out;
 }
 
-std::vector<Tensor> llama_tensors(const Model& model) {
+// The nn backends use adjacent pairs. Qwen GGUF uses pairs in separate halves.
+void reorder_qwen_rope(Tensor& tensor, int heads, int head_dim, int row_size, bool to_gguf) {
+  if (head_dim % 2 != 0) throw std::runtime_error("rope");
+  std::vector<float> reordered(tensor.data.size());
+  for (int head = 0; head < heads; ++head) {
+    for (int lane = 0; lane < head_dim; ++lane) {
+      const size_t base = static_cast<size_t>(head) * head_dim;
+      const size_t half = (base + lane / 2 + (lane % 2) * (head_dim / 2)) * row_size;
+      const size_t pair = (base + lane) * row_size;
+      const size_t src = to_gguf ? pair : half;
+      const size_t dst = to_gguf ? half : pair;
+      std::memcpy(reordered.data() + dst, tensor.data.data() + src, row_size * sizeof(float));
+    }
+  }
+  tensor.data.swap(reordered);
+}
+
+std::vector<Tensor> llama_tensors(const Model& model, bool qwen, bool qkv_bias = false) {
   const Config& config = model.config;
   const int d = config.d_model;
   const int dh = config_head_dim(config);
@@ -886,13 +934,25 @@ std::vector<Tensor> llama_tensors(const Model& model) {
     const std::string src = "blocks." + std::to_string(layer) + ".";
     const std::string dst = "blk." + std::to_string(layer) + ".";
     tensors.push_back(copy_tensor(model, src + "ln1.weight", {d}, dst + "attn_norm.weight"));
-    tensors.push_back(copy_tensor(model, src + "attn.q.weight", {q_dim, d}, dst + "attn_q.weight"));
-    tensors.push_back(copy_tensor(model, src + "attn.k.weight", {kv_dim, d}, dst + "attn_k.weight"));
-    tensors.push_back(copy_tensor(model, src + "attn.v.weight", {kv_dim, d}, dst + "attn_v.weight"));
-    tensors.push_back(copy_tensor(model, src + "attn.out.weight", {d, q_dim}, dst + "attn_output.weight"));
+    auto attention_tensor = [&](const char* name, const char* gguf_name, std::vector<int> shape, int rope_heads) {
+      Tensor tensor = copy_tensor(model, src + name, shape, dst + gguf_name);
+      if (qwen && rope_heads > 0) {
+        reorder_qwen_rope(tensor, rope_heads, dh, shape.size() == 2 ? shape[1] : 1, true);
+      }
+      tensors.push_back(std::move(tensor));
+    };
+    attention_tensor("attn.q.weight", "attn_q.weight", {q_dim, d}, config.heads);
+    attention_tensor("attn.k.weight", "attn_k.weight", {kv_dim, d}, kv);
+    attention_tensor("attn.v.weight", "attn_v.weight", {kv_dim, d}, 0);
+    attention_tensor("attn.out.weight", "attn_output.weight", {d, q_dim}, 0);
+    if (qkv_bias) {
+      attention_tensor("attn.q.bias", "attn_q.bias", {q_dim}, config.heads);
+      attention_tensor("attn.k.bias", "attn_k.bias", {kv_dim}, kv);
+      attention_tensor("attn.v.bias", "attn_v.bias", {kv_dim}, 0);
+    }
     if (config.qk_norm) {
-      tensors.push_back(copy_tensor(model, src + "attn.q_norm.weight", {dh}, dst + "attn_q_norm.weight"));
-      tensors.push_back(copy_tensor(model, src + "attn.k_norm.weight", {dh}, dst + "attn_k_norm.weight"));
+      attention_tensor("attn.q_norm.weight", "attn_q_norm.weight", {dh}, 1);
+      attention_tensor("attn.k_norm.weight", "attn_k_norm.weight", {dh}, 1);
     }
     tensors.push_back(copy_tensor(model, src + "ln2.weight", {d}, dst + "ffn_norm.weight"));
     const Tensor& fc1 = named_tensor(model, src + "fc1.weight");
@@ -944,11 +1004,20 @@ std::array<std::string, 256> gpt2_byte_tokens() {
   return map;
 }
 
+constexpr char kQwenRegex[] =
+    R"re((?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+)re";
+constexpr char kQwen35Regex[] =
+    R"re((?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+|\p{N}| ?[^\s\p{L}\p{M}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+)re";
+
 struct Tokenizer {
   int vocab = 0;
-  int pad = 0;
-  int bos = 0;
-  int eos = 0;
+  int pad = -1;
+  int bos = -1;
+  int eos = -1;
+  bool add_bos = false;
+  bool add_eos = false;
+  std::string pre = "superbpe";
+  std::string chat_template;
   std::vector<std::string> tokens;
   std::vector<std::string> merges;
   std::vector<int32_t> types;
@@ -1022,6 +1091,146 @@ Tokenizer load_bpe(const std::filesystem::path& path) {
   return tok;
 }
 
+const Json& tokenizer_key(const Json& object, const char* key, Json::Kind kind) {
+  const Json* value = object.find(key);
+  if (!value || value->kind != kind) throw std::runtime_error("tokenizer: " + std::string(key));
+  return *value;
+}
+
+bool tokenizer_flag(const Json& object, const char* key, bool fallback = false) {
+  const Json* value = object.find(key);
+  if (!value || value->kind == Json::Kind::Null) return fallback;
+  if (value->kind != Json::Kind::Bool) throw std::runtime_error("tokenizer: " + std::string(key));
+  return value->b;
+}
+
+int tokenizer_id(const Json& value, int vocab) {
+  if (value.kind != Json::Kind::Number || value.n < 0 || value.n >= vocab || std::floor(value.n) != value.n) {
+    throw std::runtime_error("tokenizer: token id");
+  }
+  return static_cast<int>(value.n);
+}
+
+std::string read_tokenizer_text(const std::filesystem::path& path) {
+  const auto bytes = read_file(path);
+  return std::string(bytes.begin(), bytes.end());
+}
+
+Json optional_tokenizer_config(const std::filesystem::path& path) {
+  if (!std::filesystem::is_regular_file(path)) return {};
+  Json config = parse_json(read_tokenizer_text(path));
+  if (config.kind != Json::Kind::Object) throw std::runtime_error("tokenizer: " + path.filename().string());
+  return config;
+}
+
+Tokenizer load_qwen_tokenizer(const std::filesystem::path& path, int vocab) {
+  using Kind = Json::Kind;
+  const Json root = parse_json(read_tokenizer_text(path));
+  const Json& model = tokenizer_key(root, "model", Kind::Object);
+  const Json& pre = tokenizer_key(root, "pre_tokenizer", Kind::Object);
+  const auto& split = tokenizer_key(pre, "pretokenizers", Kind::Array).a;
+  if (tokenizer_key(model, "type", Kind::String).s != "BPE" ||
+      tokenizer_key(pre, "type", Kind::String).s != "Sequence" || split.size() != 2 ||
+      tokenizer_key(split[0], "type", Kind::String).s != "Split" ||
+      tokenizer_key(split[0], "behavior", Kind::String).s != "Isolated" ||
+      tokenizer_flag(split[0], "invert") ||
+      tokenizer_key(split[1], "type", Kind::String).s != "ByteLevel" ||
+      tokenizer_flag(split[1], "add_prefix_space") || tokenizer_flag(split[1], "use_regex", true) ||
+      tokenizer_key(tokenizer_key(root, "decoder", Kind::Object), "type", Kind::String).s != "ByteLevel" ||
+      tokenizer_flag(model, "byte_fallback") || tokenizer_flag(model, "ignore_merges")) {
+    throw std::runtime_error("tokenizer: expected Qwen ByteLevel BPE");
+  }
+
+  const Json* normalizer = root.find("normalizer");
+  if (normalizer && normalizer->kind != Kind::Null &&
+      tokenizer_key(*normalizer, "type", Kind::String).s != "NFC") {
+    throw std::runtime_error("tokenizer: unsupported normalizer");
+  }
+
+  Tokenizer tok;
+  const auto& pattern = tokenizer_key(tokenizer_key(split[0], "pattern", Kind::Object), "Regex", Kind::String).s;
+  if (pattern == kQwenRegex) tok.pre = "qwen2";
+  else if (pattern == kQwen35Regex) tok.pre = "qwen35";
+  else throw std::runtime_error("tokenizer: unsupported Qwen pre-tokenizer");
+  tok.vocab = vocab;
+  tok.tokens.resize(vocab);
+  tok.types.resize(vocab, 5);  // Unused, including model rows above the tokenizer's vocabulary.
+  std::map<std::string, int> ids;
+  auto add = [&](const std::string& piece, int id, int type) {
+    const auto found = ids.emplace(piece, id).first;
+    if (piece.empty() || found->second != id || (!tok.tokens[id].empty() && tok.tokens[id] != piece)) {
+      throw std::runtime_error("tokenizer: duplicate token");
+    }
+    tok.tokens[id] = piece;
+    tok.types[id] = type;
+  };
+
+  for (const auto& [piece, value] : tokenizer_key(model, "vocab", Kind::Object).o) {
+    add(piece, tokenizer_id(value, vocab), 1);
+  }
+  for (const Json& item : tokenizer_key(root, "added_tokens", Kind::Array).a) {
+    const auto& piece = tokenizer_key(item, "content", Kind::String).s;
+    add(piece, tokenizer_id(tokenizer_key(item, "id", Kind::Number), vocab),
+        tokenizer_flag(item, "special") ? 3 : 4);
+  }
+  if (ids.empty()) throw std::runtime_error("tokenizer: empty vocabulary");
+  for (int id = 0; id < vocab; ++id) {
+    if (!tok.tokens[id].empty()) continue;
+    std::string unused = "[PAD" + std::to_string(id) + "]";
+    while (ids.count(unused)) unused += '_';
+    tok.tokens[id] = std::move(unused);
+  }
+
+  for (const Json& item : tokenizer_key(model, "merges", Kind::Array).a) {
+    std::string merge;
+    if (item.kind == Kind::String) {
+      merge = item.s;
+    } else if (item.kind == Kind::Array && item.a.size() == 2 &&
+               item.a[0].kind == Kind::String && item.a[1].kind == Kind::String) {
+      merge = item.a[0].s + " " + item.a[1].s;
+    }
+    const size_t sep = merge.find(' ');
+    if (sep == std::string::npos || sep == 0 || sep + 1 == merge.size() ||
+        merge.find(' ', sep + 1) != std::string::npos) {
+      throw std::runtime_error("tokenizer: BPE merge");
+    }
+    tok.merges.push_back(std::move(merge));
+  }
+
+  const auto dir = path.parent_path();
+  const Json config = optional_tokenizer_config(dir / "tokenizer_config.json");
+  const Json generation = optional_tokenizer_config(dir / "generation_config.json");
+  auto special_id = [&](const char* name_key, const char* id_key) {
+    const Json* value = config.find(name_key);
+    if (value && value->kind == Kind::Object) value = &tokenizer_key(*value, "content", Kind::String);
+    if (value && value->kind != Kind::Null) {
+      if (value->kind != Kind::String || !ids.count(value->s)) throw std::runtime_error("tokenizer: special token");
+      return ids.at(value->s);
+    }
+    value = generation.find(id_key);
+    if (value && value->kind == Kind::Array && !value->a.empty()) value = &value->a.front();
+    if (!value || value->kind == Kind::Null) return -1;
+    const int id = tokenizer_id(*value, vocab);
+    if (tok.types[id] == 5) throw std::runtime_error("tokenizer: special token id");
+    return id;
+  };
+  tok.bos = special_id("bos_token", "bos_token_id");
+  tok.eos = special_id("eos_token", "eos_token_id");
+  tok.pad = special_id("pad_token", "pad_token_id");
+  tok.add_bos = tokenizer_flag(config, "add_bos_token");
+  tok.add_eos = tokenizer_flag(config, "add_eos_token");
+  if ((tok.add_bos && tok.bos < 0) || (tok.add_eos && tok.eos < 0)) {
+    throw std::runtime_error("tokenizer: missing BOS or EOS");
+  }
+  const auto template_path = dir / "chat_template.jinja";
+  if (std::filesystem::is_regular_file(template_path)) {
+    tok.chat_template = read_tokenizer_text(template_path);
+  } else if (const Json* value = config.find("chat_template"); value && value->kind != Kind::Null) {
+    tok.chat_template = tokenizer_key(config, "chat_template", Kind::String).s;
+  }
+  return tok;
+}
+
 void write_llama_gguf(const std::filesystem::path& path, const Model& model, const Tokenizer* tokenizer = nullptr) {
   require_config(model.config);
   if (!model.config.causal || model.config.type_vocab != 0) throw std::runtime_error("causal");
@@ -1031,21 +1240,24 @@ void write_llama_gguf(const std::filesystem::path& path, const Model& model, con
   bool mlp = false;
   bool lm_head = false;
   effective_bias(model.config, qkv, attn_out, mlp, lm_head);
-  if (model.config.bias || qkv || attn_out || mlp || lm_head) throw std::runtime_error("bias");
-  if (tokenizer != nullptr && tokenizer->vocab != model.config.vocab) throw std::runtime_error("vocab");
-  const std::vector<Tensor> tensors = llama_tensors(model);
   const Config& config = model.config;
-  const bool qwen = config_extended(config);
+  const bool qwen = exports_qwen(config);
+  if (model.config.bias || attn_out || mlp || lm_head || (qkv && (!qwen || config.qk_norm))) {
+    throw std::runtime_error("bias");
+  }
+  if (tokenizer && tokenizer->vocab != config.vocab) throw std::runtime_error("vocab");
+  if (tokenizer && tokenizer->pre != "superbpe" && !qwen) throw std::runtime_error("architecture");
+  const std::vector<Tensor> tensors = llama_tensors(model, qwen, qkv);
   const char* arch = !qwen ? "llama" : (config.qk_norm ? "qwen3" : "qwen2");
   const std::string prefix = std::string(arch) + ".";
   Kv kv;
   kv.str("general.architecture", arch);
-  kv.str("general.name", kArchitecture);
+  kv.str("general.name", qwen ? path.stem().string() : kArchitecture);
   kv.u32("general.alignment", kDefaultAlign);
   kv.u32("general.file_type", 0);
   kv.str("general.description",
-         config.rope ? "Converted from an nnllm checkpoint trained with RoPE and RMSNorm. "
-                       "llama.cpp runs the same block."
+         qwen ? "Qwen GGUF converted from an nnllm checkpoint." :
+         config.rope ? kLegacyRopeDescription
                      : "Converted from an nnllm checkpoint trained with learned absolute positions and LayerNorm. "
                        "llama.cpp applies RoPE and RMSNorm, so the tokens differ. "
                        "LayerNorm biases and the position table are omitted.");
@@ -1053,13 +1265,14 @@ void write_llama_gguf(const std::filesystem::path& path, const Model& model, con
     kv.str("tokenizer.ggml.model", "none");
   } else {
     kv.str("tokenizer.ggml.model", "gpt2");
-    kv.str("tokenizer.ggml.pre", "superbpe");
-    kv.boolean("tokenizer.ggml.add_bos_token", false);
-    kv.boolean("tokenizer.ggml.add_eos_token", false);
+    kv.str("tokenizer.ggml.pre", tokenizer->pre);
+    kv.boolean("tokenizer.ggml.add_bos_token", tokenizer->add_bos);
+    kv.boolean("tokenizer.ggml.add_eos_token", tokenizer->add_eos);
     kv.boolean("tokenizer.ggml.add_space_prefix", false);
-    kv.u32("tokenizer.ggml.bos_token_id", static_cast<uint32_t>(tokenizer->bos));
-    kv.u32("tokenizer.ggml.eos_token_id", static_cast<uint32_t>(tokenizer->eos));
-    kv.u32("tokenizer.ggml.padding_token_id", static_cast<uint32_t>(tokenizer->pad));
+    if (tokenizer->bos >= 0) kv.u32("tokenizer.ggml.bos_token_id", static_cast<uint32_t>(tokenizer->bos));
+    if (tokenizer->eos >= 0) kv.u32("tokenizer.ggml.eos_token_id", static_cast<uint32_t>(tokenizer->eos));
+    if (tokenizer->pad >= 0) kv.u32("tokenizer.ggml.padding_token_id", static_cast<uint32_t>(tokenizer->pad));
+    if (!tokenizer->chat_template.empty()) kv.str("tokenizer.chat_template", tokenizer->chat_template);
     kv.strs("tokenizer.ggml.tokens", tokenizer->tokens);
     kv.strs("tokenizer.ggml.merges", tokenizer->merges);
     kv.i32s("tokenizer.ggml.token_type", tokenizer->types);
@@ -2256,6 +2469,12 @@ Model public_to_nnllm(const PublicGguf& view, const uint8_t* data, size_t size, 
                       int keep_vocab) {
   if (view.architecture == "nnllm") throw std::runtime_error("architecture");
   const std::string p = view.architecture + ".";
+  const auto description = view.strings.find("general.description");
+  const auto name = view.strings.find("general.name");
+  // Older exports from this tool wrote adjacent pairs even for Qwen.
+  const bool legacy_pairs = name != view.strings.end() && name->second == kArchitecture &&
+                            description != view.strings.end() && description->second == kLegacyRopeDescription;
+  const bool qwen_halves = (view.architecture == "qwen2" || view.architecture == "qwen3") && !legacy_pairs;
   Config config;
   config.d_model = static_cast<int>(need_u32_key(view, p + "embedding_length"));
   config.layers = static_cast<int>(need_u32_key(view, p + "block_count"));
@@ -2365,19 +2584,23 @@ Model public_to_nnllm(const PublicGguf& view, const uint8_t* data, size_t size, 
 
     Tensor q = load_public_tensor(view, data, size, src + "attn_q.weight", {q_dim, config.d_model});
     q.name = dst + "attn.q.weight";
+    if (qwen_halves) reorder_qwen_rope(q, config.heads, dh, config.d_model, false);
     model.tensors.push_back(std::move(q));
     if (config.qkv_bias) {
       Tensor qb = load_public_tensor(view, data, size, src + "attn_q.bias", {q_dim});
       qb.name = dst + "attn.q.bias";
+      if (qwen_halves) reorder_qwen_rope(qb, config.heads, dh, 1, false);
       model.tensors.push_back(std::move(qb));
     }
 
     Tensor k = load_public_tensor(view, data, size, src + "attn_k.weight", {kv_dim, config.d_model});
     k.name = dst + "attn.k.weight";
+    if (qwen_halves) reorder_qwen_rope(k, kv_heads, dh, config.d_model, false);
     model.tensors.push_back(std::move(k));
     if (config.qkv_bias) {
       Tensor kb = load_public_tensor(view, data, size, src + "attn_k.bias", {kv_dim});
       kb.name = dst + "attn.k.bias";
+      if (qwen_halves) reorder_qwen_rope(kb, kv_heads, dh, 1, false);
       model.tensors.push_back(std::move(kb));
     }
 
@@ -2397,9 +2620,11 @@ Model public_to_nnllm(const PublicGguf& view, const uint8_t* data, size_t size, 
     if (config.qk_norm) {
       Tensor qn = load_public_tensor(view, data, size, src + "attn_q_norm.weight", {dh});
       qn.name = dst + "attn.q_norm.weight";
+      if (qwen_halves) reorder_qwen_rope(qn, 1, dh, 1, false);
       model.tensors.push_back(std::move(qn));
       Tensor kn = load_public_tensor(view, data, size, src + "attn_k_norm.weight", {dh});
       kn.name = dst + "attn.k_norm.weight";
+      if (qwen_halves) reorder_qwen_rope(kn, 1, dh, 1, false);
       model.tensors.push_back(std::move(kn));
     }
 
@@ -2426,11 +2651,6 @@ Model public_to_nnllm(const PublicGguf& view, const uint8_t* data, size_t size, 
   model.tensors.push_back(std::move(head));
   return model;
 }
-
-constexpr char kQwenRegex[] =
-    R"re((?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+)re";
-constexpr char kQwen35Regex[] =
-    R"re((?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+|\p{N}| ?[^\s\p{L}\p{M}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+)re";
 
 bool dense_architecture(const std::string& name) {
   return name == "llama" || name == "qwen2" || name == "qwen3" || name == "mistral";
@@ -2479,9 +2699,10 @@ void write_text(const std::filesystem::path& path, const std::string& text) {
   write_file(path, std::vector<uint8_t>(text.begin(), text.end()));
 }
 
-int need_token_index(const PublicGguf& view, const char* key, size_t n) {
+int optional_token_index(const PublicGguf& view, const char* key, size_t n) {
   const auto found = view.u32s.find(key);
-  if (found == view.u32s.end() || static_cast<size_t>(found->second) >= n) throw std::runtime_error("tokenizer");
+  if (found == view.u32s.end()) return -1;
+  if (static_cast<size_t>(found->second) >= n) throw std::runtime_error("tokenizer");
   return static_cast<int>(found->second);
 }
 
@@ -2514,13 +2735,14 @@ void write_kept_ids(const PublicGguf& view, const uint8_t* data, size_t size, co
       throw std::runtime_error("tokenizer");
     }
   }
-  const int bos = need_token_index(view, "tokenizer.ggml.bos_token_id", tokens.size());
-  const int eos = need_token_index(view, "tokenizer.ggml.eos_token_id", tokens.size());
-  const int pad = need_token_index(view, "tokenizer.ggml.padding_token_id", tokens.size());
+  const int bos = optional_token_index(view, "tokenizer.ggml.bos_token_id", tokens.size());
+  const int eos = optional_token_index(view, "tokenizer.ggml.eos_token_id", tokens.size());
+  const int pad = optional_token_index(view, "tokenizer.ggml.padding_token_id", tokens.size());
   const auto bos_flag = view.bools.find("tokenizer.ggml.add_bos_token");
   const auto eos_flag = view.bools.find("tokenizer.ggml.add_eos_token");
   const bool add_bos = bos_flag != view.bools.end() && bos_flag->second;
   const bool add_eos = eos_flag != view.bools.end() && eos_flag->second;
+  if ((add_bos && bos < 0) || (add_eos && eos < 0)) throw std::runtime_error("tokenizer");
   const char* regex = pre_it->second == "qwen35" ? kQwen35Regex : kQwenRegex;
 
   const Model model = public_to_nnllm(view, data, size, nullptr, context, static_cast<int>(tokens.size()));
@@ -2541,7 +2763,8 @@ void write_kept_ids(const PublicGguf& view, const uint8_t* data, size_t size, co
     tokenizer += std::to_string(i);
     tokenizer += ",\"content\":\"";
     tokenizer += json_escape(tokens[i]);
-    tokenizer += "\",\"single_word\":false,\"lstrip\":false,\"rstrip\":false,\"normalized\":false,\"special\":true}";
+    tokenizer += "\",\"single_word\":false,\"lstrip\":false,\"rstrip\":false,\"normalized\":false,\"special\":";
+    tokenizer += types[i] == 3 ? "true}" : "false}";
   }
   tokenizer += "],\"normalizer\":null,\"pre_tokenizer\":{\"type\":\"Sequence\",\"pretokenizers\":[";
   tokenizer += "{\"type\":\"Split\",\"pattern\":{\"Regex\":\"";
@@ -2551,8 +2774,11 @@ void write_kept_ids(const PublicGguf& view, const uint8_t* data, size_t size, co
   tokenizer += "\"decoder\":{\"type\":\"ByteLevel\",\"add_prefix_space\":false,\"trim_offsets\":false,\"use_regex\":false},";
   tokenizer += "\"model\":{\"type\":\"BPE\",\"dropout\":null,\"unk_token\":null,\"continuing_subword_prefix\":null,";
   tokenizer += "\"end_of_word_suffix\":null,\"fuse_unk\":false,\"byte_fallback\":false,\"ignore_merges\":false,\"vocab\":{";
+  bool first_piece = true;
   for (size_t i = 0; i < tokens.size(); ++i) {
-    if (i != 0) tokenizer += ',';
+    if (types[i] == 5 && static_cast<int>(i) != bos && static_cast<int>(i) != eos && static_cast<int>(i) != pad) continue;
+    if (!first_piece) tokenizer += ',';
+    first_piece = false;
     tokenizer += '"';
     tokenizer += json_escape(tokens[i]);
     tokenizer += "\":";
@@ -2568,13 +2794,17 @@ void write_kept_ids(const PublicGguf& view, const uint8_t* data, size_t size, co
   tokenizer += "]}}\n";
   write_text(out_dir / "tokenizer.json", tokenizer);
 
+  auto name_json = [&](int id) {
+    return id < 0 ? std::string("null") : "\"" + json_escape(tokens[id]) + "\"";
+  };
   std::string config = std::string("{\"add_bos_token\":") + (add_bos ? "true" : "false") +
-                       ",\"add_eos_token\":" + (add_eos ? "true" : "false") + ",\"bos_token\":\"" +
-                       json_escape(tokens[static_cast<size_t>(bos)]) + "\",\"eos_token\":\"" +
-                       json_escape(tokens[static_cast<size_t>(eos)]) + "\",\"pad_token\":\"" +
-                       json_escape(tokens[static_cast<size_t>(pad)]) + "\"}\n";
-  write_text(out_dir / "tokenizer_config.json", config);
-  write_text(out_dir / "generation_config.json", "{\"eos_token_id\":" + std::to_string(eos) + "}\n");
+                       ",\"add_eos_token\":" + (add_eos ? "true" : "false") + ",\"bos_token\":" +
+                       name_json(bos) + ",\"eos_token\":" + name_json(eos) + ",\"pad_token\":" + name_json(pad);
+  const auto chat = view.strings.find("tokenizer.chat_template");
+  if (chat != view.strings.end()) config += ",\"chat_template\":\"" + json_escape(chat->second) + "\"";
+  write_text(out_dir / "tokenizer_config.json", config + "}\n");
+  const std::string eos_json = eos < 0 ? "null" : std::to_string(eos);
+  write_text(out_dir / "generation_config.json", "{\"eos_token_id\":" + eos_json + "}\n");
   write_checkpoint(out_dir / "model.bin", model);
 }
 
@@ -2994,6 +3224,9 @@ int self_test() {
     }
     ++qwen_n;
   }
+  for (Tensor& tensor : qwen_model.tensors) {
+    if (tensor.name == "blocks.0.attn.q_norm.weight") tensor.data = {1.f, 2.f, 3.f, 4.f, 5.f, 6.f};
+  }
   const auto qwen_bin = dir / "qwen.bin";
   write_checkpoint(qwen_bin, qwen_model);
   {
@@ -3104,6 +3337,15 @@ int self_test() {
   need_dims("blk.0.attn_output.weight", {24, 8});
   need_dims("blk.0.attn_q_norm.weight", {6});
   need_dims("blk.0.attn_k_norm.weight", {6});
+  {
+    const MappedFile mapped(qwen_llama);
+    Reader reader(mapped.data(), mapped.size());
+    const auto view = parse_public_gguf(reader);
+    const Tensor scales = load_public_tensor(view, mapped.data(), mapped.size(), "blk.0.attn_q_norm.weight", {6});
+    if (scales.data != std::vector<float>{1.f, 3.f, 5.f, 2.f, 4.f, 6.f}) {
+      throw std::runtime_error("self-test Qwen GGUF norm layout");
+    }
+  }
   convert_from_public(qwen_llama, dir / "qwen-from", 16);
   const Model qwen_back = read_checkpoint(dir / "qwen-from" / "model.bin");
   if (qwen_back.config.head_dim != 6 || qwen_back.config.kv_heads != 2 || !qwen_back.config.qk_norm ||
@@ -3217,22 +3459,18 @@ int self_test() {
     Reader ver(read_file(split_back));
     if (ver.u32() != kCheckpointMagic || ver.u32() != 7u) throw std::runtime_error("self-test split back");
   }
-  bool split_llama = false;
-  try {
-    write_llama_gguf(dir / "split-llama.gguf", split_model);
-  } catch (const std::runtime_error& error) {
-    split_llama = std::string(error.what()) == "bias";
-  }
-  if (!split_llama) throw std::runtime_error("self-test split llama");
-
   const int split_dh = config_head_dim(split);
   const int split_kv = config_kv_heads(split);
-  const int split_q = split.heads * split_dh;
-  const int split_k = split_kv * split_dh;
-  std::vector<Tensor> public_tensors = llama_tensors(split_model);
-  public_tensors.push_back(copy_tensor(split_model, "blocks.0.attn.q.bias", {split_q}, "blk.0.attn_q.bias"));
-  public_tensors.push_back(copy_tensor(split_model, "blocks.0.attn.k.bias", {split_k}, "blk.0.attn_k.bias"));
-  public_tensors.push_back(copy_tensor(split_model, "blocks.0.attn.v.bias", {split_k}, "blk.0.attn_v.bias"));
+  const std::vector<Tensor> public_tensors = llama_tensors(split_model, true, true);
+  const auto split_llama = dir / "split-llama.gguf";
+  write_llama_gguf(split_llama, split_model, &tok);
+  const GgufView split_llama_view = read_gguf_view(split_llama);
+  if (split_llama_view.strings.at("general.architecture") != "qwen2" ||
+      split_llama_view.tensors.at("blk.0.attn_q.bias").dims != std::vector<uint64_t>{8} ||
+      split_llama_view.tensors.at("blk.0.attn_k.bias").dims != std::vector<uint64_t>{4} ||
+      split_llama_view.tensors.at("blk.0.attn_v.bias").dims != std::vector<uint64_t>{4}) {
+    throw std::runtime_error("self-test split llama");
+  }
   Kv pub;
   const std::string prefix = "qwen2.";
   pub.str("general.architecture", "qwen2");
@@ -3549,16 +3787,22 @@ int main(int argc, char** argv) {
       if (argc == 5) {
         tokenizer_path = argv[4];
       } else {
-        const auto sibling = std::filesystem::path(argv[2]).parent_path() / "tokenizer.bpe";
-        if (std::filesystem::is_regular_file(sibling)) tokenizer_path = sibling;
+        const auto dir = std::filesystem::path(argv[2]).parent_path();
+        if (std::filesystem::is_regular_file(dir / "tokenizer.bpe")) {
+          tokenizer_path = dir / "tokenizer.bpe";
+        } else if (exports_qwen(model.config) && std::filesystem::is_regular_file(dir / "tokenizer.json")) {
+          tokenizer_path = dir / "tokenizer.json";
+        }
       }
       if (tokenizer_path.empty()) {
         write_llama_gguf(argv[3], model);
-        std::fputs("gguf: no tokenizer.bpe beside the checkpoint. llama-cli stops on a text prompt.\n", stderr);
+        std::fputs("gguf: no tokenizer beside the checkpoint. llama-cli stops on a text prompt.\n", stderr);
       } else {
-        const Tokenizer tok = load_bpe(tokenizer_path);
+        const Tokenizer tok = tokenizer_path.extension() == ".json"
+                                  ? load_qwen_tokenizer(tokenizer_path, model.config.vocab)
+                                  : load_bpe(tokenizer_path);
         write_llama_gguf(argv[3], model, &tok);
-        std::fputs("gguf: embedded tokenizer.bpe.\n", stderr);
+        std::fprintf(stderr, "gguf: embedded %s.\n", tokenizer_path.filename().c_str());
       }
       if (!model.config.rope) {
         std::fputs(

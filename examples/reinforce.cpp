@@ -45,7 +45,7 @@ void usage() {
   std::fputs(
       "usage: reinforce --from DIR --prompts FILE --contains TEXT --out DIR [options]\n"
       "\n"
-      "DIR is a train_data or finetune directory with tokenizer.bpe and model.bin.\n"
+      "DIR contains model.bin and tokenizer.bpe or tokenizer.json.\n"
       "FILE is one prompt per line. Blank lines and lines starting with # are ignored.\n"
       "\n"
       "Samples a group of completions for each prompt and updates the causal\n"
@@ -163,9 +163,8 @@ std::vector<std::string> read_prompts(const std::filesystem::path& path) {
 int main(int argc, char** argv) {
   try {
     const Options opt = parse(argc, argv);
-    const std::filesystem::path tok_path = opt.from / "tokenizer.bpe";
     const std::filesystem::path from_model = opt.from / "model.bin";
-    if (!std::filesystem::is_regular_file(tok_path) || !std::filesystem::is_regular_file(from_model)) {
+    if (!std::filesystem::is_regular_file(from_model)) {
       throw std::runtime_error("from");
     }
     std::filesystem::create_directories(opt.out);
@@ -174,16 +173,14 @@ int main(int argc, char** argv) {
     }
 
     const std::vector<std::string> prompts = read_prompts(opt.prompts);
-    const std::unique_ptr<llm::Tokenizer> tok = llm::Tokenizer::load(tok_path);
-    const std::filesystem::path out_tok = opt.out / "tokenizer.bpe";
+    const std::unique_ptr<llm::Tokenizer> tok = llm::Tokenizer::load_directory(opt.from);
     const std::filesystem::path model_path = opt.out / "model.bin";
-    tok->save(out_tok);
 
     nn::Context ctx;
     nn::Transformer::Loaded policy = nn::Transformer::load(ctx, from_model, nn::LoadMode::Inference);
     const nn::TransformerConfig& config =
         std::get<nn::TransformerConfig>(policy.model.network().config());
-    if (tok->vocab_size() != config.vocab_size) throw std::runtime_error("vocab_size");
+    tok->unavailable_ids(config.vocab_size);
     if (!config.causal) throw std::runtime_error("causal");
     std::fprintf(stderr, "loaded vocab=%d max_seq_len=%d layers=%d d_model=%d prompts=%zu\n",
                  config.vocab_size, config.max_seq_len, config.num_layers, config.d_model,
@@ -217,6 +214,7 @@ int main(int argc, char** argv) {
     const std::string contains = opt.contains;
     std::mt19937 rng(static_cast<uint32_t>(opt.seed));
     llm::RlTrainer trainer(ctx, policy.model, optimizer, cfg, reference);
+    llm::Tokenizer::copy_directory(opt.from, opt.out);
     trainer.fit(*tok, prompts,
                 [&](const llm::Episode& episode) {
                   return episode.text.find(contains) != std::string_view::npos ? 1.f : 0.f;

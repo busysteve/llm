@@ -14,6 +14,7 @@ void run_data_tests();
 void run_train_tests();
 void run_rl_tests();
 void run_hf_tokenizer_tests();
+int run_hf_probe(int argc, char** argv);
 
 namespace {
 
@@ -101,7 +102,8 @@ void check_vocab(const llm::Tokenizer& tok, int vocab_size) {
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+  if (argc > 1 && std::strcmp(argv[1], "--hf-probe") == 0) return run_hf_probe(argc - 2, argv + 2);
   const std::filesystem::path dir = std::filesystem::temp_directory_path() / "llm-bpe-test";
   std::filesystem::remove_all(dir);
   std::filesystem::create_directories(dir);

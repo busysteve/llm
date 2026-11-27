@@ -45,7 +45,7 @@ graph TD
     Presets --> NN
 ```
 
-`BpeTokenizer` trains and loads `LPB1`. `HfTokenizer` loads a Hugging Face `tokenizer.json` byte-level BPE. `Tokenizer::load` still reads `LPB1` only. Token ids stay on the host until `TextDataset::next` uploads an `nn::IndexTensor`.
+`BpeTokenizer` trains and loads `LPB1`. `HfTokenizer` loads a Hugging Face `tokenizer.json` byte-level BPE. `Tokenizer::load` reads an LPB1 file. `Tokenizer::load_directory` reads the selected tokenizer from a model directory. Token ids stay on the host until `TextDataset::next` uploads an `nn::IndexTensor`.
 
 | Header | Source | Owns |
 |---|---|---|

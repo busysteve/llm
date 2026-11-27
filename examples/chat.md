@@ -56,7 +56,7 @@ The same file list trains an encoder. `--seq-len` must be at most 512. `train_da
 
 `chat-run/` must contain `model.bin` and `tokenizer.bpe`. The other `train_data` files are not read by `chat`. A public llama.cpp GGUF, including Qwen2 and Qwen3, becomes that directory with `gguf from MODEL.GGUF chat-run`. A model trained with `--preset qwen-tiny`, `qwen-small`, or `qwen-base` loads the same way. See [gguf](gguf.md).
 
-An `hf import` directory is loaded when it has `model.bin` and `tokenizer.json`. `tokenizer.bpe` wins when both files are present. The Hugging Face ids stay as they are. `tokenizer_config.json` supplies the default bos and eos flags, and `generation_config.json` supplies the stop ids. `add_bos_token` prepends bos on each prompt. Sampling stops on every id in `eos_token_id`, which may be one integer or a list, and that id is left off the reply. A directory that has only `tokenizer.model` is not a chat directory yet.
+An `hf import` directory is loaded when it has `model.bin` and `tokenizer.json`. `tokenizer.bpe` wins when both files are present. The Hugging Face ids stay as they are. `tokenizer_config.json` supplies the default bos and eos flags, and `generation_config.json` supplies the stop ids. `add_bos_token` prepends bos on each prompt. Sampling stops on every id in `eos_token_id`, which may be one integer or a list, and that id is left off the reply. Rows without a token in the imported tokenizer are excluded from sampling.
 
 ## Talk
 
@@ -125,7 +125,7 @@ Sampling stops on the tokenizer eos id. A Hugging Face directory with `eos_token
 
 With `--plain`, a completed turn is the line, the reply, and a newline. The next prompt is that transcript then the line. A decoded newline and `User:` does not end the reply. One leading space stays on screen.
 
-`--template qwen` writes a completed turn as `<|im_start|>user`, a newline, the line, `<|im_end|>`, a newline, `<|im_start|>assistant`, a newline, the reply, and `<|im_end|>`. The next prompt ends at `<|im_start|>assistant` and a newline, with no reply yet. The reply is cut at `<|im_end|>` or at a newline followed by `<|im_start|>`. One leading space stays on screen. `--plain` and `--template qwen` together fail with `template`. There is no Jinja template.
+`--template qwen` writes a completed turn as `<|im_start|>user`, a newline, the line, `<|im_end|>`, a newline, `<|im_start|>assistant`, a newline, the reply, and `<|im_end|>`. The next prompt ends at `<|im_start|>assistant` and a newline, with no reply yet. The reply is cut at `<|im_end|>` or at a newline followed by `<|im_start|>`. One leading space stays on screen. `--plain` and `--template qwen` together fail with `template`. `--template qwen2.5` adds the default system message for the Qwen2.5 Instruct snapshot. `--template qwen3` applies Qwen3's text-only user and assistant template and removes completed reasoning spans from conversation history. Use `--thinking off` with that template to start the answer with the upstream empty thinking block. These two templates tokenize the rendered prompt without additional BOS or EOS tokens.
 
 Each call encodes the whole prompt. A causal model prefills it. A bidirectional model runs `forward` once per new token. Nothing is kept in the KV cache between turns.
 
@@ -146,7 +146,8 @@ Most presets use `max_seq_len` 1024. Every `gpt3-*` preset uses 2048. Every `ber
 | `--seed N` | 1 | sampling rng |
 | `--once TEXT` | | one reply, then exit |
 | `--plain` | | prompt is the line, with no `User:` / `Assistant:` tags |
-| `--template qwen` | | ChatML `<|im_start|>user` / `<|im_start|>assistant` turns |
+| `--template qwen\|qwen2.5\|qwen3` | | Use basic ChatML or the corresponding Qwen text template |
+| `--thinking on\|off` | on | Qwen3 thinking mode |
 
 ## When it fails
 
@@ -154,7 +155,8 @@ Errors print `chat: <reason>` on stderr. In an interactive session the process s
 
 | Reason | Meaning |
 |---|---|
-| `model` | `--model` is missing, `model.bin` is missing, or the directory has neither `tokenizer.bpe` nor `tokenizer.json` |
+| `model` | `--model` or `model.bin` is missing |
+| `tokenizer` | The directory has no readable tokenizer |
 | `tokenizer` | `tokenizer.json` is not a byte-level BPE this build accepts |
 | `template` | `--template` is not `qwen`, or it is combined with `--plain` |
 | `prompt` | `--once` was given an empty string |

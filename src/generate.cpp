@@ -132,7 +132,8 @@ int pick_id(std::vector<float> logits, const GenerateConfig& cfg, std::mt19937& 
 // the mask this library trains, and forward scores that position.
 std::string generate_masked(nn::Context& ctx, nn::Transformer& model, const Tokenizer& tok,
                             const std::vector<int32_t>& encoded, const GenerateConfig& cfg,
-                            std::mt19937& rng, const nn::TransformerConfig& model_cfg) {
+                            std::mt19937& rng, const nn::TransformerConfig& model_cfg,
+                            const std::vector<int32_t>& unavailable) {
   const int vocab = model_cfg.vocab_size;
   const int32_t mask_id = tok.pad_id();
   if (mask_id < 0 || mask_id >= vocab) throw std::invalid_argument("mask_token");
@@ -156,7 +157,7 @@ std::string generate_masked(nn::Context& ctx, nn::Transformer& model, const Toke
     std::vector<float> logits(all.begin() + static_cast<std::ptrdiff_t>(row),
                               all.begin() + static_cast<std::ptrdiff_t>(row + static_cast<size_t>(vocab)));
     const int32_t id = static_cast<int32_t>(
-        sample_token(std::move(logits), cfg, rng, seen.data(), seen.size()));
+        sample_token(std::move(logits), cfg, rng, seen.data(), seen.size(), unavailable));
     host.pop_back();
     if (is_stop_id(cfg, id)) break;
     generated.push_back(id);
@@ -169,20 +170,27 @@ std::string generate_masked(nn::Context& ctx, nn::Transformer& model, const Toke
 }  // namespace
 
 int sample_token(std::vector<float> logits, const GenerateConfig& cfg, std::mt19937& rng,
-                 const int32_t* seen, size_t n_seen) {
-  return pick_id(std::move(logits), cfg, rng, seen, n_seen);
+                 const int32_t* seen, size_t n_seen, const std::vector<int32_t>& unavailable) {
+  for (int32_t id : unavailable) logits.at(static_cast<size_t>(id)) = -std::numeric_limits<float>::infinity();
+  if (logits.empty() || unavailable.size() >= logits.size()) throw std::invalid_argument("logits");
+  const int id = pick_id(std::move(logits), cfg, rng, seen, n_seen);
+  if (std::find(unavailable.begin(), unavailable.end(), id) != unavailable.end()) {
+    throw std::invalid_argument("logits");
+  }
+  return id;
 }
 
 Generator::Generator(nn::Context& ctx, nn::Transformer& model, const Tokenizer& tok)
-    : ctx_(&ctx), model_(&model), tok_(&tok) {}
+    : ctx_(&ctx), model_(&model), tok_(&tok),
+      unavailable_(tok.unavailable_ids(std::get<nn::TransformerConfig>(model.network().config()).vocab_size)) {}
 
 std::string Generator::generate(std::string_view prompt, GenerateConfig cfg, std::mt19937& rng) {
   validate(cfg);
   model_->eval();
 
-  EncodeOptions opt;
-  opt.add_bos = tok_->add_bos_default();
-  opt.add_eos = tok_->add_eos_default();
+  if (cfg.stop_ids.empty() && cfg.eos_id == -1) cfg.stop_ids = tok_->stop_ids();
+  const EncodeOptions opt = cfg.encode_options.value_or(
+      EncodeOptions{tok_->add_bos_default(), tok_->add_eos_default()});
   const std::vector<int32_t> encoded = tok_->encode(prompt, opt);
   if (encoded.empty()) throw std::invalid_argument("prompt");
   if (encoded.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
@@ -194,8 +202,15 @@ std::string Generator::generate(std::string_view prompt, GenerateConfig cfg, std
   }
   const int t_max = prompt_len + cfg.max_new_tokens;
   const nn::TransformerConfig& model_cfg = std::get<nn::TransformerConfig>(model_->network().config());
+  for (int32_t id : cfg.stop_ids) {
+    if (!tok_->has_token(id)) throw std::invalid_argument("stop token id");
+  }
+  if (cfg.eos_id != -1 && !tok_->has_token(cfg.eos_id)) throw std::invalid_argument("eos_id");
+  for (int32_t id : encoded) {
+    if (!tok_->has_token(id)) throw std::invalid_argument("prompt token id");
+  }
   if (t_max > model_cfg.max_seq_len) throw std::invalid_argument("max_seq_len");
-  if (!model_cfg.causal) return generate_masked(*ctx_, *model_, *tok_, encoded, cfg, rng, model_cfg);
+  if (!model_cfg.causal) return generate_masked(*ctx_, *model_, *tok_, encoded, cfg, rng, model_cfg, unavailable_);
 
   std::vector<int64_t> host(encoded.size());
   for (size_t i = 0; i < encoded.size(); ++i) host[i] = int64_t{encoded[i]};
@@ -211,7 +226,7 @@ std::string Generator::generate(std::string_view prompt, GenerateConfig cfg, std
   generated.reserve(static_cast<size_t>(cfg.max_new_tokens));
   for (int n = 0; n < cfg.max_new_tokens; ++n) {
     const int32_t id = static_cast<int32_t>(
-        sample_token(logits->to_host(), cfg, rng, seen.data(), seen.size()));
+        sample_token(logits->to_host(), cfg, rng, seen.data(), seen.size(), unavailable_));
     if (is_stop_id(cfg, id)) break;
     generated.push_back(id);
     seen.push_back(id);

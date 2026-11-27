@@ -27,6 +27,8 @@ class HfTokenizer : public Tokenizer {
   bool add_bos_default() const override;
   bool add_eos_default() const override;
   std::vector<int32_t> stop_ids() const override;
+  bool has_token(int32_t id) const override;
+  bool supports_model_vocab(int model_vocab) const override { return model_vocab >= vocab_size_; }
   void save(const std::filesystem::path& path) const override;
 
  private:
@@ -63,6 +65,7 @@ class HfTokenizer : public Tokenizer {
   int32_t bos_id_ = -1;
   int32_t eos_id_ = -1;
   int32_t pad_id_ = -1;
+  bool normalize_nfc_ = false;
   bool add_bos_ = false;
   bool add_eos_ = false;
   bool add_prefix_space_ = false;

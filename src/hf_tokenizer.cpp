@@ -1,5 +1,8 @@
 #include "llm/hf_tokenizer.hpp"
 
+#include <unicode/normalizer2.h>
+#include <unicode/unistr.h>
+
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
@@ -656,7 +659,10 @@ std::unique_ptr<HfTokenizer> HfTokenizer::load(const std::filesystem::path& dir)
   auto tok = std::unique_ptr<HfTokenizer>(new HfTokenizer());
 
   const Json* normalizer = find_key(root, "normalizer");
-  if (normalizer && normalizer->type != Json::Type::Null) fail();
+  if (normalizer && normalizer->type != Json::Type::Null) {
+    if (as_string(need_key(*normalizer, "type")) != "NFC") fail();
+    tok->normalize_nfc_ = true;
+  }
 
   const Json& model = need_key(root, "model");
   if (as_string(need_key(model, "type")) != "BPE") fail();
@@ -751,12 +757,12 @@ std::unique_ptr<HfTokenizer> HfTokenizer::load(const std::filesystem::path& dir)
   const Json& decoder = need_key(root, "decoder");
   const std::string decoder_type = as_string(need_key(decoder, "type"));
   if (decoder_type == "ByteLevel") {
-    tok->strip_prefix_space_ = flag_or(decoder, "add_prefix_space", false);
+    tok->strip_prefix_space_ = tok->add_prefix_space_ && flag_or(decoder, "add_prefix_space", false);
   } else if (decoder_type == "Sequence") {
     const Json& parts = need_key(decoder, "decoders");
     if (parts.type != Json::Type::Array || parts.arr.size() != 1) fail();
     if (as_string(need_key(parts.arr[0], "type")) != "ByteLevel") fail();
-    tok->strip_prefix_space_ = flag_or(parts.arr[0], "add_prefix_space", false);
+    tok->strip_prefix_space_ = tok->add_prefix_space_ && flag_or(parts.arr[0], "add_prefix_space", false);
   } else {
     fail();
   }
@@ -777,14 +783,18 @@ std::unique_ptr<HfTokenizer> HfTokenizer::load(const std::filesystem::path& dir)
     tok->bos_id_ = resolve("bos_token");
     tok->eos_id_ = resolve("eos_token");
     tok->pad_id_ = resolve("pad_token");
-    if (tok->add_bos_ && tok->bos_id_ < 0) fail();
-    if (tok->add_eos_ && tok->eos_id_ < 0) fail();
   }
 
   const std::filesystem::path gen_path = dir / "generation_config.json";
   if (std::filesystem::is_regular_file(gen_path)) {
     const Json gen = parse_json(gen_path);
     if (gen.type != Json::Type::Object) fail();
+    auto fallback_id = [&](int32_t& id, const char* key) {
+      const Json* value = find_key(gen, key);
+      if (id == -1 && value && value->type != Json::Type::Null) id = as_i32(*value);
+    };
+    fallback_id(tok->bos_id_, "bos_token_id");
+    fallback_id(tok->pad_id_, "pad_token_id");
     const Json* eos = find_key(gen, "eos_token_id");
     if (eos && eos->type != Json::Type::Null) {
       if (eos->type == Json::Type::Number) tok->stop_ids_.push_back(as_i32(*eos));
@@ -795,7 +805,14 @@ std::unique_ptr<HfTokenizer> HfTokenizer::load(const std::filesystem::path& dir)
       }
     }
   }
+  if (tok->eos_id_ < 0 && !tok->stop_ids_.empty()) tok->eos_id_ = tok->stop_ids_.front();
+  if ((tok->add_bos_ && !tok->has_token(tok->bos_id_)) ||
+      (tok->add_eos_ && !tok->has_token(tok->eos_id_))) fail();
   return tok;
+}
+
+bool HfTokenizer::has_token(int32_t id) const {
+  return id >= 0 && static_cast<size_t>(id) < id_to_token_.size() && !id_to_token_[id].empty();
 }
 
 int HfTokenizer::vocab_size() const { return vocab_size_; }
@@ -804,7 +821,10 @@ int32_t HfTokenizer::eos_id() const { return eos_id_; }
 int32_t HfTokenizer::pad_id() const { return pad_id_; }
 bool HfTokenizer::add_bos_default() const { return add_bos_; }
 bool HfTokenizer::add_eos_default() const { return add_eos_; }
-std::vector<int32_t> HfTokenizer::stop_ids() const { return stop_ids_; }
+std::vector<int32_t> HfTokenizer::stop_ids() const {
+  if (stop_ids_.empty() && eos_id_ >= 0) return {eos_id_};
+  return stop_ids_;
+}
 
 void HfTokenizer::save(const std::filesystem::path&) const { fail(); }
 
@@ -898,6 +918,18 @@ std::vector<int32_t> HfTokenizer::bpe_piece(std::string_view piece) const {
 }
 
 void HfTokenizer::encode_gap(std::string_view gap, std::vector<int32_t>& ids) const {
+  std::string normalized;
+  if (normalize_nfc_ && !gap.empty()) {
+    if (gap.size() > static_cast<size_t>(INT32_MAX)) fail();
+    UErrorCode error = U_ZERO_ERROR;
+    const icu::Normalizer2* nfc = icu::Normalizer2::getNFCInstance(error);
+    if (U_FAILURE(error)) fail();
+    const auto text = icu::UnicodeString::fromUTF8(
+        icu::StringPiece(gap.data(), static_cast<int32_t>(gap.size())));
+    nfc->normalize(text, error).toUTF8String(normalized);
+    if (U_FAILURE(error)) fail();
+    gap = normalized;
+  }
   if (gap.empty()) return;
   std::string owned;
   std::string_view work = gap;

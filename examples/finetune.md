@@ -1,8 +1,8 @@
 # How to fine-tune an existing model
 
-`finetune` is the continued-training example in [`finetune.cpp`](finetune.cpp). It loads `tokenizer.bpe` and `model.bin` from a directory written by [`train_data`](train_data.md) or by an earlier `finetune` run, encodes a new file list with that tokenizer, and keeps training. It writes a new directory and prints a continuation. A bidirectional checkpoint, including `bert-*`, keeps training masked tokens and does not print a continuation. It is a separate program from `llm_tests`.
+`finetune` is the continued-training example in [`finetune.cpp`](finetune.cpp). It loads `model.bin` and its tokenizer from [`train_data`](train_data.md), [`hf import`](hf.md), or an earlier `finetune` run, encodes a new file list with that tokenizer, and keeps training. It writes a new directory and prints a continuation. A bidirectional checkpoint, including `bert-*`, keeps training masked tokens and does not print a continuation. It is a separate program from `llm_tests`.
 
-The checkpoint's vocab and model shape stay as they are. `finetune` reads this library's `model.bin` and `tokenizer.bpe`.
+The checkpoint's vocab and model shape stay as they are. `finetune` accepts `tokenizer.bpe` or `tokenizer.json`. For an imported Qwen checkpoint with a padded vocabulary, the token file records the model's vocabulary width while keeping the original token IDs. If the source used tied embeddings, `hf import` copied the token table into the output layer and finetuning updates the two weights independently.
 
 Build from the repository root. Requirements are in the [README](../README.md).
 
@@ -27,7 +27,7 @@ Use text you have the rights to train on.
 
 ## Run
 
-`--from` is read only. `--out` has to be a different directory. The new directory receives `tokenizer.bpe`, `tokens.bin`, `tokens.meta`, and `model.bin`, so [`chat`](chat.md) can load `--out` the same way it loads a `train_data` directory.
+`--from` is read only. `--out` has to be a different directory. The new directory receives the tokenizer files, `tokens.bin`, `tokens.meta`, and `model.bin`, so [`chat`](chat.md) can load `--out` the same way it loads a `train_data` directory.
 
 ```bash
 ./build/finetune --from run --files more.txt --out run-ft \
@@ -89,7 +89,7 @@ Errors print `finetune: <reason>` on stderr and the process exits 1.
 
 | Reason | Meaning |
 |---|---|
-| `from` | `--from` is missing, or it has no `tokenizer.bpe` or no `model.bin` |
+| `from` | `--from` or `model.bin` is missing |
 | `files` | the list is missing, empty, or names a path that is not a file |
 | `out` | `--out` is missing or is the same directory as `--from` |
 | `short corpus` | the encoded files have fewer than `--seq-len + 1` tokens |

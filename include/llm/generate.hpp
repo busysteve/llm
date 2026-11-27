@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <random>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -24,6 +25,7 @@ struct GenerateConfig {
   // Empty stops on eos_id. A non-empty list stops on those ids and leaves them
   // out of the decoded string.
   std::vector<int32_t> stop_ids;
+  std::optional<EncodeOptions> encode_options;
 };
 
 inline bool is_stop_id(const GenerateConfig& cfg, int32_t id) {
@@ -40,7 +42,8 @@ inline bool is_stop_id(const GenerateConfig& cfg, int32_t id) {
 // restricted to top_k (0 skips that cut), softmaxed, nucleus-filtered, and drawn.
 // seen is the prompt and the ids already sampled. A null seen skips the penalty.
 int sample_token(std::vector<float> logits, const GenerateConfig& cfg, std::mt19937& rng,
-                 const int32_t* seen = nullptr, size_t n_seen = 0);
+                 const int32_t* seen = nullptr, size_t n_seen = 0,
+                 const std::vector<int32_t>& unavailable = {});
 
 class Generator {
  public:
@@ -51,6 +54,7 @@ class Generator {
   nn::Context* ctx_ = nullptr;
   nn::Transformer* model_ = nullptr;
   const Tokenizer* tok_ = nullptr;
+  std::vector<int32_t> unavailable_;
 };
 
 }  // namespace llm

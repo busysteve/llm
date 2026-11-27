@@ -152,6 +152,15 @@ void check_policy_gradient(nn::Context& ctx) {
   const llm::PolicyGrad kl = llm::policy_gradient(logits.data(), ref.data(), one_label.data(), zero.data(), 1,
                                                   1, 3, 1.f);
   CHECK(kl.grad_logits.size() == 3);
+  const auto masked = llm::policy_gradient(logits.data(), ref.data(), one_label.data(), zero.data(), 1,
+                                            1, 3, 1.f, {0, 1, 1});
+  const int64_t reduced_label = 0;
+  const auto reduced = llm::policy_gradient(logits.data() + 1, ref.data() + 1, &reduced_label,
+                                             zero.data(), 1, 1, 2, 1.f);
+  CHECK(masked.loss == reduced.loss);
+  CHECK(masked.grad_logits[0] == 0.f && masked.grad_logits[1] == reduced.grad_logits[0] &&
+        masked.grad_logits[2] == reduced.grad_logits[1]);
+
   constexpr float kEps = 1e-3f;
   for (int v = 0; v < 3; ++v) {
     std::vector<float> plus = logits;

@@ -1,3 +1,5 @@
+#include "json.hpp"
+
 #include <cerrno>
 #include <cmath>
 #include <cstdint>
@@ -18,223 +20,8 @@ namespace {
 constexpr uint32_t kCheckpointMagic = 0x314E4E43u;
 constexpr uint64_t kMaxHeader = 64ull << 20;
 
-struct Json {
-  enum class Kind { Null, Bool, Number, String, Array, Object };
-  Kind kind = Kind::Null;
-  bool b = false;
-  double n = 0;
-  std::string s;
-  std::vector<Json> a;
-  std::map<std::string, Json> o;
-
-  const Json* find(const std::string& key) const {
-    if (kind != Kind::Object) return nullptr;
-    const auto it = o.find(key);
-    return it == o.end() ? nullptr : &it->second;
-  }
-};
-
-class JsonParser {
- public:
-  explicit JsonParser(const std::string& text) : text_(text) {}
-
-  Json parse() {
-    Json value = parse_value();
-    skip();
-    if (i_ != text_.size()) throw std::runtime_error("json");
-    return value;
-  }
-
- private:
-  const std::string& text_;
-  size_t i_ = 0;
-
-  static bool ws(char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r'; }
-  static bool digit(char c) { return c >= '0' && c <= '9'; }
-
-  void skip() {
-    while (i_ < text_.size() && ws(text_[i_])) ++i_;
-  }
-
-  char peek() {
-    skip();
-    if (i_ >= text_.size()) throw std::runtime_error("json");
-    return text_[i_];
-  }
-
-  Json parse_value() {
-    const char c = peek();
-    if (c == 'n') return literal("null", Json{});
-    if (c == 't') {
-      Json value;
-      value.kind = Json::Kind::Bool;
-      value.b = true;
-      return literal("true", value);
-    }
-    if (c == 'f') {
-      Json value;
-      value.kind = Json::Kind::Bool;
-      value.b = false;
-      return literal("false", value);
-    }
-    if (c == '"') return parse_string();
-    if (c == '[') return parse_array();
-    if (c == '{') return parse_object();
-    if (c == '-' || digit(c)) return parse_number();
-    throw std::runtime_error("json");
-  }
-
-  Json literal(const char* word, Json value) {
-    for (const char* p = word; *p; ++p) {
-      if (i_ >= text_.size() || text_[i_] != *p) throw std::runtime_error("json");
-      ++i_;
-    }
-    return value;
-  }
-
-  Json parse_string() {
-    if (peek() != '"') throw std::runtime_error("json");
-    ++i_;
-    Json value;
-    value.kind = Json::Kind::String;
-    while (i_ < text_.size() && text_[i_] != '"') {
-      unsigned char c = static_cast<unsigned char>(text_[i_++]);
-      if (c == '\\') {
-        if (i_ >= text_.size()) throw std::runtime_error("json");
-        const char e = text_[i_++];
-        if (e == '"' || e == '\\' || e == '/') value.s.push_back(e);
-        else if (e == 'b') value.s.push_back('\b');
-        else if (e == 'f') value.s.push_back('\f');
-        else if (e == 'n') value.s.push_back('\n');
-        else if (e == 'r') value.s.push_back('\r');
-        else if (e == 't') value.s.push_back('\t');
-        else if (e == 'u') value.s += utf8(hex4());
-        else throw std::runtime_error("json");
-      } else if (c < 0x20) {
-        throw std::runtime_error("json");
-      } else {
-        value.s.push_back(static_cast<char>(c));
-      }
-    }
-    if (i_ >= text_.size() || text_[i_] != '"') throw std::runtime_error("json");
-    ++i_;
-    return value;
-  }
-
-  uint32_t hex4() {
-    uint32_t code = 0;
-    for (int n = 0; n < 4; ++n) {
-      if (i_ >= text_.size()) throw std::runtime_error("json");
-      const char c = text_[i_++];
-      code <<= 4;
-      if (c >= '0' && c <= '9') code |= static_cast<uint32_t>(c - '0');
-      else if (c >= 'a' && c <= 'f') code |= static_cast<uint32_t>(c - 'a' + 10);
-      else if (c >= 'A' && c <= 'F') code |= static_cast<uint32_t>(c - 'A' + 10);
-      else throw std::runtime_error("json");
-    }
-    return code;
-  }
-
-  static std::string utf8(uint32_t code) {
-    std::string out;
-    if (code < 0x80) {
-      out.push_back(static_cast<char>(code));
-    } else if (code < 0x800) {
-      out.push_back(static_cast<char>(0xc0 | (code >> 6)));
-      out.push_back(static_cast<char>(0x80 | (code & 0x3f)));
-    } else if (code < 0x10000) {
-      out.push_back(static_cast<char>(0xe0 | (code >> 12)));
-      out.push_back(static_cast<char>(0x80 | ((code >> 6) & 0x3f)));
-      out.push_back(static_cast<char>(0x80 | (code & 0x3f)));
-    } else {
-      throw std::runtime_error("json");
-    }
-    return out;
-  }
-
-  Json parse_number() {
-    const size_t start = i_;
-    if (text_[i_] == '-') ++i_;
-    if (i_ >= text_.size() || !digit(text_[i_])) throw std::runtime_error("json");
-    while (i_ < text_.size() && digit(text_[i_])) ++i_;
-    if (i_ < text_.size() && text_[i_] == '.') {
-      ++i_;
-      if (i_ >= text_.size() || !digit(text_[i_])) throw std::runtime_error("json");
-      while (i_ < text_.size() && digit(text_[i_])) ++i_;
-    }
-    if (i_ < text_.size() && (text_[i_] == 'e' || text_[i_] == 'E')) {
-      ++i_;
-      if (i_ < text_.size() && (text_[i_] == '+' || text_[i_] == '-')) ++i_;
-      if (i_ >= text_.size() || !digit(text_[i_])) throw std::runtime_error("json");
-      while (i_ < text_.size() && digit(text_[i_])) ++i_;
-    }
-    Json value;
-    value.kind = Json::Kind::Number;
-    try {
-      value.n = std::stod(text_.substr(start, i_ - start));
-    } catch (const std::exception&) {
-      throw std::runtime_error("json");
-    }
-    if (!std::isfinite(value.n)) throw std::runtime_error("json");
-    return value;
-  }
-
-  Json parse_array() {
-    if (peek() != '[') throw std::runtime_error("json");
-    ++i_;
-    Json value;
-    value.kind = Json::Kind::Array;
-    skip();
-    if (i_ < text_.size() && text_[i_] == ']') {
-      ++i_;
-      return value;
-    }
-    while (true) {
-      value.a.push_back(parse_value());
-      const char c = peek();
-      if (c == ',') {
-        ++i_;
-        continue;
-      }
-      if (c == ']') {
-        ++i_;
-        return value;
-      }
-      throw std::runtime_error("json");
-    }
-  }
-
-  Json parse_object() {
-    if (peek() != '{') throw std::runtime_error("json");
-    ++i_;
-    Json value;
-    value.kind = Json::Kind::Object;
-    skip();
-    if (i_ < text_.size() && text_[i_] == '}') {
-      ++i_;
-      return value;
-    }
-    while (true) {
-      Json key = parse_string();
-      if (peek() != ':') throw std::runtime_error("json");
-      ++i_;
-      Json child = parse_value();
-      if (!value.o.emplace(std::move(key.s), std::move(child)).second) throw std::runtime_error("json");
-      const char c = peek();
-      if (c == ',') {
-        ++i_;
-        continue;
-      }
-      if (c == '}') {
-        ++i_;
-        return value;
-      }
-      throw std::runtime_error("json");
-    }
-  }
-};
-
-Json parse_json(const std::string& text) { return JsonParser(text).parse(); }
+using llm_example::Json;
+using llm_example::parse_json;
 
 const Json& need_key(const Json& obj, const char* key) {
   const Json* found = obj.find(key);
@@ -774,11 +561,17 @@ void import_snapshot(const std::filesystem::path& model_dir, const std::filesyst
                      std::optional<int> context) {
   const Json cfg = parse_json(read_text(model_dir / "config.json"));
   if (cfg.kind != Json::Kind::Object) throw std::runtime_error("json");
-  const ModelConfig config = read_config(cfg, context);
+  ModelConfig config = read_config(cfg, context);
   const char* required = (config.qwen3 || config.qwen2) ? "tokenizer.json" : "tokenizer.model";
   if (!std::filesystem::is_regular_file(model_dir / required)) throw std::runtime_error("tokenizer");
 
   Bundle bundle(model_dir);
+  const Json* attention_bias = cfg.find("attention_bias");
+  if (config.qwen2 && (!attention_bias || attention_bias->kind == Json::Kind::Null)) {
+    config.qkv_bias = bundle.contains("model.layers.0.self_attn.q_proj.bias") ||
+                      bundle.contains("model.layers.0.self_attn.k_proj.bias") ||
+                      bundle.contains("model.layers.0.self_attn.v_proj.bias");
+  }
   bundle.reject_bias(config.qkv_bias);
   const int q_dim = config.heads * config.resolved_head;
   const int kv_dim = config.resolved_kv * config.resolved_head;
@@ -921,9 +714,11 @@ void import_snapshot(const std::filesystem::path& model_dir, const std::filesyst
       } else if (rest == "attn.out.weight") {
         values = take2("self_attn.o_proj.weight", {config.d_model, q_dim});
       } else if (rest == "attn.q_norm.weight") {
-        values = take2("self_attn.q_norm.weight", {config.resolved_head});
+        values = interleave_heads(take2("self_attn.q_norm.weight", {config.resolved_head}),
+                                  1, config.resolved_head, 1);
       } else if (rest == "attn.k_norm.weight") {
-        values = take2("self_attn.k_norm.weight", {config.resolved_head});
+        values = interleave_heads(take2("self_attn.k_norm.weight", {config.resolved_head}),
+                                  1, config.resolved_head, 1);
       } else if (rest == "fc1.weight") {
         values = take2("mlp.gate_proj.weight", {config.d_ff, config.d_model});
         std::vector<float> up = take2("mlp.up_proj.weight", {config.d_ff, config.d_model});
@@ -949,7 +744,7 @@ void import_snapshot(const std::filesystem::path& model_dir, const std::filesyst
   out.commit();
 
   for (const char* name : {"tokenizer.json", "tokenizer_config.json", "tokenizer.model", "generation_config.json",
-                           "special_tokens_map.json", "vocab.txt"}) {
+                           "special_tokens_map.json", "vocab.txt", "chat_template.jinja"}) {
     copy_beside(model_dir / name, out_dir / name);
   }
   std::printf("hf: wrote %s (version %u)\n", (out_dir / "model.bin").string().c_str(), version);
@@ -1219,8 +1014,8 @@ int self_test() {
       {"model.layers.0.self_attn.k_proj.weight", "F32", {8, 8}, f32_bytes(k)},
       {"model.layers.0.self_attn.v_proj.weight", "F32", {8, 8}, f32_bytes(std::vector<float>(64, 0.f))},
       {"model.layers.0.self_attn.o_proj.weight", "F32", {8, 16}, f32_bytes(std::vector<float>(128, 0.f))},
-      {"model.layers.0.self_attn.q_norm.weight", "F32", {4}, f32_bytes(std::vector<float>(4, 0.f))},
-      {"model.layers.0.self_attn.k_norm.weight", "F32", {4}, f32_bytes(std::vector<float>(4, 0.f))},
+      {"model.layers.0.self_attn.q_norm.weight", "F32", {4}, f32_bytes({1.f, 2.f, 3.f, 4.f})},
+      {"model.layers.0.self_attn.k_norm.weight", "F32", {4}, f32_bytes({5.f, 6.f, 7.f, 8.f})},
       {"model.layers.0.post_attention_layernorm.weight", "F32", {8}, f32_bytes(std::vector<float>(8, 0.f))},
       {"model.layers.0.mlp.gate_proj.weight", "F32", {4, 8}, f32_bytes(gate)},
       {"model.layers.0.mlp.up_proj.weight", "F32", {4, 8}, f32_bytes(up)},
@@ -1261,6 +1056,10 @@ int self_test() {
   expect(q_out[32] == 4.f && q_out[40] == 6.f && q_out[48] == 5.f && q_out[56] == 7.f, "self-test qwen q head1");
   const std::vector<float>& k_out = qwen_loaded.tensors.at("blocks.0.attn.k.weight");
   expect(k_out[0] == 100.f && k_out[8] == 102.f && k_out[16] == 101.f && k_out[24] == 103.f, "self-test qwen k permute");
+  expect(qwen_loaded.tensors.at("blocks.0.attn.q_norm.weight") == std::vector<float>{1.f, 3.f, 2.f, 4.f},
+         "self-test qwen q norm permute");
+  expect(qwen_loaded.tensors.at("blocks.0.attn.k_norm.weight") == std::vector<float>{5.f, 7.f, 6.f, 8.f},
+         "self-test qwen k norm permute");
   const std::vector<float>& fc1 = qwen_loaded.tensors.at("blocks.0.fc1.weight");
   expect(fc1.size() == 64, "self-test qwen fc1");
   expect(fc1.front() == 1.f && fc1[31] == 1.f && fc1[32] == 2.f && fc1.back() == 2.f, "self-test qwen pack");
@@ -1333,7 +1132,6 @@ int self_test() {
              "\"max_position_embeddings\":4,"
              "\"rms_norm_eps\":1e-6,"
              "\"rope_theta\":1000000,"
-             "\"attention_bias\":true,"
              "\"use_sliding_window\":false,"
              "\"sliding_window\":32,"
              "\"tie_word_embeddings\":false"
@@ -1452,7 +1250,7 @@ void usage() {
       "import reads config.json and model.safetensors (or a sharded index)\n"
       "and writes model.bin. model_type qwen3, qwen2, and llama with no\n"
       "rope_scaling and no sliding window are accepted. qwen3 and llama reject\n"
-      "attention bias. qwen2 with attention_bias writes version 7 and the three\n"
+      "attention bias. qwen2 with QKV bias writes version 7 and the three\n"
       "Q, K, and V biases. Q and K, weights and biases, are interleaved per head\n"
       "so adjacent-pair RoPE matches rotate-half weights. V bias is copied\n"
       "straight. SwiGLU gate and up are packed into fc1. F16 and BF16 widen to\n"

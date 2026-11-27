@@ -1,6 +1,5 @@
 #include "llm/chat_template.hpp"
 #include "llm/generate.hpp"
-#include "llm/hf_tokenizer.hpp"
 #include "llm/tokenizer.hpp"
 
 #include "nn/transformer.hpp"
@@ -29,12 +28,8 @@ struct Options {
   float repetition_penalty = 1.f;
   int seed = 1;
   std::optional<std::string> once;
+  std::optional<bool> thinking;
   llm::ChatWrap wrap = llm::ChatWrap::Dialogue;
-};
-
-struct Turn {
-  std::string line;
-  std::string reply;
 };
 
 void usage() {
@@ -62,7 +57,8 @@ void usage() {
       "  --seed N                   default 1\n"
       "  --once TEXT                one reply, then exit\n"
       "  --plain                    no User:/Assistant: tags\n"
-      "  --template qwen            ChatML <|im_start|>user / assistant turns\n"
+      "  --template qwen|qwen2.5|qwen3  Basic ChatML or upstream Qwen text prompts\n"
+      "  --thinking on|off              Qwen3 thinking mode (default on)\n"
       "\n"
       "The prompt is the transcript, then \"User: \", the line, a newline, and\n"
       "\"Assistant:\". Older turns drop off the front while the encoded prompt plus\n"
@@ -123,13 +119,19 @@ Options parse(int argc, char** argv) {
     else if (flag == "--seed") opt.seed = need_int(i, argc, argv);
     else if (flag == "--once") opt.once = need(i, argc, argv);
     else if (flag == "--plain") {
-      if (opt.wrap == llm::ChatWrap::Qwen) throw std::runtime_error("template");
+      if (llm::chat_uses_chatml(opt.wrap)) throw std::runtime_error("template");
       opt.wrap = llm::ChatWrap::Plain;
     } else if (flag == "--template") {
       const std::string name = need(i, argc, argv);
-      if (name != "qwen") throw std::runtime_error("template");
       if (opt.wrap == llm::ChatWrap::Plain) throw std::runtime_error("template");
-      opt.wrap = llm::ChatWrap::Qwen;
+      if (name == "qwen") opt.wrap = llm::ChatWrap::Qwen;
+      else if (name == "qwen2.5") opt.wrap = llm::ChatWrap::Qwen25;
+      else if (name == "qwen3") opt.wrap = llm::ChatWrap::Qwen3;
+      else throw std::runtime_error("template");
+    } else if (flag == "--thinking") {
+      const std::string value = need(i, argc, argv);
+      if (value != "on" && value != "off") throw std::runtime_error("thinking");
+      opt.thinking = value == "on";
     } else throw std::runtime_error(argv[i]);
   }
   if (help) {
@@ -140,38 +142,26 @@ Options parse(int argc, char** argv) {
     usage();
     throw std::runtime_error("model");
   }
+  if (opt.thinking && opt.wrap != llm::ChatWrap::Qwen3) throw std::runtime_error("thinking requires --template qwen3");
   return opt;
 }
 
-std::string make_prompt(const std::vector<Turn>& turns, const std::string& line, llm::ChatWrap wrap) {
-  std::string prompt;
-  for (const Turn& turn : turns) prompt += llm::chat_completed_turn(turn.line, turn.reply, wrap);
-  prompt += llm::chat_prompt_suffix(line, wrap);
-  return prompt;
-}
-
-llm::EncodeOptions prompt_options(const llm::Tokenizer& tok) {
-  llm::EncodeOptions opt;
-  opt.add_bos = tok.add_bos_default();
-  opt.add_eos = tok.add_eos_default();
-  return opt;
-}
-
-bool exceeds_context(const llm::Tokenizer& tok, std::string_view prompt, int max_new_tokens,
+bool exceeds_context(const llm::Tokenizer& tok, std::string_view prompt, const llm::GenerateConfig& cfg,
                      int max_seq_len) {
-  if (max_new_tokens < 1 || max_seq_len < 1) return false;
-  const size_t n = tok.encode(prompt, prompt_options(tok)).size();
-  return n + static_cast<size_t>(max_new_tokens) > static_cast<size_t>(max_seq_len);
+  if (cfg.max_new_tokens < 1 || max_seq_len < 1) return false;
+  const auto options = cfg.encode_options.value_or(llm::EncodeOptions{tok.add_bos_default(), tok.add_eos_default()});
+  return tok.encode(prompt, options).size() + static_cast<size_t>(cfg.max_new_tokens) >
+         static_cast<size_t>(max_seq_len);
 }
 
 bool take_turn(const llm::Tokenizer& tok, llm::Generator& generator, llm::GenerateConfig cfg,
-               std::mt19937& rng, std::vector<Turn>& turns, const std::string& line, int max_seq_len,
-               llm::ChatWrap wrap) {
-  std::vector<Turn> kept = turns;
+               std::mt19937& rng, std::vector<llm::ChatTurn>& turns, const std::string& line, int max_seq_len,
+               llm::ChatWrap wrap, bool thinking) {
+  std::vector<llm::ChatTurn> kept = turns;
   std::string prompt;
   for (;;) {
-    prompt = make_prompt(kept, line, wrap);
-    if (!exceeds_context(tok, prompt, cfg.max_new_tokens, max_seq_len)) break;
+    prompt = llm::chat_prompt(kept, line, wrap, thinking);
+    if (!exceeds_context(tok, prompt, cfg, max_seq_len)) break;
     if (kept.empty()) return false;
     kept.erase(kept.begin());
   }
@@ -179,15 +169,15 @@ bool take_turn(const llm::Tokenizer& tok, llm::Generator& generator, llm::Genera
   std::string reply = generator.generate(prompt, cfg, rng);
   reply = llm::chat_cut_reply(std::move(reply), wrap);
   turns = std::move(kept);
-  turns.push_back(Turn{line, reply});
+  turns.push_back(llm::ChatTurn{line, reply});
   std::printf("model> %s\n", llm::chat_shown_reply(reply, wrap).c_str());
   std::fflush(stdout);
   return true;
 }
 
 void interact(const llm::Tokenizer& tok, llm::Generator& generator, llm::GenerateConfig cfg,
-              std::mt19937& rng, int max_seq_len, llm::ChatWrap wrap) {
-  std::vector<Turn> turns;
+              std::mt19937& rng, int max_seq_len, llm::ChatWrap wrap, bool thinking) {
+  std::vector<llm::ChatTurn> turns;
   for (;;) {
     std::fputs("you> ", stdout);
     std::fflush(stdout);
@@ -201,7 +191,7 @@ void interact(const llm::Tokenizer& tok, llm::Generator& generator, llm::Generat
     }
     if (line.empty()) continue;
     try {
-      if (!take_turn(tok, generator, cfg, rng, turns, line, max_seq_len, wrap)) {
+      if (!take_turn(tok, generator, cfg, rng, turns, line, max_seq_len, wrap, thinking)) {
         std::fprintf(stderr, "chat: max_seq_len\n");
       }
     } catch (const std::exception& error) {
@@ -215,18 +205,11 @@ void interact(const llm::Tokenizer& tok, llm::Generator& generator, llm::Generat
 int main(int argc, char** argv) {
   try {
     const Options opt = parse(argc, argv);
-    const std::filesystem::path bpe_path = opt.model / "tokenizer.bpe";
-    const std::filesystem::path hf_path = opt.model / "tokenizer.json";
     const std::filesystem::path model_path = opt.model / "model.bin";
-    if (!std::filesystem::is_regular_file(model_path) ||
-        (!std::filesystem::is_regular_file(bpe_path) && !std::filesystem::is_regular_file(hf_path))) {
-      throw std::runtime_error("model");
-    }
+    if (!std::filesystem::is_regular_file(model_path)) throw std::runtime_error("model");
+    const auto tok = llm::Tokenizer::load_directory(opt.model);
 
     nn::Context ctx;
-    const std::unique_ptr<llm::Tokenizer> tok = std::filesystem::is_regular_file(bpe_path)
-                                                    ? llm::Tokenizer::load(bpe_path)
-                                                    : llm::HfTokenizer::load(opt.model);
     nn::Transformer::Loaded loaded =
         nn::Transformer::load(ctx, model_path, nn::LoadMode::Inference);
     const nn::TransformerConfig& config =
@@ -242,18 +225,22 @@ int main(int argc, char** argv) {
     cfg.repetition_penalty = opt.repetition_penalty;
     cfg.eos_id = tok->eos_id();
     cfg.stop_ids = tok->stop_ids();
+    if (opt.wrap == llm::ChatWrap::Qwen25 || opt.wrap == llm::ChatWrap::Qwen3) {
+      cfg.encode_options = llm::EncodeOptions{};
+    }
+    const bool thinking = opt.thinking.value_or(true);
     std::mt19937 rng(static_cast<uint32_t>(opt.seed));
 
     if (opt.once) {
       if (opt.once->empty()) throw std::runtime_error("prompt");
-      std::vector<Turn> turns;
-      if (!take_turn(*tok, generator, cfg, rng, turns, *opt.once, max_seq_len, opt.wrap)) {
+      std::vector<llm::ChatTurn> turns;
+      if (!take_turn(*tok, generator, cfg, rng, turns, *opt.once, max_seq_len, opt.wrap, thinking)) {
         throw std::runtime_error("max_seq_len");
       }
       return 0;
     }
 
-    interact(*tok, generator, cfg, rng, max_seq_len, opt.wrap);
+    interact(*tok, generator, cfg, rng, max_seq_len, opt.wrap, thinking);
     return 0;
   } catch (const std::exception& error) {
     std::fprintf(stderr, "chat: %s\n", error.what());

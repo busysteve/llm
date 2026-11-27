@@ -29,9 +29,15 @@ class Tokenizer {
   virtual bool add_eos_default() const { return false; }
   // Empty means generation stops on eos_id only.
   virtual std::vector<int32_t> stop_ids() const { return {}; }
+  virtual bool has_token(int32_t id) const { return id >= 0 && id < vocab_size(); }
+  virtual bool supports_model_vocab(int model_vocab) const { return model_vocab == vocab_size(); }
+  std::vector<int32_t> unavailable_ids(int model_vocab) const;
+
   virtual void save(const std::filesystem::path& path) const = 0;
 
   static std::unique_ptr<Tokenizer> load(const std::filesystem::path& path);
+  static std::unique_ptr<Tokenizer> load_directory(const std::filesystem::path& dir);
+  static void copy_directory(const std::filesystem::path& from, const std::filesystem::path& to);
 };
 
 }  // namespace llm

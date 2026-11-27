@@ -104,8 +104,8 @@ struct RowSample {
 // in eval so the log-probabilities belong to the distribution that drew the tokens.
 std::vector<RowSample> sample_group(nn::Context& ctx, nn::Transformer& policy,
                                     const std::vector<int32_t>& prompt, int group, int max_new,
-                                    int vocab, int32_t eos, int32_t pad, const GenerateConfig& gen,
-                                    std::mt19937& rng) {
+                                    int vocab, int32_t pad, const GenerateConfig& gen,
+                                    const std::vector<int32_t>& unavailable, std::mt19937& rng) {
   const int prompt_len = static_cast<int>(prompt.size());
   const int t_max = prompt_len + max_new;
   std::vector<int64_t> host(static_cast<size_t>(group) * static_cast<size_t>(prompt_len));
@@ -135,9 +135,9 @@ std::vector<RowSample> sample_group(nn::Context& ctx, nn::Transformer& policy,
       const size_t begin = static_cast<size_t>(row) * static_cast<size_t>(vocab);
       std::vector<float> one(flat.begin() + static_cast<std::ptrdiff_t>(begin),
                              flat.begin() + static_cast<std::ptrdiff_t>(begin + static_cast<size_t>(vocab)));
-      const int32_t id = static_cast<int32_t>(sample_token(std::move(one), gen, rng));
+      const int32_t id = static_cast<int32_t>(sample_token(std::move(one), gen, rng, nullptr, 0, unavailable));
       rows[static_cast<size_t>(row)].ids.push_back(id);
-      if (id == eos) {
+      if (is_stop_id(gen, id)) {
         done[static_cast<size_t>(row)] = 1;
         --active;
       } else {
@@ -167,7 +167,8 @@ struct GroupResult {
 GroupResult score_group(nn::Context& ctx, nn::Transformer& policy, nn::Transformer* reference,
                         const std::string& prompt_text, const std::vector<int32_t>& prompt,
                         const std::vector<RowSample>& rows, const float* advantages, float reward_sum,
-                        int vocab, int32_t pad, float kl_coef, float grad_scale, bool abort) {
+                        int vocab, int32_t pad, float kl_coef, float grad_scale, bool abort,
+                        const std::vector<char>& available) {
   GroupResult result;
   result.reward_sum = reward_sum;
   const int group = static_cast<int>(rows.size());
@@ -214,7 +215,7 @@ GroupResult score_group(nn::Context& ctx, nn::Transformer& policy, nn::Transform
   const std::vector<float> host = logits.to_host();
   if (host.size() != count * static_cast<size_t>(vocab)) throw std::invalid_argument("logits");
 
-  PolicyGrad grad = policy_gradient(host.data(), ref_ptr, labels.data(), advantages, group, seq, vocab, kl_coef);
+  PolicyGrad grad = policy_gradient(host.data(), ref_ptr, labels.data(), advantages, group, seq, vocab, kl_coef, available);
   if (abort && !std::isfinite(grad.loss)) throw std::runtime_error("non-finite loss");
   for (float& value : grad.grad_logits) value *= grad_scale;
 
@@ -234,10 +235,15 @@ GroupResult score_group(nn::Context& ctx, nn::Transformer& policy, nn::Transform
 }  // namespace
 
 PolicyGrad policy_gradient(const float* logits, const float* ref_logits, const int64_t* labels,
-                           const float* advantages, int rows, int seq, int vocab, float kl_coef) {
+                           const float* advantages, int rows, int seq, int vocab, float kl_coef,
+                           const std::vector<char>& available) {
   if (rows < 1) throw std::invalid_argument("rows");
   if (seq < 1) throw std::invalid_argument("seq");
   if (vocab <= 1) throw std::invalid_argument("vocab");
+  if (!available.empty() && available.size() != static_cast<size_t>(vocab)) {
+    throw std::invalid_argument("available");
+  }
+  auto valid = [&](int64_t id) { return available.empty() || available[static_cast<size_t>(id)]; };
   require_rate(kl_coef, "kl_coef");
   if (logits == nullptr) throw std::invalid_argument("logits");
   if (labels == nullptr) throw std::invalid_argument("labels");
@@ -256,7 +262,7 @@ PolicyGrad policy_gradient(const float* logits, const float* ref_logits, const i
     for (int t = 0; t < seq; ++t) {
       const int64_t label = labels[static_cast<int64_t>(row) * seq + t];
       if (label == kIgnore) continue;
-      if (label < 0 || label >= vocab) throw std::invalid_argument("label");
+      if (label < 0 || label >= vocab || !valid(label)) throw std::invalid_argument("label");
       ++n_valid;
     }
   }
@@ -276,16 +282,20 @@ PolicyGrad policy_gradient(const float* logits, const float* ref_logits, const i
       const int64_t label = labels[pos];
       if (label == kIgnore) continue;
       const float* row_logits = logits + pos * vocab;
-      float peak = row_logits[0];
-      for (int v = 1; v < vocab; ++v) peak = std::max(peak, row_logits[v]);
+      float peak = -std::numeric_limits<float>::infinity();
+      for (int v = 0; v < vocab; ++v) {
+        if (valid(v)) peak = std::max(peak, row_logits[v]);
+      }
       double sum = 0.0;
       for (int v = 0; v < vocab; ++v) {
+        if (!valid(v)) continue;
         const double prob = std::exp(static_cast<double>(row_logits[v]) - static_cast<double>(peak));
         probs[static_cast<size_t>(v)] = prob;
         sum += prob;
       }
       const double log_sum = std::log(sum);
       for (int v = 0; v < vocab; ++v) {
+        if (!valid(v)) continue;
         log_probs[static_cast<size_t>(v)] =
             static_cast<double>(row_logits[v]) - static_cast<double>(peak) - log_sum;
         probs[static_cast<size_t>(v)] /= sum;
@@ -294,14 +304,18 @@ PolicyGrad policy_gradient(const float* logits, const float* ref_logits, const i
       double kl = 0.0;
       if (kl_coef > 0.f) {
         const float* row_ref = ref_logits + pos * vocab;
-        float ref_peak = row_ref[0];
-        for (int v = 1; v < vocab; ++v) ref_peak = std::max(ref_peak, row_ref[v]);
+        float ref_peak = -std::numeric_limits<float>::infinity();
+        for (int v = 0; v < vocab; ++v) {
+          if (valid(v)) ref_peak = std::max(ref_peak, row_ref[v]);
+        }
         double ref_sum = 0.0;
         for (int v = 0; v < vocab; ++v) {
+          if (!valid(v)) continue;
           ref_sum += std::exp(static_cast<double>(row_ref[v]) - static_cast<double>(ref_peak));
         }
         const double ref_log_sum = std::log(ref_sum);
         for (int v = 0; v < vocab; ++v) {
+          if (!valid(v)) continue;
           ref_log_probs[static_cast<size_t>(v)] =
               static_cast<double>(row_ref[v]) - static_cast<double>(ref_peak) - ref_log_sum;
           kl += probs[static_cast<size_t>(v)] *
@@ -313,6 +327,7 @@ PolicyGrad policy_gradient(const float* logits, const float* ref_logits, const i
       kl_sum += kl;
       float* row_grad = out.grad_logits.data() + pos * vocab;
       for (int v = 0; v < vocab; ++v) {
+        if (!valid(v)) continue;
         const double indicator = static_cast<int64_t>(v) == label ? 1.0 : 0.0;
         double grad_v = advantage * (probs[static_cast<size_t>(v)] - indicator);
         if (kl_coef > 0.f) {
@@ -340,14 +355,23 @@ int RlTrainer::fit(const Tokenizer& tok, const std::vector<std::string>& prompts
   if (prompts.empty()) throw std::invalid_argument("prompt");
   const nn::TransformerConfig& policy_cfg = config_of(*policy_);
   const int vocab = policy_cfg.vocab_size;
-  if (tok.vocab_size() != vocab) throw std::invalid_argument("vocab_size");
-  if (tok.pad_id() < 0 || tok.pad_id() >= vocab) throw std::invalid_argument("pad_id");
-  if (tok.eos_id() < 0 || tok.eos_id() >= vocab) throw std::invalid_argument("eos_id");
+  const auto unavailable = tok.unavailable_ids(vocab);
+  std::vector<char> available;
+  if (!unavailable.empty()) {
+    available.assign(static_cast<size_t>(vocab), 1);
+    for (int32_t id : unavailable) available[id] = 0;
+  }
+  if (!tok.has_token(tok.pad_id())) throw std::invalid_argument("pad_id");
+  const auto stops = tok.stop_ids();
+  if (stops.empty() && !tok.has_token(tok.eos_id())) throw std::invalid_argument("eos_id");
 
   std::vector<std::vector<int32_t>> encoded;
   encoded.reserve(prompts.size());
   for (const std::string& prompt : prompts) {
-    std::vector<int32_t> ids = tok.encode(prompt);
+    std::vector<int32_t> ids = tok.encode(prompt, {tok.add_bos_default(), tok.add_eos_default()});
+    for (int32_t id : ids) {
+      if (!tok.has_token(id)) throw std::invalid_argument("prompt token id");
+    }
     if (ids.empty()) throw std::invalid_argument("prompt");
     if (ids.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
       throw std::invalid_argument("max_seq_len");
@@ -366,6 +390,7 @@ int RlTrainer::fit(const Tokenizer& tok, const std::vector<std::string>& prompts
   gen.top_k = cfg_.top_k;
   gen.top_p = cfg_.top_p;
   gen.eos_id = tok.eos_id();
+  gen.stop_ids = stops;
 
   TrainConfig schedule;
   schedule.learning_rate = cfg_.learning_rate;
@@ -391,14 +416,14 @@ int RlTrainer::fit(const Tokenizer& tok, const std::vector<std::string>& prompts
       const size_t which = pick(rng);
       const std::vector<RowSample> rows =
           sample_group(*ctx_, *policy_, encoded[which], cfg_.group_size, cfg_.max_new_tokens, vocab,
-                       tok.eos_id(), tok.pad_id(), gen, rng);
+                       tok.pad_id(), gen, unavailable, rng);
 
       std::vector<float> rewards(static_cast<size_t>(cfg_.group_size));
       float micro_reward = 0.f;
       for (int row = 0; row < cfg_.group_size; ++row) {
         const std::vector<int32_t>& ids = rows[static_cast<size_t>(row)].ids;
         std::vector<int32_t> shown = ids;
-        if (!shown.empty() && shown.back() == tok.eos_id()) shown.pop_back();
+        if (!shown.empty() && is_stop_id(gen, shown.back())) shown.pop_back();
         const std::string text = tok.decode(shown);
         const Episode episode{prompts[which], text, ids};
         const float value = reward(episode);
@@ -419,7 +444,7 @@ int RlTrainer::fit(const Tokenizer& tok, const std::vector<std::string>& prompts
       const GroupResult group =
           score_group(*ctx_, *policy_, reference_, prompts[which], encoded[which], rows,
                       advantages.data(), micro_reward, vocab, tok.pad_id(), cfg_.kl_coef, grad_scale,
-                      cfg_.abort_on_non_finite);
+                      cfg_.abort_on_non_finite, available);
       loss_sum += group.loss;
       kl_sum += group.kl;
       reward_sum += group.reward_sum;

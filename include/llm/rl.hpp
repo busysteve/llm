@@ -39,7 +39,8 @@ struct PolicyGrad {
 // The gradient matches sequence_cross_entropy when every advantage is 1 and
 // kl_coef is 0: (softmax - one_hot) / n_valid.
 PolicyGrad policy_gradient(const float* logits, const float* ref_logits, const int64_t* labels,
-                           const float* advantages, int rows, int seq, int vocab, float kl_coef);
+                           const float* advantages, int rows, int seq, int vocab, float kl_coef,
+                           const std::vector<char>& available = {});
 
 struct RlConfig {
   float learning_rate = 1e-5f;
