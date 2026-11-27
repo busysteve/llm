@@ -35,6 +35,13 @@ Use text you have the rights to train on.
   --prompt "The morning after"
 ```
 
+For an imported Qwen2.5 checkpoint, select its Hugging Face tokenizer explicitly with `--tokenizer qwen2.5`. The command reads the tokenizer files from `--from` by default. If the matching files are stored separately, pass their directory with `--tokenizer-dir`.
+
+```bash
+./build/finetune --from qwen25.model --files more.txt --out qwen25-ft \
+  --tokenizer qwen2.5 --seq-len 128 --batch 1
+```
+
 The default peak learning rate is `1e-4`. Warmup defaults to 0. The cosine floor is one tenth of `--lr`. The schedule starts at step 1 of this run. With `--warmup 0` that first step is already on the cosine, and step `--steps` is the floor. The schedule does not continue from the checkpoint's optimizer step. `train_data --resume` is the command that continues a `train_data` schedule from the checkpoint step.
 
 Without `--resume`, the run builds a fresh AdamW at `--lr` and `--wd` (default weight decay `0.1`). With `--resume`, AdamW moments and the optimizer step stored in the checkpoint are kept, and `--wd` is ignored. The learning-rate flags still apply.
@@ -65,6 +72,8 @@ With `--steps` of 100 or more, `model.bin` is also written every 100 steps. The 
 | `--from DIR` | | checkpoint directory, read only |
 | `--files LIST` | | new text, one path per line |
 | `--out DIR` | | new directory, different from `--from` |
+| `--tokenizer qwen2.5` | load from `--from` by format | explicitly use the Qwen2.5 Hugging Face tokenizer |
+| `--tokenizer-dir DIR` | `--from` | directory with matching tokenizer files when using `--tokenizer qwen2.5` |
 | `--seq-len N` | 256 | tokens per example, at most the checkpoint maximum |
 | `--batch N` | 4 | examples per step |
 | `--steps N` | 200 | AdamW updates |

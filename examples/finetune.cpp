@@ -1,5 +1,6 @@
 #include "llm/data.hpp"
 #include "llm/generate.hpp"
+#include "llm/hf_tokenizer.hpp"
 #include "llm/presets.hpp"
 #include "llm/tokenizer.hpp"
 #include "llm/train.hpp"
@@ -27,6 +28,8 @@ struct Options {
   std::filesystem::path from;
   std::filesystem::path files;
   std::filesystem::path out;
+  std::filesystem::path tokenizer_dir;
+  bool qwen_tokenizer = false;
   int seq_len = 256;
   int batch = 4;
   int steps = 200;
@@ -48,7 +51,7 @@ void usage() {
   std::fputs(
       "usage: finetune --from DIR --files LIST --out DIR [options]\n"
       "\n"
-      "DIR contains model.bin and tokenizer.bpe or tokenizer.json.\n"
+      "--from contains model.bin and, by default, tokenizer.bpe or tokenizer.json.\n"
       "LIST is one text path per line. Blank lines and lines starting with # are\n"
       "ignored. A relative path is resolved from the directory that contains LIST.\n"
       "\n"
@@ -59,6 +62,8 @@ void usage() {
       "  --from DIR                 required, read-only\n"
       "  --files LIST               required\n"
       "  --out DIR                  required, must differ from --from\n"
+      "  --tokenizer qwen2.5        use the Qwen2.5 tokenizer from --from\n"
+      "  --tokenizer-dir DIR        load matching Qwen2.5 files from DIR instead\n"
       "  --seq-len N                default 256, at most the checkpoint max\n"
       "  --batch N                  default 4\n"
       "  --steps N                  default 200\n"
@@ -112,6 +117,10 @@ Options parse(int argc, char** argv) {
     else if (flag == "--from") opt.from = need(i, argc, argv);
     else if (flag == "--files") opt.files = need(i, argc, argv);
     else if (flag == "--out") opt.out = need(i, argc, argv);
+    else if (flag == "--tokenizer") {
+      if (need(i, argc, argv) != "qwen2.5") throw std::runtime_error("--tokenizer");
+      opt.qwen_tokenizer = true;
+    } else if (flag == "--tokenizer-dir") opt.tokenizer_dir = need(i, argc, argv);
     else if (flag == "--seq-len") opt.seq_len = need_int(i, argc, argv);
     else if (flag == "--batch") opt.batch = need_int(i, argc, argv);
     else if (flag == "--steps") opt.steps = need_int(i, argc, argv);
@@ -144,6 +153,9 @@ Options parse(int argc, char** argv) {
   if (opt.out.empty()) {
     usage();
     throw std::runtime_error("out");
+  }
+  if (!opt.tokenizer_dir.empty() && !opt.qwen_tokenizer) {
+    throw std::runtime_error("--tokenizer-dir requires --tokenizer qwen2.5");
   }
   return opt;
 }
@@ -220,7 +232,10 @@ int main(int argc, char** argv) {
     }
 
     const std::vector<std::filesystem::path> paths = read_list(opt.files);
-    const std::unique_ptr<llm::Tokenizer> tok = llm::Tokenizer::load_directory(opt.from);
+    const std::filesystem::path tokenizer_source = opt.tokenizer_dir.empty() ? opt.from : opt.tokenizer_dir;
+    const std::unique_ptr<llm::Tokenizer> tok = opt.qwen_tokenizer
+        ? llm::HfTokenizer::load(tokenizer_source)
+        : llm::Tokenizer::load_directory(tokenizer_source);
     std::vector<std::string> books;
     books.reserve(paths.size());
     int64_t bytes = 0;
@@ -278,7 +293,8 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "fresh AdamW\n");
       }
 
-      llm::Tokenizer::copy_directory(opt.from, opt.out);
+      if (opt.qwen_tokenizer) llm::HfTokenizer::copy_directory(tokenizer_source, opt.out);
+      else llm::Tokenizer::copy_directory(tokenizer_source, opt.out);
       llm::write_token_file(bin_path, meta_path, ids, config.vocab_size);
       ids.clear();
       ids.shrink_to_fit();

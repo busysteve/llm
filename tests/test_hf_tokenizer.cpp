@@ -201,6 +201,9 @@ void run_hf_tokenizer_tests() {
   const auto invalid_stop = llm::Tokenizer::load_directory(temp / "single");
   check_invalid([&] { invalid_stop->unavailable_ids(104); }, "stop token id");
 
+  write_file(temp / "single" / "generation_config.json", R"({"eos_token_id":100,"eos_token_id":14})");
+  check_runtime([&] { llm::HfTokenizer::load(temp / "single"); }, "tokenizer");
+
   write_file(temp / "single" / "generation_config.json", R"({"eos_token_id":[100, 14]})");
   write_file(temp / "single" / "chat_template.jinja", "{{ messages[0].content }}");
   std::filesystem::create_directories(temp / "copy");

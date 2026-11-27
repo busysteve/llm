@@ -17,6 +17,7 @@ namespace llm {
 class HfTokenizer : public Tokenizer {
  public:
   static std::unique_ptr<HfTokenizer> load(const std::filesystem::path& dir);
+  static void copy_directory(const std::filesystem::path& from, const std::filesystem::path& to);
 
   int vocab_size() const override;
   std::vector<int32_t> encode(std::string_view text, EncodeOptions opt = {}) const override;

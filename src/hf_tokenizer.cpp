@@ -12,6 +12,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -523,15 +524,14 @@ class JsonParser {
       ++i_;
       return value;
     }
+    std::unordered_set<std::string> keys;
     for (;;) {
       skip();
       Json key = parse_string();
       skip();
       if (peek() != ':') fail();
       ++i_;
-      for (const auto& field : value.obj) {
-        if (field.first == key.text) fail();
-      }
+      if (!keys.insert(key.text).second) fail();
       value.obj.emplace_back(std::move(key.text), parse_value(depth + 1));
       skip();
       const char c = peek();

@@ -18,7 +18,13 @@ void Tokenizer::copy_directory(const std::filesystem::path& from, const std::fil
                                std::filesystem::copy_options::overwrite_existing);
     return;
   }
+  HfTokenizer::copy_directory(from, to);
+}
+
+void HfTokenizer::copy_directory(const std::filesystem::path& from,
+                                 const std::filesystem::path& to) {
   if (std::filesystem::exists(to / "tokenizer.bpe")) throw std::invalid_argument("output tokenizer.bpe");
+  if (std::filesystem::equivalent(from, to)) return;
   constexpr std::array names{"tokenizer.json", "tokenizer_config.json", "generation_config.json",
                              "special_tokens_map.json", "chat_template.jinja"};
   for (const char* name : names) {

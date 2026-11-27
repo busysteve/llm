@@ -1,6 +1,7 @@
 #include "llm/bpe.hpp"
 #include "llm/data.hpp"
 #include "llm/generate.hpp"
+#include "llm/hf_tokenizer.hpp"
 #include "llm/presets.hpp"
 #include "llm/train.hpp"
 
@@ -28,12 +29,16 @@
 
 namespace {
 
+constexpr int kDefaultVocab = 4096;
+
 struct Options {
   std::filesystem::path files;
   std::filesystem::path dir;
   std::filesystem::path out;
+  std::filesystem::path tokenizer_dir;
   std::string preset = "tiny";
-  int vocab = 4096;
+  std::optional<int> vocab;
+  bool qwen_tokenizer = false;
   int seq_len = 256;
   int batch = 4;
   int steps = 1000;
@@ -65,7 +70,7 @@ struct Options {
   std::optional<int> head_dim;
 };
 
-nn::TransformerConfig model_config(const Options& opt);
+nn::TransformerConfig model_config(const Options& opt, int vocab);
 
 volatile std::sig_atomic_t g_stop = 0;
 
@@ -105,8 +110,8 @@ void usage() {
       "of LIST or DIR. That document is one tokenizer string, with one eos\n"
       "token appended.\n"
       "\n"
-      "Trains a byte-level BPE tokenizer on those files, trains a preset\n"
-      "transformer, writes tokenizer.bpe and model.bin, then loads both and\n"
+      "Trains a byte-level BPE tokenizer or loads a Qwen2.5 tokenizer, trains a\n"
+      "preset transformer, writes the tokenizer and model.bin, then loads both and\n"
       "generates a continuation.\n"
       "\n"
       "SIGINT or SIGTERM finishes the current update, writes model.bin, and\n"
@@ -141,6 +146,9 @@ void usage() {
       "  --head-dim N               override the head width. 0 uses\n"
       "                             d_model / heads\n"
       "  --vocab N                  default 4096 (minimum 259)\n"
+      "  --tokenizer qwen2.5        use the Qwen2.5 tokenizer and its fixed vocab\n"
+      "  --tokenizer-dir DIR        Qwen2.5 files, default qwen25-hf\n"
+      "                             Resume and reuse load the tokenizer from --out.\n"
       "  --seq-len N                default 256, at most the context cap\n"
       "  --batch N                  default 4\n"
       "  --steps N                  default 1000\n"
@@ -166,16 +174,16 @@ void usage() {
       "  --top-k N                  default 40 (0 disables)\n"
       "  --top-p FLOAT              default 0.9\n"
       "  --seed N                   default 1\n"
-      "  --resume                   continue --out. Requires tokenizer.bpe,\n"
+      "  --resume                   continue --out. Requires the saved tokenizer,\n"
       "                             tokens.bin, tokens.meta, and model.bin.\n"
       "  --lr-new                   with --resume, start the learning-rate\n"
       "                             schedule at step 1. --lr, --warmup, and\n"
       "                             --steps apply to that schedule. The AdamW\n"
       "                             step is kept.\n"
       "  --reuse-tokens             restart training on the tokens in --out.\n"
-      "                             Requires tokenizer.bpe, tokens.bin, and\n"
+      "                             Requires the saved tokenizer, tokens.bin, and\n"
       "                             tokens.meta. Does not load model.bin.\n"
-      "  --tokenize-only            write tokenizer.bpe, tokens.bin, and\n"
+      "  --tokenize-only            write the tokenizer, tokens.bin, and\n"
       "                             tokens.meta, then exit before the model.\n"
       "  --dir DIR                  recurse DIR and read every regular file\n"
       "                             instead of --files. Paths are sorted.\n"
@@ -240,6 +248,10 @@ Options parse(int argc, char** argv) {
     else if (flag == "--files") opt.files = need(i, argc, argv);
     else if (flag == "--dir") opt.dir = need(i, argc, argv);
     else if (flag == "--out") opt.out = need(i, argc, argv);
+    else if (flag == "--tokenizer") {
+      if (need(i, argc, argv) != "qwen2.5") throw std::runtime_error("--tokenizer");
+      opt.qwen_tokenizer = true;
+    } else if (flag == "--tokenizer-dir") opt.tokenizer_dir = need(i, argc, argv);
     else if (flag == "--preset") opt.preset = need(i, argc, argv);
     else if (flag == "--layers") opt.layers = need_int(i, argc, argv);
     else if (flag == "--d-model") opt.d_model = need_int(i, argc, argv);
@@ -300,12 +312,15 @@ Options parse(int argc, char** argv) {
     throw std::runtime_error("tokenize-only");
   }
   if (opt.resume && opt.reuse_tokens) throw std::runtime_error("reuse-tokens");
+  if (!opt.tokenizer_dir.empty() && (!opt.qwen_tokenizer || opt.resume || opt.reuse_tokens)) {
+    throw std::runtime_error("--tokenizer-dir requires --tokenizer qwen2.5 on a new run");
+  }
   if (opt.from_stdin &&
       (opt.resume || opt.reuse_tokens || !opt.files.empty() || !opt.dir.empty())) {
     throw std::runtime_error("stdin");
   }
   if (!opt.dir.empty() && !opt.files.empty()) throw std::runtime_error("dir");
-  (void)model_config(opt);
+  (void)model_config(opt, opt.vocab.value_or(kDefaultVocab));
   if (opt.out.empty() || (opt.files.empty() && opt.dir.empty() && !opt.from_stdin)) {
     usage();
     throw std::runtime_error("files");
@@ -472,7 +487,7 @@ bool spec_set(const Options& opt) {
          opt.head_dim.has_value();
 }
 
-nn::TransformerConfig model_config(const Options& opt) {
+nn::TransformerConfig model_config(const Options& opt, int vocab) {
   require_min(opt.layers, 1, "layers");
   require_min(opt.d_model, 1, "d-model");
   require_min(opt.heads, 1, "heads");
@@ -480,7 +495,7 @@ nn::TransformerConfig model_config(const Options& opt) {
   require_min(opt.max_seq, 1, "max-seq");
   require_min(opt.kv_heads, 0, "kv-heads");
   require_min(opt.head_dim, 0, "head-dim");
-  nn::TransformerConfig config = preset_config(opt.preset, opt.vocab);
+  nn::TransformerConfig config = preset_config(opt.preset, vocab);
   if (opt.layers) config.num_layers = *opt.layers;
   if (opt.d_model) config.d_model = *opt.d_model;
   if (opt.heads) config.num_heads = *opt.heads;
@@ -516,22 +531,37 @@ int main(int argc, char** argv) {
     const std::filesystem::path bin_path = opt.out / "tokens.bin";
     const std::filesystem::path meta_path = opt.out / "tokens.meta";
     const bool keep_tokens = opt.resume || opt.reuse_tokens;
-    if (opt.resume && (!is_file(tok_path) || !is_file(model_path) || !is_file(bin_path) ||
+    const bool native_tokenizer = is_file(tok_path);
+    const bool saved_tokenizer = is_file(opt.out / "tokenizer.json") ||
+                                 (native_tokenizer && !opt.qwen_tokenizer);
+    if (opt.resume && (!saved_tokenizer || !is_file(model_path) || !is_file(bin_path) ||
                        !is_file(meta_path))) {
       throw std::runtime_error("resume");
     }
-    if (opt.reuse_tokens && (!is_file(tok_path) || !is_file(bin_path) || !is_file(meta_path))) {
+    if (opt.reuse_tokens && (!saved_tokenizer || !is_file(bin_path) || !is_file(meta_path))) {
       throw std::runtime_error("reuse-tokens");
+    }
+    if (opt.qwen_tokenizer && std::filesystem::exists(tok_path)) {
+      throw std::runtime_error("output tokenizer.bpe");
     }
     std::filesystem::create_directories(opt.out);
 
     std::unique_ptr<llm::Tokenizer> tok;
+    const std::filesystem::path tokenizer_source =
+        opt.tokenizer_dir.empty() ? std::filesystem::path("qwen25-hf") : opt.tokenizer_dir;
+    const std::filesystem::path saved_tok_path = opt.qwen_tokenizer ? opt.out / "tokenizer.json" : tok_path;
+    const auto save_tokenizer = [&] {
+      if (opt.qwen_tokenizer) llm::HfTokenizer::copy_directory(tokenizer_source, opt.out);
+      else tok->save(tok_path);
+    };
     std::string prompt;
     std::vector<int32_t> ids;
     std::optional<llm::TextDataset> resume_tokens;
     if (keep_tokens) {
-      tok = llm::Tokenizer::load(tok_path);
-      if (tok->vocab_size() != opt.vocab) throw std::runtime_error("vocab_size");
+      tok = llm::Tokenizer::load_directory(opt.out);
+      const int expected_vocab = opt.vocab.value_or(native_tokenizer ? kDefaultVocab : tok->vocab_size());
+      if (tok->vocab_size() != expected_vocab) throw std::runtime_error("vocab_size");
+      if (tok->eos_id() < 0) throw std::runtime_error("eos_id");
       resume_tokens.emplace(bin_path, meta_path, tok->eos_id());
       if (resume_tokens->vocab_size() != tok->vocab_size()) throw std::runtime_error("vocab_size");
       if (resume_tokens->numel() < static_cast<int64_t>(opt.seq_len) + 1) {
@@ -557,27 +587,49 @@ int main(int argc, char** argv) {
       }
       prompt = opt.prompt.empty() ? opening_of(books.front()) : opt.prompt;
 
-      std::fprintf(stderr, "training tokenizer vocab=%d on %zu books, %lld bytes\n", opt.vocab,
-                   books.size(), static_cast<long long>(bytes));
-      auto bpe = llm::BpeTokenizer::train(books, opt.vocab);
+      const llm::BpeTokenizer* bpe = nullptr;
+      if (opt.qwen_tokenizer) {
+        tok = llm::HfTokenizer::load(tokenizer_source);
+        if (opt.vocab && *opt.vocab != tok->vocab_size()) throw std::runtime_error("vocab_size");
+        if (tok->eos_id() < 0) throw std::runtime_error("eos_id");
+        std::fprintf(stderr, "loaded Qwen2.5 tokenizer from %s, vocab=%d\n",
+                     tokenizer_source.string().c_str(), tok->vocab_size());
+      } else {
+        const int vocab = opt.vocab.value_or(kDefaultVocab);
+        std::fprintf(stderr, "training tokenizer vocab=%d on %zu books, %lld bytes\n", vocab,
+                     books.size(), static_cast<long long>(bytes));
+        auto trained = llm::BpeTokenizer::train(books, vocab);
+        bpe = trained.get();
+        tok = std::move(trained);
+      }
 
       const auto encode_books = [&](const llm::TokenBatchSink& emit) {
         llm::EncodeOptions encode_opt;
+        encode_opt.add_bos = tok->add_bos_default();
         encode_opt.add_eos = true;
         for (std::string& book : books) {
-          bpe->encode_chunks(book, encode_opt, emit);
+          if (bpe) bpe->encode_chunks(book, encode_opt, emit);
+          else emit(tok->encode(book, encode_opt));
           std::string().swap(book);
         }
       };
       if (opt.tokenize_only) {
-        model_config(opt);
-        const int64_t count = llm::write_token_batches(bin_path, meta_path, bpe->vocab_size(),
-                                                       static_cast<int64_t>(opt.seq_len) + 1,
-                                                       encode_books);
+        model_config(opt, tok->vocab_size());
+        const int64_t min_tokens = static_cast<int64_t>(opt.seq_len) + 1;
+        const auto produce = [&](const llm::TokenBatchSink& emit) {
+          int64_t count = 0;
+          encode_books([&](const std::vector<int32_t>& part) {
+            emit(part);
+            count += static_cast<int64_t>(part.size());
+          });
+          // Save the tokenizer before the staged token stream replaces any previous files.
+          if (count >= min_tokens) save_tokenizer();
+        };
+        const int64_t count = llm::write_token_batches(bin_path, meta_path, tok->vocab_size(),
+                                                       min_tokens, produce);
         std::fprintf(stderr, "encoded %lld tokens\n", static_cast<long long>(count));
         report_pass(count, opt.batch, opt.seq_len);
-        bpe->save(tok_path);
-        std::fprintf(stderr, "saved %s\n", tok_path.string().c_str());
+        std::fprintf(stderr, "saved %s\n", saved_tok_path.string().c_str());
         std::fprintf(stderr, "tokenize only\n");
         return 0;
       }
@@ -585,14 +637,13 @@ int main(int argc, char** argv) {
       encode_books([&](const std::vector<int32_t>& part) {
         ids.insert(ids.end(), part.begin(), part.end());
       });
-      tok = std::move(bpe);
       std::fprintf(stderr, "encoded %zu tokens\n", ids.size());
       if (static_cast<int64_t>(ids.size()) < static_cast<int64_t>(opt.seq_len) + 1) {
         throw std::runtime_error("short corpus");
       }
     }
 
-    const nn::TransformerConfig config = model_config(opt);
+    const nn::TransformerConfig config = model_config(opt, tok->vocab_size());
     const bool encoder = !config.causal;
 
     std::vector<int32_t> train_ids;
@@ -618,9 +669,9 @@ int main(int argc, char** argv) {
     report_pass(trained_tokens, opt.batch, opt.seq_len);
 
     if (!keep_tokens) {
+      save_tokenizer();
       llm::write_token_file(bin_path, meta_path, ids, static_cast<int32_t>(tok->vocab_size()));
-      tok->save(tok_path);
-      std::fprintf(stderr, "saved %s\n", tok_path.string().c_str());
+      std::fprintf(stderr, "saved %s\n", saved_tok_path.string().c_str());
     }
     ids.clear();
     ids.shrink_to_fit();
@@ -741,7 +792,7 @@ int main(int argc, char** argv) {
     }
 
     nn::Context ctx;
-    const std::unique_ptr<llm::Tokenizer> loaded_tok = llm::Tokenizer::load(tok_path);
+    const std::unique_ptr<llm::Tokenizer> loaded_tok = llm::Tokenizer::load_directory(opt.out);
     nn::Transformer::Loaded loaded =
         nn::Transformer::load(ctx, model_path, nn::LoadMode::Inference);
     llm::Generator generator(ctx, loaded.model, *loaded_tok);
@@ -751,6 +802,7 @@ int main(int argc, char** argv) {
     gen.top_k = opt.top_k;
     gen.top_p = opt.top_p;
     gen.eos_id = loaded_tok->eos_id();
+    gen.stop_ids = loaded_tok->stop_ids();
     std::mt19937 rng(static_cast<uint32_t>(opt.seed) + 1);
     const std::string text = generator.generate(prompt, gen, rng);
     std::printf("prompt: %s\ncontinuation: %s\n", prompt.c_str(), text.c_str());
